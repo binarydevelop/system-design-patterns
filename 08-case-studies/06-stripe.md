@@ -27,122 +27,76 @@ Stripe processes hundreds of billions of dollars annually with 99.999% uptime. T
 
 ## High-Level Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Client Applications                             │
-│              (Web, Mobile, Server-Side SDKs, Stripe.js)                 │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                         HTTPS (TLS 1.3)
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                            Edge Layer                                    │
-│                                                                          │
-│  ┌─────────────────────┐  ┌─────────────────────────────────────────┐  │
-│  │   WAF / DDoS        │  │        Global Load Balancer             │  │
-│  │   Protection        │  │     (Anycast, Multi-Region)             │  │
-│  └─────────────────────┘  └─────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         API Gateway Layer                                │
-│                                                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │                    API Gateway Service                           │   │
-│  │   - Authentication (API Keys, OAuth)                            │   │
-│  │   - Rate Limiting (per-merchant, per-endpoint)                  │   │
-│  │   - Idempotency Key Processing                                  │   │
-│  │   - Request Routing                                              │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Service Layer                                    │
-│                                                                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                  │
-│  │   Payment    │  │ Subscription │  │   Payout     │                  │
-│  │   Service    │  │   Service    │  │   Service    │                  │
-│  └──────────────┘  └──────────────┘  └──────────────┘                  │
-│                                                                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                  │
-│  │   Fraud      │  │   Balance    │  │   Dispute    │                  │
-│  │   Detection  │  │   Service    │  │   Service    │                  │
-│  └──────────────┘  └──────────────┘  └──────────────┘                  │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     Card Processing Layer (PCI DSS)                      │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │                    Tokenization Service                           │  │
-│  │              (Isolated PCI-compliant environment)                 │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                              │                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │                   Payment Processor Gateway                       │  │
-│  │                                                                   │  │
-│  │   ┌────────────┐  ┌────────────┐  ┌────────────┐                 │  │
-│  │   │   Visa     │  │ Mastercard │  │    AMEX    │  ...            │  │
-│  │   │   Network  │  │   Network  │  │   Network  │                 │  │
-│  │   └────────────┘  └────────────┘  └────────────┘                 │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Data Layer                                     │
-│                                                                          │
-│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐               │
-│  │  PostgreSQL   │  │    Redis      │  │   FoundationDB │               │
-│  │  (Primary)    │  │  (Caching,    │  │ (Distributed   │               │
-│  │              │  │   Locking)    │  │   Metadata)    │               │
-│  └───────────────┘  └───────────────┘  └───────────────┘               │
-│                                                                          │
-│  ┌───────────────┐  ┌───────────────┐                                   │
-│  │    Kafka      │  │ Elasticsearch │                                   │
-│  │  (Events)     │  │  (Analytics)  │                                   │
-│  └───────────────┘  └───────────────┘                                   │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Client["Client Applications<br/>(Web, Mobile, Server-Side SDKs, Stripe.js)"]
+
+    Client -->|"HTTPS (TLS 1.3)"| Edge
+
+    subgraph Edge["Edge Layer"]
+        WAF["WAF / DDoS Protection"]
+        GLB["Global Load Balancer<br/>(Anycast, Multi-Region)"]
+    end
+
+    Edge --> API
+
+    subgraph API["API Gateway Layer"]
+        GW["API Gateway Service<br/>- Authentication (API Keys, OAuth)<br/>- Rate Limiting (per-merchant, per-endpoint)<br/>- Idempotency Key Processing<br/>- Request Routing"]
+    end
+
+    API --> Service
+
+    subgraph Service["Service Layer"]
+        PaySvc["Payment Service"]
+        SubSvc["Subscription Service"]
+        PayoutSvc["Payout Service"]
+        FraudSvc["Fraud Detection"]
+        BalSvc["Balance Service"]
+        DispSvc["Dispute Service"]
+    end
+
+    Service --> PCI
+
+    subgraph PCI["Card Processing Layer (PCI DSS)"]
+        Token["Tokenization Service<br/>(Isolated PCI-compliant environment)"]
+        Token --> PPG
+        subgraph PPG["Payment Processor Gateway"]
+            Visa["Visa Network"]
+            MC["Mastercard Network"]
+            AMEX["AMEX Network"]
+        end
+    end
+
+    PCI --> Data
+
+    subgraph Data["Data Layer"]
+        PG[("PostgreSQL<br/>(Primary)")]
+        Redis[("Redis<br/>(Caching, Locking)")]
+        FDB[("FoundationDB<br/>(Distributed Metadata)")]
+        Kafka[("Kafka<br/>(Events)")]
+        ES[("Elasticsearch<br/>(Analytics)")]
+    end
 ```
 
 ---
 
 ## Idempotency System
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     Idempotency Key Processing                           │
-│                                                                          │
-│   Request with Idempotency-Key: "xyz123"                                │
-│                         │                                                │
-│                         ▼                                                │
-│   ┌─────────────────────────────────────────────────────────────────┐   │
-│   │                    Idempotency Check                             │   │
-│   │                                                                  │   │
-│   │   1. Look up key in Redis/DB                                    │   │
-│   │   2. If exists:                                                 │   │
-│   │      - If completed: return cached response                     │   │
-│   │      - If in_progress: wait or return 409                       │   │
-│   │   3. If not exists: acquire lock, process request               │   │
-│   └─────────────────────────────────────────────────────────────────┘   │
-│                         │                                                │
-│           ┌─────────────┴─────────────┐                                 │
-│           ▼                           ▼                                 │
-│   ┌───────────────┐           ┌───────────────┐                        │
-│   │  Key Exists   │           │  New Request  │                        │
-│   │               │           │               │                        │
-│   │  Return       │           │  1. Lock key  │                        │
-│   │  Cached       │           │  2. Process   │                        │
-│   │  Response     │           │  3. Store     │                        │
-│   │               │           │  4. Unlock    │                        │
-│   └───────────────┘           └───────────────┘                        │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Req["Request with Idempotency-Key: xyz123"]
+    Req --> Check
+
+    Check{"Idempotency Check<br/>Look up key in Redis/DB"}
+
+    Check -->|"Key exists & completed"| Cached["Return Cached Response"]
+    Check -->|"Key exists & in_progress"| Wait["Wait or Return 409"]
+    Check -->|"Key not found"| New["New Request"]
+
+    New --> Lock["1. Lock key"]
+    Lock --> Process["2. Process request"]
+    Process --> Store[("3. Store response")]
+    Store --> Unlock["4. Unlock key"]
 ```
 
 ### Idempotency Implementation
@@ -702,56 +656,27 @@ class PaymentLedger:
 
 ## Payment Processing Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     Payment Processing Flow                              │
-│                                                                          │
-│   ┌────────┐     ┌──────────────┐     ┌────────────┐                   │
-│   │ Client │────▶│  API Gateway │────▶│  Payment   │                   │
-│   │        │     │              │     │  Service   │                   │
-│   └────────┘     └──────────────┘     └────────────┘                   │
-│                                              │                          │
-│                         ┌────────────────────┴────────────────────┐    │
-│                         ▼                                         ▼    │
-│                  ┌─────────────┐                           ┌───────────┐│
-│                  │    Fraud    │                           │   Rate    ││
-│                  │  Detection  │                           │  Limiter  ││
-│                  └─────────────┘                           └───────────┘│
-│                         │                                         │    │
-│                         └────────────────────┬────────────────────┘    │
-│                                              ▼                          │
-│                                       ┌─────────────┐                  │
-│                                       │   Token     │                  │
-│                                       │  Service    │                  │
-│                                       │ (PCI Scope) │                  │
-│                                       └─────────────┘                  │
-│                                              │                          │
-│                                              ▼                          │
-│   ┌─────────────────────────────────────────────────────────────────┐  │
-│   │                  Processor Selection & Routing                   │  │
-│   │                                                                  │  │
-│   │   ┌─────────────┐                                               │  │
-│   │   │   Smart     │──▶ Select processor based on:                 │  │
-│   │   │   Router    │    - Card network (Visa, MC, Amex)           │  │
-│   │   │             │    - Geography (issuing country)              │  │
-│   │   │             │    - Success rates per processor              │  │
-│   │   │             │    - Latency per processor                    │  │
-│   │   └─────────────┘                                               │  │
-│   │          │                                                       │  │
-│   │          ├─────────────┬─────────────┬─────────────┐            │  │
-│   │          ▼             ▼             ▼             ▼            │  │
-│   │   ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐      │  │
-│   │   │ Processor │ │ Processor │ │ Processor │ │ Processor │      │  │
-│   │   │     A     │ │     B     │ │     C     │ │     D     │      │  │
-│   │   └───────────┘ └───────────┘ └───────────┘ └───────────┘      │  │
-│   └─────────────────────────────────────────────────────────────────┘  │
-│                                              │                          │
-│                                              ▼                          │
-│                                       ┌─────────────┐                  │
-│                                       │   Ledger    │                  │
-│                                       │  (Record)   │                  │
-│                                       └─────────────┘                  │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Client["Client"] --> GW["API Gateway"] --> PaySvc["Payment Service"]
+
+    PaySvc --> Fraud["Fraud Detection"]
+    PaySvc --> Rate["Rate Limiter"]
+
+    Fraud --> Token["Token Service<br/>(PCI Scope)"]
+    Rate --> Token
+
+    Token --> Router
+
+    subgraph Routing["Processor Selection & Routing"]
+        Router["Smart Router<br/>- Card network (Visa, MC, Amex)<br/>- Geography (issuing country)<br/>- Success rates per processor<br/>- Latency per processor"]
+        Router --> PA["Processor A"]
+        Router --> PB["Processor B"]
+        Router --> PC["Processor C"]
+        Router --> PD["Processor D"]
+    end
+
+    PA & PB & PC & PD --> Ledger[("Ledger<br/>(Record)")]
 ```
 
 ### Payment Service Implementation

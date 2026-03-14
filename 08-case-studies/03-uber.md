@@ -30,42 +30,23 @@ Uber matches riders with nearby drivers in real-time, handling millions of locat
 
 ## High-Level Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              Uber Architecture                                │
-│                                                                               │
-│  ┌──────────────┐     ┌──────────────┐                                       │
-│  │  Rider App   │     │  Driver App  │                                       │
-│  └───────┬──────┘     └───────┬──────┘                                       │
-│          │                    │                                               │
-│          └────────┬───────────┘                                               │
-│                   ▼                                                           │
-│          ┌────────────────┐                                                   │
-│          │  API Gateway   │                                                   │
-│          └────────┬───────┘                                                   │
-│                   │                                                           │
-│    ┌──────────────┼──────────────┬──────────────┬──────────────┐            │
-│    │              │              │              │              │            │
-│    ▼              ▼              ▼              ▼              ▼            │
-│ ┌──────┐     ┌──────────┐   ┌────────┐   ┌──────────┐   ┌──────────┐       │
-│ │ Trip │     │ Location │   │ Match  │   │  Pricing │   │  Payment │       │
-│ │ Svc  │     │  Service │   │ Service│   │  Service │   │  Service │       │
-│ └──┬───┘     └────┬─────┘   └───┬────┘   └────┬─────┘   └────┬─────┘       │
-│    │              │             │             │              │              │
-│    │              ▼             │             │              │              │
-│    │      ┌────────────────┐    │             │              │              │
-│    │      │  Geospatial    │◄───┘             │              │              │
-│    │      │    Index       │                  │              │              │
-│    │      │  (Cell-based)  │                  │              │              │
-│    │      └────────────────┘                  │              │              │
-│    │                                          │              │              │
-│    ▼                                          ▼              ▼              │
-│ ┌──────────────┐                    ┌──────────────┐  ┌──────────────┐     │
-│ │  Trip Store  │                    │  Price Cache │  │   Payment    │     │
-│ │  (Cassandra) │                    │   (Redis)    │  │   Gateway    │     │
-│ └──────────────┘                    └──────────────┘  └──────────────┘     │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    RiderApp["Rider App"] --> APIGateway["API Gateway"]
+    DriverApp["Driver App"] --> APIGateway
+
+    APIGateway --> TripSvc["Trip Service"]
+    APIGateway --> LocationSvc["Location Service"]
+    APIGateway --> MatchSvc["Match Service"]
+    APIGateway --> PricingSvc["Pricing Service"]
+    APIGateway --> PaymentSvc["Payment Service"]
+
+    LocationSvc --> GeoIndex["Geospatial Index<br/>(Cell-based)"]
+    MatchSvc --> GeoIndex
+
+    TripSvc --> TripStore[("Trip Store<br/>(Cassandra)")]
+    PricingSvc --> PriceCache[("Price Cache<br/>(Redis)")]
+    PaymentSvc --> PaymentGW[("Payment Gateway")]
 ```
 
 ---
@@ -399,46 +380,29 @@ class MatchingService:
 
 ## Trip State Machine
 
-```
-┌────────────────────────────────────────────────────────────────────────────┐
-│                          Trip State Machine                                 │
-│                                                                             │
-│                                                                             │
-│     ┌───────────┐         ┌──────────────┐         ┌────────────┐          │
-│     │ REQUESTED │────────►│   MATCHING   │────────►│  MATCHED   │          │
-│     └───────────┘         └──────────────┘         └─────┬──────┘          │
-│           │                      │                       │                  │
-│           │                      │ (no driver)           │                  │
-│           │                      ▼                       │                  │
-│           │               ┌──────────────┐               │                  │
-│           │               │   NO_MATCH   │               │                  │
-│           │               └──────────────┘               │                  │
-│           │                                              │                  │
-│           │ (cancel)                                     ▼                  │
-│           │                                       ┌────────────┐            │
-│           │                              ┌───────►│ DRIVER_EN  │            │
-│           │                              │        │   ROUTE    │            │
-│           │                              │        └─────┬──────┘            │
-│           │                              │              │                   │
-│           ▼                              │              │ (driver arrives)  │
-│     ┌───────────┐                        │              ▼                   │
-│     │ CANCELLED │◄───────────────────────┤       ┌────────────┐            │
-│     └───────────┘                        │       │  ARRIVED   │            │
-│                                          │       └─────┬──────┘            │
-│                                          │             │                   │
-│                                          │             │ (rider pickup)    │
-│                                          │             ▼                   │
-│                                          │       ┌────────────┐            │
-│                                          └───────┤  IN_TRIP   │            │
-│                                                  └─────┬──────┘            │
-│                                                        │                   │
-│                                                        │ (arrive at dest)  │
-│                                                        ▼                   │
-│                                                  ┌────────────┐            │
-│                                                  │ COMPLETED  │            │
-│                                                  └────────────┘            │
-│                                                                             │
-└────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> REQUESTED
+    REQUESTED --> MATCHING
+    REQUESTED --> CANCELLED : cancel
+
+    MATCHING --> MATCHED
+    MATCHING --> NO_MATCH : no driver
+
+    MATCHED --> DRIVER_EN_ROUTE
+
+    DRIVER_EN_ROUTE --> ARRIVED : driver arrives
+    DRIVER_EN_ROUTE --> CANCELLED : cancel
+
+    ARRIVED --> IN_TRIP : rider pickup
+    ARRIVED --> CANCELLED : cancel
+
+    IN_TRIP --> COMPLETED : arrive at dest
+    IN_TRIP --> CANCELLED : cancel
+
+    COMPLETED --> [*]
+    CANCELLED --> [*]
+    NO_MATCH --> [*]
 ```
 
 ```python

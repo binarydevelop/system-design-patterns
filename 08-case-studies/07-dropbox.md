@@ -27,118 +27,66 @@ Dropbox syncs files across 700M+ registered users with petabytes of storage. The
 
 ## High-Level Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Desktop/Mobile Clients                          │
-│                     (Dropbox App with Local Cache)                       │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                    HTTPS / WebSocket (Notifications)
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                             Edge Layer                                   │
-│                                                                          │
-│  ┌─────────────────────┐  ┌─────────────────────────────────────────┐  │
-│  │   Global CDN        │  │        Load Balancer / API Gateway      │  │
-│  │  (Static Assets)    │  │                                         │  │
-│  └─────────────────────┘  └─────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Service Layer                                   │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │                    Metadata Service (Edgestore)                   │  │
-│  │                                                                   │  │
-│  │   - File/folder hierarchy                                        │  │
-│  │   - Permissions and sharing                                      │  │
-│  │   - Version history                                              │  │
-│  │   - Sync state per device                                        │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │                    Block Service                                  │  │
-│  │                                                                   │  │
-│  │   - Upload/download file blocks                                  │  │
-│  │   - Deduplication checking                                       │  │
-│  │   - Block assembly for downloads                                 │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐    │
-│  │  Notification   │  │    Sharing      │  │    Search          │    │
-│  │    Service      │  │    Service      │  │    Service         │    │
-│  └─────────────────┘  └─────────────────┘  └─────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Data Layer                                     │
-│                                                                          │
-│  ┌───────────────────────────────────────────────────────────────────┐ │
-│  │                    Block Storage (Magic Pocket)                    │ │
-│  │                                                                    │ │
-│  │   ┌──────────────────────────────────────────────────────────┐   │ │
-│  │   │              Content-Addressable Storage                  │   │ │
-│  │   │                                                           │   │ │
-│  │   │   Block Hash (SHA-256) ──▶ Compressed Block Data         │   │ │
-│  │   │                                                           │   │ │
-│  │   │   Stored across multiple datacenters with erasure coding │   │ │
-│  │   └──────────────────────────────────────────────────────────┘   │ │
-│  └───────────────────────────────────────────────────────────────────┘ │
-│                                                                          │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐    │
-│  │   MySQL         │  │   Memcached     │  │   Elasticsearch    │    │
-│  │  (Metadata)     │  │  (Caching)      │  │   (Search Index)   │    │
-│  └─────────────────┘  └─────────────────┘  └─────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Clients["Desktop/Mobile Clients<br/>(Dropbox App with Local Cache)"]
+
+    Clients -->|"HTTPS / WebSocket (Notifications)"| Edge
+
+    subgraph Edge["Edge Layer"]
+        CDN["Global CDN<br/>(Static Assets)"]
+        LB["Load Balancer / API Gateway"]
+    end
+
+    Edge --> Services
+
+    subgraph Services["Service Layer"]
+        Meta["Metadata Service (Edgestore)<br/>File/folder hierarchy · Permissions · Versions · Sync state"]
+        Block["Block Service<br/>Upload/download blocks · Dedup checking · Block assembly"]
+        Notif["Notification Service"]
+        Share["Sharing Service"]
+        Search["Search Service"]
+    end
+
+    Services --> Data
+
+    subgraph Data["Data Layer"]
+        MP["Block Storage (Magic Pocket)<br/>Content-Addressable Storage<br/>SHA-256 Hash → Compressed Block Data<br/>Erasure-coded across datacenters"]
+        MySQL[("MySQL<br/>(Metadata)")]
+        Memcached[("Memcached<br/>(Caching)")]
+        ES[("Elasticsearch<br/>(Search Index)")]
+    end
 ```
 
 ---
 
 ## Block-Level Storage & Deduplication
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     Block-Level Deduplication                            │
-│                                                                          │
-│   Original File (12MB):                                                 │
-│   ┌─────────────────────────────────────────────────────────────────┐  │
-│   │ Block 1   │  Block 2   │  Block 3   │                           │  │
-│   │  (4MB)    │   (4MB)    │   (4MB)    │                           │  │
-│   │ hash:abc  │  hash:def  │  hash:ghi  │                           │  │
-│   └─────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│   Modified File (edit in middle):                                       │
-│   ┌─────────────────────────────────────────────────────────────────┐  │
-│   │ Block 1   │  Block 2   │  Block 3   │                           │  │
-│   │  (4MB)    │   (4MB)    │   (4MB)    │                           │  │
-│   │ hash:abc  │  hash:xyz  │  hash:ghi  │                           │  │
-│   │  (same!)  │   (NEW)    │  (same!)   │                           │  │
-│   └─────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│   Storage Impact:                                                        │
-│   - Only Block 2 (4MB) uploaded                                         │
-│   - Blocks 1 & 3 already exist                                          │
-│   - 66% bandwidth saved                                                  │
-│                                                                          │
-│   Cross-User Deduplication:                                             │
-│   ┌───────────────┐  ┌───────────────┐  ┌───────────────┐             │
-│   │    User A     │  │    User B     │  │    User C     │             │
-│   │  vacation.jpg │  │  vacation.jpg │  │  vacation.jpg │             │
-│   │   hash:photo1 │  │   hash:photo1 │  │   hash:photo1 │             │
-│   └───────────────┘  └───────────────┘  └───────────────┘             │
-│          │                  │                  │                        │
-│          └──────────────────┼──────────────────┘                        │
-│                             ▼                                           │
-│                    ┌───────────────┐                                    │
-│                    │  One Copy in  │                                    │
-│                    │    Storage    │                                    │
-│                    │  hash:photo1  │                                    │
-│                    └───────────────┘                                    │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Original["Original File (12MB)"]
+        O1["Block 1<br/>4MB · hash:abc"]
+        O2["Block 2<br/>4MB · hash:def"]
+        O3["Block 3<br/>4MB · hash:ghi"]
+    end
+
+    subgraph Modified["Modified File (edit in middle)"]
+        M1["Block 1<br/>4MB · hash:abc<br/>(same!)"]
+        M2["Block 2<br/>4MB · hash:xyz<br/>(NEW)"]
+        M3["Block 3<br/>4MB · hash:ghi<br/>(same!)"]
+    end
+
+    Original -.-|"Only Block 2 uploaded<br/>66% bandwidth saved"| Modified
+
+    subgraph CrossUser["Cross-User Deduplication"]
+        UA["User A<br/>vacation.jpg<br/>hash:photo1"]
+        UB["User B<br/>vacation.jpg<br/>hash:photo1"]
+        UC["User C<br/>vacation.jpg<br/>hash:photo1"]
+    end
+
+    UA --> Storage[("One Copy in Storage<br/>hash:photo1")]
+    UB --> Storage
+    UC --> Storage
 ```
 
 ### Block Service Implementation
@@ -413,55 +361,34 @@ class ContentDefinedChunking:
 
 ## Sync Protocol
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Sync Protocol Flow                               │
-│                                                                          │
-│   ┌────────────────────────────────────────────────────────────────┐    │
-│   │                    Initial Sync                                 │    │
-│   │                                                                 │    │
-│   │   Client                           Server                      │    │
-│   │     │                                │                         │    │
-│   │     │──── Get Cursor (null) ────────▶│                         │    │
-│   │     │                                │                         │    │
-│   │     │◀─── Full File List + Cursor ───│                         │    │
-│   │     │                                │                         │    │
-│   │     │──── Download Missing Blocks ──▶│                         │    │
-│   │     │                                │                         │    │
-│   │     │◀─── Block Data ────────────────│                         │    │
-│   │     │                                │                         │    │
-│   └────────────────────────────────────────────────────────────────┘    │
-│                                                                          │
-│   ┌────────────────────────────────────────────────────────────────┐    │
-│   │                    Incremental Sync                             │    │
-│   │                                                                 │    │
-│   │   Client                           Server                      │    │
-│   │     │                                │                         │    │
-│   │     │──── Long Poll (cursor) ───────▶│                         │    │
-│   │     │                                │                         │    │
-│   │     │        (waits for changes)     │                         │    │
-│   │     │                                │                         │    │
-│   │     │◀─── Changes + New Cursor ──────│                         │    │
-│   │     │                                │                         │    │
-│   │     │──── Download Changed Blocks ──▶│                         │    │
-│   │     │                                │                         │    │
-│   └────────────────────────────────────────────────────────────────┘    │
-│                                                                          │
-│   ┌────────────────────────────────────────────────────────────────┐    │
-│   │                    Upload Changes                               │    │
-│   │                                                                 │    │
-│   │   Client                           Server                      │    │
-│   │     │                                │                         │    │
-│   │     │──── Commit (block hashes) ────▶│                         │    │
-│   │     │                                │                         │    │
-│   │     │◀─── Need Blocks [2, 5, 7] ─────│  (Dedup check)         │    │
-│   │     │                                │                         │    │
-│   │     │──── Upload Blocks [2, 5, 7] ──▶│                         │    │
-│   │     │                                │                         │    │
-│   │     │◀─── Commit Complete ───────────│                         │    │
-│   │     │                                │                         │    │
-│   └────────────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+
+    rect rgb(230, 245, 255)
+        Note over Client,Server: Initial Sync
+        Client ->> Server: Get Cursor (null)
+        Server -->> Client: Full File List + Cursor
+        Client ->> Server: Download Missing Blocks
+        Server -->> Client: Block Data
+    end
+
+    rect rgb(230, 255, 230)
+        Note over Client,Server: Incremental Sync
+        Client ->> Server: Long Poll (cursor)
+        Note right of Server: waits for changes
+        Server -->> Client: Changes + New Cursor
+        Client ->> Server: Download Changed Blocks
+    end
+
+    rect rgb(255, 245, 230)
+        Note over Client,Server: Upload Changes
+        Client ->> Server: Commit (block hashes)
+        Server -->> Client: Need Blocks [2, 5, 7] (Dedup check)
+        Client ->> Server: Upload Blocks [2, 5, 7]
+        Server -->> Client: Commit Complete
+    end
 ```
 
 ### Sync Service Implementation
@@ -744,45 +671,35 @@ class ConflictResolver:
 
 ## Metadata Service (Edgestore)
 
+**File Tree Structure:**
+
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     Metadata Storage Architecture                        │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                      File Tree Structure                          │  │
-│   │                                                                   │  │
-│   │   Namespace (User Account)                                       │  │
-│   │         │                                                        │  │
-│   │         ├── /Documents                                           │  │
-│   │         │       ├── /Work                                        │  │
-│   │         │       │     ├── report.pdf                            │  │
-│   │         │       │     └── presentation.pptx                     │  │
-│   │         │       └── /Personal                                   │  │
-│   │         │             └── taxes.xlsx                            │  │
-│   │         │                                                        │  │
-│   │         └── /Photos                                              │  │
-│   │                 ├── vacation.jpg                                 │  │
-│   │                 └── family.png                                   │  │
-│   │                                                                   │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                    Sharding Strategy                              │  │
-│   │                                                                   │  │
-│   │   Shard by: namespace_id (user/team account)                     │  │
-│   │                                                                   │  │
-│   │   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐            │  │
-│   │   │ Shard 1 │  │ Shard 2 │  │ Shard 3 │  │ Shard 4 │ ...        │  │
-│   │   │Users A-D│  │Users E-K│  │Users L-R│  │Users S-Z│            │  │
-│   │   └─────────┘  └─────────┘  └─────────┘  └─────────┘            │  │
-│   │                                                                   │  │
-│   │   Benefits:                                                      │  │
-│   │   - User's files always on same shard                           │  │
-│   │   - Folder listings are local queries                           │  │
-│   │   - Easy capacity planning per user                             │  │
-│   │                                                                   │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
+Namespace (User Account)
+      │
+      ├── /Documents
+      │       ├── /Work
+      │       │     ├── report.pdf
+      │       │     └── presentation.pptx
+      │       └── /Personal
+      │             └── taxes.xlsx
+      │
+      └── /Photos
+              ├── vacation.jpg
+              └── family.png
+```
+
+**Sharding Strategy:**
+
+```mermaid
+graph TD
+    NS["namespace_id<br/>(user/team account)"] --> S1[("Shard 1<br/>Users A-D")]
+    NS --> S2[("Shard 2<br/>Users E-K")]
+    NS --> S3[("Shard 3<br/>Users L-R")]
+    NS --> S4[("Shard 4<br/>Users S-Z")]
+
+    S1 -.- B1["User's files always on same shard"]
+    S2 -.- B2["Folder listings are local queries"]
+    S3 -.- B3["Easy capacity planning per user"]
 ```
 
 ### Metadata Service Implementation

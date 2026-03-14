@@ -30,16 +30,16 @@ Twitter handles 500M+ tweets per day with a fan-out-on-write architecture for ho
 
 ```mermaid
 graph TD
-    MC["Mobile Clients"] --> AG["API Gateway\nRate Limiting · Auth · Routing"]
+    MC["Mobile Clients"] --> AG["API Gateway<br/>Rate Limiting · Auth · Routing"]
     WC["Web Clients"] --> AG
     AG --> TS["Tweet Service"]
     AG --> TLS["Timeline Service"]
     AG --> SS["Search Service"]
-    TS --> TDB[("Tweet DB\n(MySQL)")]
-    TS --> MS[("Media Service\n(S3)")]
-    TLS --> TC[("Timeline Cache\n(Redis)")]
-    SS --> SI[("Search Index\n(Lucene)")]
-    TS -.-> FO["Fan-out Service\nDistributes tweets to followers"]
+    TS --> TDB[("Tweet DB<br/>(MySQL)")]
+    TS --> MS[("Media Service<br/>(S3)")]
+    TLS --> TC[("Timeline Cache<br/>(Redis)")]
+    SS --> SI[("Search Index<br/>(Lucene)")]
+    TS -.-> FO["Fan-out Service<br/>Distributes tweets to followers"]
     FO -.-> TC
 ```
 
@@ -49,22 +49,16 @@ graph TD
 
 ### Fan-Out-on-Write (Push Model)
 
+```mermaid
+graph TD
+    A["User A posts a tweet"] --> TS["Tweet Service"]
+    TS --> FO["Fan-out Service"]
+    FO -.-> F1[("Follower 1<br/>Timeline Cache")]
+    FO -.-> F2[("Follower 2<br/>Timeline Cache")]
+    FO -.-> F3[("Follower 3<br/>Timeline Cache")]
 ```
-User A posts a tweet:
-                                        
-User A ──► Tweet Service ──► Fan-out Service
-                                   │
-                    ┌──────────────┼──────────────┐
-                    │              │              │
-                    ▼              ▼              ▼
-             ┌──────────┐   ┌──────────┐   ┌──────────┐
-             │Follower 1│   │Follower 2│   │Follower 3│
-             │ Timeline │   │ Timeline │   │ Timeline │
-             │  Cache   │   │  Cache   │   │  Cache   │
-             └──────────┘   └──────────┘   └──────────┘
 
-Each follower's timeline cache gets the tweet ID appended
-```
+Each follower's timeline cache gets the tweet ID appended.
 
 ```python
 class FanOutService:
@@ -176,13 +170,13 @@ class TimelineService:
 
 ```mermaid
 graph LR
-    subgraph precomputed["Pre-computed Timeline\n(fan-out-on-write)"]
+    subgraph precomputed["Pre-computed Timeline<br/>(fan-out-on-write)"]
         P["Tweet 5, 4, 2, 1"]
     end
-    subgraph celebrity["Celebrity Tweets\n(fetched on-read)"]
-        C["Celeb A: 3\nCeleb B: 2\nCeleb C: 1"]
+    subgraph celebrity["Celebrity Tweets<br/>(fetched on-read)"]
+        C["Celeb A: 3<br/>Celeb B: 2<br/>Celeb C: 1"]
     end
-    subgraph merged["Merged & Sorted\nHome Timeline"]
+    subgraph merged["Merged & Sorted<br/>Home Timeline"]
         M["Tweet 7, 6, 5, 4 ..."]
     end
     precomputed -->|"merge + sort"| merged
@@ -303,21 +297,14 @@ def extract_timestamp(tweet_id: int) -> int:
 
 ## Search Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        Search Pipeline                               │
-│                                                                      │
-│  Tweet ──► Kafka ──► Search Indexer ──► Elasticsearch Cluster       │
-│                           │                     │                    │
-│                           │              ┌──────┴──────┐             │
-│                           │              │             │             │
-│                      ┌────┴────┐    ┌────┴────┐  ┌────┴────┐        │
-│                      │Tokenizer│    │ Shard 1 │  │ Shard 2 │        │
-│                      │ Parser  │    │         │  │         │        │
-│                      │ Filter  │    └─────────┘  └─────────┘        │
-│                      └─────────┘                                     │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    T["Tweet"] --> K["Kafka"]
+    K --> SI["Search Indexer"]
+    SI --> ES[("Elasticsearch Cluster")]
+    SI -.-> TP["Tokenizer<br/>Parser<br/>Filter"]
+    ES --> S1[("Shard 1")]
+    ES --> S2[("Shard 2")]
 ```
 
 ```python

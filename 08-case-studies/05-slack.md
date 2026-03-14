@@ -28,110 +28,80 @@ Slack delivers real-time messaging to 20M+ daily active users across millions of
 
 ## High-Level Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Client Apps                                    │
-│              (Desktop, Mobile, Web - Electron, React Native)            │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                         WebSocket / HTTPS
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                            Edge Layer                                    │
-│                                                                          │
-│  ┌─────────────────────┐  ┌─────────────────────────────────────────┐  │
-│  │   CloudFront CDN    │  │          ALB / API Gateway              │  │
-│  │   (Static Assets)   │  │     (WebSocket & HTTP Routing)          │  │
-│  └─────────────────────┘  └─────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Gateway Layer                                    │
-│                                                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │                    Gateway Service                               │   │
-│  │          (WebSocket Management, Authentication)                  │   │
-│  │                                                                  │   │
-│  │   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │   │
-│  │   │ Gateway  │  │ Gateway  │  │ Gateway  │  │ Gateway  │  ...  │   │
-│  │   │    1     │  │    2     │  │    3     │  │    4     │       │   │
-│  │   └──────────┘  └──────────┘  └──────────┘  └──────────┘       │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-┌───────────────────────────────────────────────────────────────────────┐
-│                        Service Layer                                   │
-│                                                                        │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │
-│  │  Messaging  │  │   Channel   │  │    User     │  │   Search    │ │
-│  │   Service   │  │   Service   │  │   Service   │  │   Service   │ │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘ │
-│                                                                        │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │
-│  │   Files     │  │  Presence   │  │ Notification│  │  Workspace  │ │
-│  │   Service   │  │   Service   │  │   Service   │  │   Service   │ │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘ │
-└───────────────────────────────────────────────────────────────────────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-┌───────────────────────────────────────────────────────────────────────┐
-│                           Data Layer                                   │
-│                                                                        │
-│  ┌─────────────────────────────────────────────────────────────────┐ │
-│  │                    Vitess (Sharded MySQL)                        │ │
-│  │                                                                  │ │
-│  │   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐           │ │
-│  │   │ Shard 1 │  │ Shard 2 │  │ Shard 3 │  │ Shard 4 │  ...      │ │
-│  │   │Workspace│  │Workspace│  │Workspace│  │Workspace│           │ │
-│  │   │  A-D    │  │  E-K    │  │  L-R    │  │  S-Z    │           │ │
-│  │   └─────────┘  └─────────┘  └─────────┘  └─────────┘           │ │
-│  └─────────────────────────────────────────────────────────────────┘ │
-│                                                                        │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                   │
-│  │   Redis     │  │Elasticsearch│  │     S3      │                   │
-│  │ (Pub/Sub,   │  │  (Search)   │  │   (Files)   │                   │
-│  │  Sessions)  │  │             │  │             │                   │
-│  └─────────────┘  └─────────────┘  └─────────────┘                   │
-└───────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Clients["Client Apps<br/>(Desktop, Mobile, Web - Electron, React Native)"]
+
+    Clients -->|"WebSocket / HTTPS"| EdgeLayer
+
+    subgraph EdgeLayer["Edge Layer"]
+        CDN["CloudFront CDN<br/>(Static Assets)"]
+        ALB["ALB / API Gateway<br/>(WebSocket & HTTP Routing)"]
+    end
+
+    EdgeLayer --> GatewayLayer
+
+    subgraph GatewayLayer["Gateway Layer"]
+        subgraph GatewayService["Gateway Service<br/>(WebSocket Management, Authentication)"]
+            GW1["Gateway 1"]
+            GW2["Gateway 2"]
+            GW3["Gateway 3"]
+            GW4["Gateway 4"]
+        end
+    end
+
+    GatewayLayer --> ServiceLayer
+
+    subgraph ServiceLayer["Service Layer"]
+        MsgSvc["Messaging Service"]
+        ChanSvc["Channel Service"]
+        UserSvc["User Service"]
+        SearchSvc["Search Service"]
+        FilesSvc["Files Service"]
+        PresenceSvc["Presence Service"]
+        NotifSvc["Notification Service"]
+        WorkspaceSvc["Workspace Service"]
+    end
+
+    ServiceLayer --> DataLayer
+
+    subgraph DataLayer["Data Layer"]
+        subgraph Vitess["Vitess (Sharded MySQL)"]
+            Shard1[("Shard 1<br/>Workspace A-D")]
+            Shard2[("Shard 2<br/>Workspace E-K")]
+            Shard3[("Shard 3<br/>Workspace L-R")]
+            Shard4[("Shard 4<br/>Workspace S-Z")]
+        end
+        Redis[("Redis<br/>(Pub/Sub, Sessions)")]
+        ES[("Elasticsearch<br/>(Search)")]
+        S3[("S3<br/>(Files)")]
+    end
 ```
 
 ---
 
 ## Real-Time Messaging Flow
 
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                        Message Send Flow                                   │
-│                                                                            │
-│   ┌────────┐      ┌─────────┐      ┌─────────────┐      ┌────────────┐   │
-│   │ Client │─────▶│ Gateway │─────▶│  Messaging  │─────▶│   Vitess   │   │
-│   │ (Send) │      │         │      │   Service   │      │  (Persist) │   │
-│   └────────┘      └─────────┘      └─────────────┘      └────────────┘   │
-│                                           │                               │
-│                                           ▼                               │
-│                                    ┌─────────────┐                        │
-│                                    │ Redis Pub/  │                        │
-│                                    │    Sub      │                        │
-│                                    └─────────────┘                        │
-│                                           │                               │
-│               ┌───────────────────────────┼───────────────────────────┐  │
-│               ▼                           ▼                           ▼  │
-│        ┌─────────┐                 ┌─────────┐                 ┌─────────┐│
-│        │ Gateway │                 │ Gateway │                 │ Gateway ││
-│        │    1    │                 │    2    │                 │    3    ││
-│        └─────────┘                 └─────────┘                 └─────────┘│
-│               │                           │                           │  │
-│               ▼                           ▼                           ▼  │
-│        ┌─────────┐                 ┌─────────┐                 ┌─────────┐│
-│        │ Client  │                 │ Client  │                 │ Client  ││
-│        │(Receive)│                 │(Receive)│                 │(Receive)││
-│        └─────────┘                 └─────────┘                 └─────────┘│
-└───────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    ClientSend["Client (Send)"]
+    Gateway["Gateway"]
+    MsgService["Messaging Service"]
+    Vitess[("Vitess (Persist)")]
+    RedisPubSub[("Redis Pub/Sub")]
+
+    ClientSend --> Gateway
+    Gateway --> MsgService
+    MsgService --> Vitess
+    MsgService --> RedisPubSub
+
+    RedisPubSub --> GW1["Gateway 1"]
+    RedisPubSub --> GW2["Gateway 2"]
+    RedisPubSub --> GW3["Gateway 3"]
+
+    GW1 --> Client1["Client (Receive)"]
+    GW2 --> Client2["Client (Receive)"]
+    GW3 --> Client3["Client (Receive)"]
 ```
 
 ### Gateway Service Implementation
@@ -337,35 +307,35 @@ class MessagePublisher:
 
 ## Message Storage with Vitess
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     Vitess Sharding Architecture                         │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                         VTGate                                    │  │
-│   │                   (Query Router & Planner)                        │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                  │                                       │
-│              ┌───────────────────┼───────────────────┐                  │
-│              ▼                   ▼                   ▼                  │
-│   ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐       │
-│   │    Keyspace:     │ │    Keyspace:     │ │    Keyspace:     │       │
-│   │    Workspace A   │ │    Workspace B   │ │    Workspace C   │       │
-│   │                  │ │                  │ │                  │       │
-│   │  ┌────────────┐  │ │  ┌────────────┐  │ │  ┌────────────┐  │       │
-│   │  │ VTTablet   │  │ │  │ VTTablet   │  │ │  │ VTTablet   │  │       │
-│   │  │  Primary   │  │ │  │  Primary   │  │ │  │  Primary   │  │       │
-│   │  └────────────┘  │ │  └────────────┘  │ │  └────────────┘  │       │
-│   │       │          │ │       │          │ │       │          │       │
-│   │  ┌────────────┐  │ │  ┌────────────┐  │ │  ┌────────────┐  │       │
-│   │  │ VTTablet   │  │ │  │ VTTablet   │  │ │  │ VTTablet   │  │       │
-│   │  │  Replica   │  │ │  │  Replica   │  │ │  │  Replica   │  │       │
-│   │  └────────────┘  │ │  └────────────┘  │ │  └────────────┘  │       │
-│   └──────────────────┘ └──────────────────┘ └──────────────────┘       │
-│                                                                          │
-│   Sharding Key: workspace_id                                            │
-│   Each workspace's data is isolated in its own keyspace/shard           │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    VTGate["VTGate<br/>(Query Router & Planner)"]
+
+    VTGate --> KSA
+    VTGate --> KSB
+    VTGate --> KSC
+
+    subgraph KSA["Keyspace: Workspace A"]
+        PrimaryA[("VTTablet Primary")]
+        ReplicaA[("VTTablet Replica")]
+        PrimaryA --> ReplicaA
+    end
+
+    subgraph KSB["Keyspace: Workspace B"]
+        PrimaryB[("VTTablet Primary")]
+        ReplicaB[("VTTablet Replica")]
+        PrimaryB --> ReplicaB
+    end
+
+    subgraph KSC["Keyspace: Workspace C"]
+        PrimaryC[("VTTablet Primary")]
+        ReplicaC[("VTTablet Replica")]
+        PrimaryC --> ReplicaC
+    end
+
+    Note["Sharding Key: workspace_id<br/>Each workspace's data is isolated in its own keyspace/shard"]
+
+    style Note fill:none,stroke:none
 ```
 
 ### Message Service Implementation
@@ -645,45 +615,29 @@ class ReactionService:
 
 ## Search Architecture
 
+```mermaid
+graph LR
+    subgraph Pipeline["Indexing Pipeline"]
+        MsgCreated["Message Created"] --> Kafka["Kafka"]
+        Kafka -->|"Async Processing"| IndexWorker["Index Worker"]
+        IndexWorker --> Transform["Transform<br/>- Tokenize<br/>- ACLs<br/>- Metadata"]
+        Transform --> ES[("Elasticsearch")]
+    end
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      Search Infrastructure                               │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                    Indexing Pipeline                              │  │
-│   │                                                                   │  │
-│   │   Message ──▶ Kafka ──▶ Index Worker ──▶ Elasticsearch          │  │
-│   │   Created           (Async Processing)                           │  │
-│   │                           │                                       │  │
-│   │                           ▼                                       │  │
-│   │                    ┌─────────────┐                               │  │
-│   │                    │  Transform  │                               │  │
-│   │                    │  - Tokenize │                               │  │
-│   │                    │  - ACLs     │                               │  │
-│   │                    │  - Metadata │                               │  │
-│   │                    └─────────────┘                               │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │              Elasticsearch Cluster (per region)                   │  │
-│   │                                                                   │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │                 Index: messages-{workspace}              │    │  │
-│   │   │                                                          │    │  │
-│   │   │   Fields:                                                │    │  │
-│   │   │   - content (text, analyzed)                            │    │  │
-│   │   │   - channel_id (keyword)                                │    │  │
-│   │   │   - user_id (keyword)                                   │    │  │
-│   │   │   - ts (date)                                           │    │  │
-│   │   │   - channel_members (keyword[], for ACL)                │    │  │
-│   │   │   - attachments.content (text, for file search)         │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │                                                                   │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │                 Index: files-{workspace}                 │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
+
+```
+Elasticsearch Cluster (per region)
+
+  Index: messages-{workspace}
+    Fields:
+    - content (text, analyzed)
+    - channel_id (keyword)
+    - user_id (keyword)
+    - ts (date)
+    - channel_members (keyword[], for ACL)
+    - attachments.content (text, for file search)
+
+  Index: files-{workspace}
 ```
 
 ### Search Service Implementation
@@ -1113,27 +1067,22 @@ class PresenceSubscriptionManager:
 
 ## File Upload Pipeline
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                       File Upload Flow                                   │
-│                                                                          │
-│   ┌────────┐     ┌────────────┐     ┌────────────┐     ┌─────────────┐ │
-│   │ Client │────▶│  Get URL   │────▶│  Upload    │────▶│   Process   │ │
-│   │        │     │  (Presign) │     │  (Direct)  │     │   (Async)   │ │
-│   └────────┘     └────────────┘     └────────────┘     └─────────────┘ │
-│                         │                 │                   │         │
-│                         ▼                 ▼                   ▼         │
-│                    API Service        S3 Bucket          Lambda/ECS    │
-│                                                                         │
-│   ┌────────────────────────────────────────────────────────────────┐   │
-│   │                      Processing Steps                           │   │
-│   │                                                                 │   │
-│   │   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐      │   │
-│   │   │  Virus   │  │ Generate │  │  Extract │  │  Index   │      │   │
-│   │   │   Scan   │  │ Thumbnail│  │   Text   │  │  Search  │      │   │
-│   │   └──────────┘  └──────────┘  └──────────┘  └──────────┘      │   │
-│   └────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    Client["Client"] -->|"Request Presigned URL"| API["API Service"]
+    API -->|"Presigned URL"| Client
+    Client -->|"Direct Upload"| S3[("S3 Bucket")]
+    S3 -->|"Trigger"| Processor["Lambda/ECS<br/>(Async Processing)"]
+
+    subgraph Processing["Processing Steps"]
+        VirusScan["Virus Scan"]
+        Thumbnail["Generate Thumbnail"]
+        ExtractText["Extract Text"]
+        IndexSearch["Index Search"]
+        VirusScan --> Thumbnail --> ExtractText --> IndexSearch
+    end
+
+    Processor --> Processing
 ```
 
 ### File Service Implementation
