@@ -326,8 +326,13 @@ jobs:
                     pattern: 'https://github.com/babushkai/system-design-patterns/edit/main/:path',
                     text: 'Edit this page on GitHub'
                   },
+                  docFooter: {
+                    prev: 'Previous',
+                    next: 'Next'
+                  },
+                  returnToTopLabel: 'Back to top',
                   footer: {
-                    message: 'Released under the MIT License.',
+                    message: 'Built with depth by the Babushkai community. Released under the MIT License.',
                     copyright: 'Copyright 2024-present Babushkai'
                   },
                 }
@@ -373,7 +378,7 @@ jobs:
           hero:
             name: "Babushk<span class='ai-accent'>a<span class='doll-i'>i</span></span>"
             text: "System Design Patterns"
-            tagline: A comprehensive guide to distributed systems - from fundamentals to production-ready patterns
+            tagline: 17 sections · 112 articles · patterns used at Netflix, Uber, Stripe & Discord
             image:
               src: /logo.svg
               alt: Babushkai
@@ -389,16 +394,21 @@ jobs:
             - icon:
                 src: /icons/foundations.svg
               title: Foundations
-              details: Master ACID transactions, CAP theorem, consistency models, and distributed time
+              details: ACID transactions, CAP theorem, consistency models, and distributed time
               link: /01-foundations/01-acid-transactions
             - icon:
                 src: /icons/database.svg
               title: Distributed Databases
-              details: Learn replication, partitioning, consensus algorithms, and distributed transactions
+              details: Replication, partitioning, consensus algorithms, and distributed transactions
               link: /02-distributed-databases/01-single-leader-replication
             - icon:
+                src: /icons/storage.svg
+              title: Storage Engines
+              details: B-trees, LSM trees, SSTables, write-ahead logging, and column storage
+              link: /03-storage-engines/01-b-trees
+            - icon:
                 src: /icons/caching.svg
-              title: Caching & Performance
+              title: Caching
               details: Cache strategies, invalidation patterns, and multi-tier caching architectures
               link: /04-caching/01-cache-strategies
             - icon:
@@ -412,20 +422,55 @@ jobs:
               details: Load balancing, sharding, rate limiting, circuit breakers, and backpressure
               link: /06-scaling/01-load-balancing
             - icon:
+                src: /icons/realtime.svg
+              title: Real-Time Systems
+              details: Polling, SSE, WebSockets, WebRTC, and presence systems
+              link: /07-real-time/01-polling
+            - icon:
                 src: /icons/casestudies.svg
               title: Case Studies
-              details: Learn from Twitter, Netflix, Uber, Stripe, Discord, and other tech giants
+              details: Architecture deep-dives into Twitter, Netflix, Uber, Stripe, and Discord
               link: /08-case-studies/01-twitter
+            - icon:
+                src: /icons/whitepapers.svg
+              title: Whitepapers
+              details: MapReduce, Dynamo, Spanner, Raft, Kafka, and Aurora paper summaries
+              link: /09-whitepapers/01-mapreduce
+            - icon:
+                src: /icons/security.svg
+              title: Security
+              details: Authentication, OAuth2, JWT, API security, zero trust, and encryption
+              link: /10-security/01-authentication-fundamentals
+            - icon:
+                src: /icons/observability.svg
+              title: Observability
+              details: Distributed tracing, metrics, monitoring, logging, and alerting
+              link: /11-observability/01-distributed-tracing
+            - icon:
+                src: /icons/servicemesh.svg
+              title: Service Mesh
+              details: Service discovery, API gateways, and the sidecar pattern
+              link: /12-service-mesh/01-service-discovery
+            - icon:
+                src: /icons/datapipelines.svg
+              title: Data Pipelines
+              details: Batch processing, stream processing, and lambda/kappa architectures
+              link: /13-data-pipelines/01-batch-processing
+            - icon:
+                src: /icons/search.svg
+              title: Search Systems
+              details: Inverted indexes, vector search, ranking algorithms, and typeahead
+              link: /14-search-systems/01-inverted-indexes
+            - icon:
+                src: /icons/deployment.svg
+              title: Deployment
+              details: Deployment strategies, blue-green, canary releases, and feature flags
+              link: /15-deployment/01-deployment-strategies
             - icon:
                 src: /icons/llm.svg
               title: LLM Systems
               details: Agents, RAG, prompt engineering, fine-tuning, and context management
               link: /16-llm-systems/01-agent-fundamentals
-            - icon:
-                src: /icons/search.svg
-              title: Search Systems
-              details: Vector search, ranking algorithms, relevance tuning, and typeahead
-              link: /14-search-systems/01-inverted-indexes
             - icon:
                 src: /icons/graphql.svg
               title: GraphQL
@@ -433,189 +478,70 @@ jobs:
               link: /17-graphql/01-graphql-fundamentals
           ---
 
-          <script setup>
-          import { withBase } from 'vitepress'
-          </script>
-
-          <div class="two-column-section">
-            <div class="navigation-column">
-              <h2>Quick Navigation</h2>
-              <div class="nav-grid">
-                <a :href="withBase('/01-foundations/01-acid-transactions')" class="nav-item">
-                  <img :src="withBase('/icons/foundations.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Foundations</span>
-                </a>
-                <a :href="withBase('/02-distributed-databases/01-single-leader-replication')" class="nav-item">
-                  <img :src="withBase('/icons/database.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Distributed DBs</span>
-                </a>
-                <a :href="withBase('/03-storage-engines/01-b-trees')" class="nav-item">
-                  <img :src="withBase('/icons/storage.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Storage Engines</span>
-                </a>
-                <a :href="withBase('/04-caching/01-cache-strategies')" class="nav-item">
-                  <img :src="withBase('/icons/caching.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Caching</span>
-                </a>
-                <a :href="withBase('/05-messaging/01-message-queues')" class="nav-item">
-                  <img :src="withBase('/icons/messaging.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Messaging</span>
-                </a>
-                <a :href="withBase('/06-scaling/01-load-balancing')" class="nav-item">
-                  <img :src="withBase('/icons/scaling.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Scaling</span>
-                </a>
-                <a :href="withBase('/07-real-time/01-polling')" class="nav-item">
-                  <img :src="withBase('/icons/realtime.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Real-Time</span>
-                </a>
-                <a :href="withBase('/08-case-studies/01-twitter')" class="nav-item">
-                  <img :src="withBase('/icons/casestudies.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Case Studies</span>
-                </a>
-                <a :href="withBase('/09-whitepapers/01-mapreduce')" class="nav-item">
-                  <img :src="withBase('/icons/whitepapers.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Whitepapers</span>
-                </a>
-                <a :href="withBase('/10-security/01-authentication-fundamentals')" class="nav-item">
-                  <img :src="withBase('/icons/security.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Security</span>
-                </a>
-                <a :href="withBase('/11-observability/01-distributed-tracing')" class="nav-item">
-                  <img :src="withBase('/icons/observability.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Observability</span>
-                </a>
-                <a :href="withBase('/12-service-mesh/01-service-discovery')" class="nav-item">
-                  <img :src="withBase('/icons/servicemesh.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Service Mesh</span>
-                </a>
-                <a :href="withBase('/13-data-pipelines/01-batch-processing')" class="nav-item">
-                  <img :src="withBase('/icons/datapipelines.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Data Pipelines</span>
-                </a>
-                <a :href="withBase('/14-search-systems/01-inverted-indexes')" class="nav-item">
-                  <img :src="withBase('/icons/search.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Search Systems</span>
-                </a>
-                <a :href="withBase('/15-deployment/01-deployment-strategies')" class="nav-item">
-                  <img :src="withBase('/icons/deployment.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">Deployment</span>
-                </a>
-                <a :href="withBase('/16-llm-systems/01-agent-fundamentals')" class="nav-item">
-                  <img :src="withBase('/icons/llm.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">LLM Systems</span>
-                </a>
-                <a :href="withBase('/17-graphql/01-graphql-fundamentals')" class="nav-item">
-                  <img :src="withBase('/icons/graphql.svg')" class="nav-icon" alt="" />
-                  <span class="nav-title">GraphQL</span>
-                </a>
-              </div>
+          <div class="home-stats-bar">
+            <div class="home-stat">
+              <span class="home-stat-num">17</span>
+              <span class="home-stat-label">Sections</span>
             </div>
-            <div class="about-column">
-              <h2>About Babushkai</h2>
-              <p>Like the layers of a Matryoshka doll, great systems are built layer by layer - each component nesting perfectly within the next.</p>
-              <p>This guide covers <strong>100+ patterns</strong> across distributed systems, from foundational concepts to production-ready architectures used by companies like Netflix, Uber, and Stripe.</p>
-              <div class="stats">
-                <div class="stat">
-                  <img :src="withBase('/icons/foundations.svg')" class="stat-icon" alt="" />
-                  <span class="stat-num">17</span>
-                  <span class="stat-label">Sections</span>
-                </div>
-                <div class="stat">
-                  <img :src="withBase('/icons/caching.svg')" class="stat-icon" alt="" />
-                  <span class="stat-num">100+</span>
-                  <span class="stat-label">Patterns</span>
-                </div>
-                <div class="stat">
-                  <img :src="withBase('/icons/casestudies.svg')" class="stat-icon" alt="" />
-                  <span class="stat-num">10</span>
-                  <span class="stat-label">Case Studies</span>
-                </div>
-              </div>
-              <div class="download-section">
-                <a href="https://github.com/babushkai/system-design-patterns/releases/latest" class="download-btn" target="_blank">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                  Download PDF/EPUB
-                </a>
-              </div>
+            <div class="home-stat">
+              <span class="home-stat-num">112</span>
+              <span class="home-stat-label">Articles</span>
+            </div>
+            <div class="home-stat">
+              <span class="home-stat-num">10</span>
+              <span class="home-stat-label">Case Studies</span>
+            </div>
+            <div class="home-stat">
+              <span class="home-stat-num">10</span>
+              <span class="home-stat-label">Whitepapers</span>
             </div>
           </div>
 
+          <p class="home-about">Like the layers of a Matryoshka doll, great systems are built layer by layer. 112 articles covering distributed systems fundamentals through production-ready architectures used at Netflix, Uber, Stripe, and Discord.</p>
+
+          <div class="home-download">
+            <a href="https://github.com/babushkai/system-design-patterns/releases/latest" class="download-btn" target="_blank">
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Download PDF/EPUB
+            </a>
+          </div>
+
           <style>
-          .two-column-section {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 3rem;
-            padding: 2rem 0;
-            margin: 2rem 0;
-            border-top: 1px solid var(--vp-c-divider);
-          }
-          @media (max-width: 768px) {
-            .two-column-section {
-              grid-template-columns: 1fr;
-            }
-          }
-          .navigation-column h2, .about-column h2 {
-            margin-bottom: 1.5rem;
-            color: var(--vp-c-brand-1);
-          }
-          .nav-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0.5rem;
-          }
-          .nav-item {
+          .home-stats-bar {
             display: flex;
             align-items: center;
-            padding: 0.5rem;
-            border-radius: 6px;
-            text-decoration: none;
-            color: var(--vp-c-text-1);
-            transition: background 0.2s;
+            justify-content: center;
+            gap: 3rem;
+            padding: 2.5rem 0;
+            border-top: 1px solid var(--vp-c-divider);
+            flex-wrap: wrap;
           }
-          .nav-item:hover {
-            background: var(--vp-c-brand-soft);
-          }
-          .nav-icon {
-            width: 24px;
-            height: 24px;
-            margin-right: 0.5rem;
-            flex-shrink: 0;
-          }
-          .nav-title {
-            font-size: 0.875rem;
-          }
-          .about-column p {
-            margin-bottom: 1rem;
-            line-height: 1.7;
-          }
-          .stats {
-            display: flex;
-            gap: 2rem;
-            margin-top: 1.5rem;
-          }
-          .stat {
+          .home-stat {
             text-align: center;
           }
-          .stat-icon {
-            width: 32px;
-            height: 32px;
-            margin-bottom: 0.25rem;
-          }
-          .stat-num {
+          .home-stat-num {
             display: block;
-            font-size: 2rem;
+            font-size: 2.5rem;
             font-weight: 700;
             color: var(--vp-c-brand-1);
+            line-height: 1;
           }
-          .stat-label {
+          .home-stat-label {
             font-size: 0.875rem;
             color: var(--vp-c-text-2);
+            margin-top: 0.25rem;
+            display: block;
           }
-          .download-section {
-            margin-top: 2rem;
-            padding-top: 1.5rem;
-            border-top: 1px solid var(--vp-c-divider);
+          .home-about {
+            text-align: center;
+            max-width: 640px;
+            margin: 0 auto 2rem;
+            color: var(--vp-c-text-2);
+            line-height: 1.8;
+          }
+          .home-download {
+            text-align: center;
+            padding-bottom: 3rem;
           }
           .download-btn {
             display: inline-flex;
@@ -638,6 +564,10 @@ jobs:
           }
           .download-btn svg {
             flex-shrink: 0;
+          }
+          @media (max-width: 640px) {
+            .home-stats-bar { gap: 1.5rem; }
+            .home-stat-num { font-size: 2rem; }
           }
           </style>
           HOMEPAGE
@@ -902,16 +832,23 @@ jobs:
           </svg>
           ICON_GRAPHQL
 
-          cat > public/icons/whitepapers.svg << 'ICON_WHITEPAPERS_NEW'
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
-            <path d="M12 4h18l10 10v30a2 2 0 01-2 2H12a2 2 0 01-2-2V6a2 2 0 012-2z" fill="#F8BBD9" stroke="#E91E63" stroke-width="2"/>
-            <path d="M30 4v10h10" fill="#E91E63"/>
-            <path d="M30 4l10 10" stroke="#E91E63" stroke-width="2"/>
-            <path d="M16 20h16M16 26h16M16 32h12" stroke="#E91E63" stroke-width="2" stroke-linecap="round"/>
-            <circle cx="36" cy="36" r="8" fill="#E91E63"/>
-            <path d="M33 36h6M36 33v6" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
-          </svg>
-          ICON_WHITEPAPERS_NEW
+          # Generate 404 page
+          cat > 404.md << 'NOTFOUND'
+          ---
+          layout: page
+          title: 404 - Page Not Found
+          ---
+          <script setup>
+          import { withBase } from 'vitepress'
+          </script>
+
+          <div class="not-found">
+            <img :src="withBase('/logo.svg')" alt="Babushkai" class="not-found-logo" />
+            <h1>404</h1>
+            <p>This layer of the doll doesn't exist yet.</p>
+            <a :href="withBase('/')" class="not-found-btn">Back to Home</a>
+          </div>
+          NOTFOUND
 
           # Generate custom theme CSS to match logo colors
           mkdir -p .vitepress/theme
@@ -970,8 +907,12 @@ jobs:
           THEME
 
           cat > .vitepress/theme/custom.css << 'CUSTOMCSS'
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
           /* Pink theme to match Matryoshka logo */
           :root {
+            --vp-font-family-base: 'Inter', sans-serif;
+            --vp-font-family-mono: 'JetBrains Mono', monospace;
             --vp-c-brand-1: #E91E63;
             --vp-c-brand-2: #D81B60;
             --vp-c-brand-3: #C2185B;
@@ -1005,18 +946,6 @@ jobs:
             --vp-button-brand-hover-border: #E91E63;
             --vp-button-brand-hover-text: #fff;
             --vp-button-brand-hover-bg: #E91E63;
-          }
-
-          /* Babushkai section styling */
-          .babushkai-section {
-            text-align: center;
-            padding: 2rem 0;
-            margin: 2rem 0;
-            border-top: 1px solid var(--vp-c-divider);
-          }
-
-          .babushkai-section strong {
-            color: var(--vp-c-brand-1);
           }
 
           /* AI accent styling in Babushkai - "i" as Matryoshka doll */
@@ -1216,7 +1145,61 @@ jobs:
             display: none !important;
           }
 
-          body { top: 0px !important; }
+          /* Nav accent border */
+          .VPNav {
+            border-bottom: 2px solid var(--vp-c-brand-1) !important;
+          }
+
+          /* 404 page */
+          .not-found {
+            text-align: center;
+            padding: 4rem 2rem;
+          }
+          .not-found-logo {
+            width: 80px;
+            margin-bottom: 2rem;
+          }
+          .not-found h1 {
+            font-size: 6rem;
+            font-weight: 700;
+            color: var(--vp-c-brand-1);
+            margin: 0;
+            line-height: 1;
+          }
+          .not-found p {
+            font-size: 1.25rem;
+            color: var(--vp-c-text-2);
+            margin: 1rem 0 2rem;
+          }
+          .not-found-btn {
+            display: inline-flex;
+            padding: 0.75rem 2rem;
+            background: #E91E63;
+            color: white;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: background 0.2s;
+          }
+          .not-found-btn:hover {
+            background: #D81B60;
+            color: white;
+          }
+
+          /* Feature cards 4-column grid on wide screens */
+          .VPFeatures .items {
+            display: grid !important;
+          }
+          @media (min-width: 960px) {
+            .VPFeatures .items {
+              grid-template-columns: repeat(4, 1fr) !important;
+            }
+          }
+          @media (min-width: 640px) and (max-width: 959px) {
+            .VPFeatures .items {
+              grid-template-columns: repeat(3, 1fr) !important;
+            }
+          }
           CUSTOMCSS
 
           echo "VitePress configuration generated successfully!"
