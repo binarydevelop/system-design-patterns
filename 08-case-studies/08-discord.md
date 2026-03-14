@@ -27,120 +27,72 @@ Discord serves 150M+ monthly active users with real-time voice, video, and text.
 
 ## High-Level Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Client Applications                             │
-│              (Desktop Electron, Mobile, Web Browser)                     │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                    WebSocket / WebRTC / HTTPS
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                             Edge Layer                                   │
-│                                                                          │
-│  ┌─────────────────────┐  ┌─────────────────────────────────────────┐  │
-│  │   Cloudflare CDN    │  │        Global Load Balancer             │  │
-│  │   (Static, API)     │  │     (Geographic, Anycast)               │  │
-│  └─────────────────────┘  └─────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      Gateway Layer (Elixir)                              │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │                    WebSocket Gateways                             │  │
-│  │                                                                   │  │
-│  │   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐            │  │
-│  │   │Gateway 1│  │Gateway 2│  │Gateway 3│  │Gateway 4│ ...        │  │
-│  │   │  100K   │  │  100K   │  │  100K   │  │  100K   │            │  │
-│  │   │  conns  │  │  conns  │  │  conns  │  │  conns  │            │  │
-│  │   └─────────┘  └─────────┘  └─────────┘  └─────────┘            │  │
-│  │                                                                   │  │
-│  │   Each gateway: Elixir/OTP for fault tolerance                   │  │
-│  │   Handles: Auth, compression, heartbeats, dispatch               │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Service Layer                                    │
-│                                                                          │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐    │
-│  │   Guild Service │  │   Message       │  │   Presence         │    │
-│  │   (Python)      │  │   Service (Rust)│  │   Service (Elixir) │    │
-│  └─────────────────┘  └─────────────────┘  └─────────────────────┘    │
-│                                                                          │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐    │
-│  │   Voice Server  │  │   Permission    │  │   Push             │    │
-│  │   (Rust/C++)    │  │   Service       │  │   Notification     │    │
-│  └─────────────────┘  └─────────────────┘  └─────────────────────┘    │
-│                                                                          │
-│  ┌─────────────────┐  ┌─────────────────┐                              │
-│  │   Media Proxy   │  │   Search        │                              │
-│  │   (Rust)        │  │   (Elasticsearch)                              │
-│  └─────────────────┘  └─────────────────┘                              │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Data Layer                                     │
-│                                                                          │
-│  ┌────────────────────────────────────────────────────────────────────┐│
-│  │                    Cassandra (Messages)                             ││
-│  │                                                                     ││
-│  │   Partitioned by: (channel_id, bucket)                             ││
-│  │   Bucket = time window (10 days)                                   ││
-│  │   Sorted by: message_id (Snowflake, time-ordered)                  ││
-│  └────────────────────────────────────────────────────────────────────┘│
-│                                                                          │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐    │
-│  │  PostgreSQL     │  │    Redis        │  │   ScyllaDB         │    │
-│  │  (Guilds,       │  │  (Sessions,     │  │  (Attachments,     │    │
-│  │   Users)        │  │   Pub/Sub)      │  │   Reactions)       │    │
-│  └─────────────────┘  └─────────────────┘  └─────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Clients["Client Applications<br/>(Desktop Electron, Mobile, Web Browser)"]
+
+    Clients -->|"WebSocket / WebRTC / HTTPS"| EdgeLayer
+
+    subgraph EdgeLayer["Edge Layer"]
+        CDN["Cloudflare CDN<br/>(Static, API)"]
+        GLB["Global Load Balancer<br/>(Geographic, Anycast)"]
+    end
+
+    EdgeLayer --> GW1 & GW2 & GW3 & GW4
+
+    subgraph GatewayLayer["Gateway Layer (Elixir)"]
+        subgraph WSGateways["WebSocket Gateways<br/>Each gateway: Elixir/OTP for fault tolerance<br/>Handles: Auth, compression, heartbeats, dispatch"]
+            GW1["Gateway 1<br/>100K conns"]
+            GW2["Gateway 2<br/>100K conns"]
+            GW3["Gateway 3<br/>100K conns"]
+            GW4["Gateway 4<br/>100K conns ..."]
+        end
+    end
+
+    GatewayLayer --> GuildSvc & MsgSvc & PresenceSvc
+
+    subgraph ServiceLayer["Service Layer"]
+        GuildSvc["Guild Service<br/>(Python)"]
+        MsgSvc["Message Service<br/>(Rust)"]
+        PresenceSvc["Presence Service<br/>(Elixir)"]
+        VoiceSvc["Voice Server<br/>(Rust/C++)"]
+        PermSvc["Permission Service"]
+        PushSvc["Push Notification"]
+        MediaProxy["Media Proxy<br/>(Rust)"]
+        SearchSvc["Search<br/>(Elasticsearch)"]
+    end
+
+    ServiceLayer --> DataLayer
+
+    subgraph DataLayer["Data Layer"]
+        Cassandra[("Cassandra (Messages)<br/>Partitioned by: channel_id, bucket<br/>Bucket = 10 days<br/>Sorted by: message_id (Snowflake)")]
+        Postgres[("PostgreSQL<br/>(Guilds, Users)")]
+        Redis[("Redis<br/>(Sessions, Pub/Sub)")]
+        ScyllaDB[("ScyllaDB<br/>(Attachments, Reactions)")]
+    end
 ```
 
 ---
 
 ## Gateway Architecture (Elixir)
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Elixir Gateway Architecture                           │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                    OTP Supervision Tree                           │  │
-│   │                                                                   │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │                  Gateway Supervisor                      │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │                              │                                    │  │
-│   │              ┌───────────────┼───────────────┐                   │  │
-│   │              ▼               ▼               ▼                   │  │
-│   │   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │  │
-│   │   │  Connection  │  │  Connection  │  │  Connection  │ ...      │  │
-│   │   │  Supervisor  │  │  Supervisor  │  │  Supervisor  │          │  │
-│   │   └──────────────┘  └──────────────┘  └──────────────┘          │  │
-│   │          │                   │                   │               │  │
-│   │          ▼                   ▼                   ▼               │  │
-│   │   ┌───────────┐       ┌───────────┐       ┌───────────┐         │  │
-│   │   │ Session 1 │       │ Session 2 │       │ Session 3 │ ...     │  │
-│   │   │ (GenServer)│      │ (GenServer)│      │ (GenServer)│         │  │
-│   │   └───────────┘       └───────────┘       └───────────┘         │  │
-│   │                                                                   │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│   Benefits of Elixir/OTP:                                               │
-│   - Millions of lightweight processes                                   │
-│   - Supervision for fault tolerance                                     │
-│   - Hot code upgrades                                                   │
-│   - Built-in distributed messaging                                      │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph ElixirGateway["Elixir Gateway Architecture"]
+        subgraph OTP["OTP Supervision Tree"]
+            GWSup["Gateway Supervisor"]
+
+            GWSup --> ConnSup1["Connection Supervisor"]
+            GWSup --> ConnSup2["Connection Supervisor"]
+            GWSup --> ConnSup3["Connection Supervisor ..."]
+
+            ConnSup1 --> S1["Session 1<br/>(GenServer)"]
+            ConnSup2 --> S2["Session 2<br/>(GenServer)"]
+            ConnSup3 --> S3["Session 3<br/>(GenServer) ..."]
+        end
+
+        Benefits["Benefits of Elixir/OTP:<br/>- Millions of lightweight processes<br/>- Supervision for fault tolerance<br/>- Hot code upgrades<br/>- Built-in distributed messaging"]
+    end
 ```
 
 ### Gateway Implementation
@@ -657,60 +609,30 @@ impl MessageService {
 
 ## Voice Architecture
 
+```mermaid
+graph TD
+    subgraph VoiceRegion["Voice Region Selection<br/>Regions: us-west, us-east, eu-west, eu-central, brazil, sydney, singapore, japan"]
+        ClientLoc["Client Location"] --> NearestRegion["Nearest Voice Region"] --> VS["Voice Server"]
+    end
+
+    subgraph SFU["SFU (Selective Forwarding Unit)"]
+        UserA_in["User A"] --> VoiceServer["Voice Server<br/>Mixes audio for each recipient (server-side)"]
+        UserB_in["User B"] --> VoiceServer
+        UserC_in["User C"] --> VoiceServer
+        VoiceServer --> UserA_out["User A"]
+        VoiceServer --> UserB_out["User B"]
+        VoiceServer --> UserC_out["User C"]
+    end
+
+    SFUBenefits["Benefits vs P2P mesh:<br/>- Scales to many participants<br/>- Bandwidth efficient (upload once)<br/>- Enables moderation<br/>- Consistent quality"]
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Voice Server Architecture                         │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                    Voice Region Selection                         │  │
-│   │                                                                   │  │
-│   │   Client Location ──▶ Nearest Voice Region ──▶ Voice Server     │  │
-│   │                                                                   │  │
-│   │   Regions: us-west, us-east, eu-west, eu-central,               │  │
-│   │            brazil, sydney, singapore, japan, etc.                │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                    SFU (Selective Forwarding Unit)                │  │
-│   │                                                                   │  │
-│   │   User A ──┐                    ┌──▶ User A                      │  │
-│   │   User B ──┼──▶ Voice Server ───┼──▶ User B                      │  │
-│   │   User C ──┘        │           └──▶ User C                      │  │
-│   │                     │                                             │  │
-│   │            ┌────────┴────────┐                                   │  │
-│   │            │ Mixes audio for │                                   │  │
-│   │            │ each recipient  │                                   │  │
-│   │            │ (server-side)   │                                   │  │
-│   │            └─────────────────┘                                   │  │
-│   │                                                                   │  │
-│   │   Benefits vs P2P mesh:                                          │  │
-│   │   - Scales to many participants                                  │  │
-│   │   - Bandwidth efficient (upload once)                            │  │
-│   │   - Enables moderation                                           │  │
-│   │   - Consistent quality                                           │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                    Protocol Stack                                 │  │
-│   │                                                                   │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │                    Application                           │    │  │
-│   │   │           (Opus Audio / VP8 Video Codec)                 │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │                       RTP/RTCP                           │    │  │
-│   │   │              (Real-time Transport Protocol)              │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │                       DTLS-SRTP                          │    │  │
-│   │   │                     (Encryption)                         │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │                      UDP/WebRTC                          │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+
+**Protocol Stack:**
+
+- Application (Opus Audio / VP8 Video Codec)
+- RTP/RTCP (Real-time Transport Protocol)
+- DTLS-SRTP (Encryption)
+- UDP/WebRTC
 
 ### Voice Server Implementation
 

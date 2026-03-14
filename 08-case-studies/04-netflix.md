@@ -27,95 +27,72 @@ Netflix streams video to 230M+ subscribers across 190+ countries. The architectu
 
 ## High-Level Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Client Devices                                 │
-│         (Smart TV, Mobile, Web, Gaming Console, Set-top Box)            │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                            AWS Edge (CloudFront)                         │
-│                     API Gateway, Authentication, Routing                 │
-└─────────────────────────────────────────────────────────────────────────┘
-                    │                               │
-                    ▼                               ▼
-┌──────────────────────────────────┐  ┌────────────────────────────────────┐
-│        Control Plane (AWS)        │  │    Data Plane (Open Connect CDN)   │
-│                                   │  │                                    │
-│  ┌─────────────┐ ┌─────────────┐ │  │  ┌─────────────────────────────┐  │
-│  │   API       │ │  Playback   │ │  │  │    Open Connect Appliances   │  │
-│  │  Services   │ │  Service    │ │  │  │    (ISP Embedded Caches)     │  │
-│  └─────────────┘ └─────────────┘ │  │  └─────────────────────────────┘  │
-│                                   │  │                │                  │
-│  ┌─────────────┐ ┌─────────────┐ │  │  ┌─────────────────────────────┐  │
-│  │   User      │ │ Recommend-  │ │  │  │     Internet Exchange        │  │
-│  │  Profile    │ │   ation     │ │  │  │     Point (IXP) Caches       │  │
-│  └─────────────┘ └─────────────┘ │  │  └─────────────────────────────┘  │
-│                                   │  │                │                  │
-│  ┌─────────────┐ ┌─────────────┐ │  │  ┌─────────────────────────────┐  │
-│  │   Search    │ │  A/B Test   │ │  │  │      AWS S3 Origin           │  │
-│  │  Service    │ │   Engine    │ │  │  │   (Master Video Storage)     │  │
-│  └─────────────┘ └─────────────┘ │  │  └─────────────────────────────┘  │
-└──────────────────────────────────┘  └────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                            Data Layer                                    │
-│                                                                          │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌─────────────────┐   │
-│  │ Cassandra  │  │   MySQL    │  │  EVCache   │  │   Elasticsearch  │   │
-│  │ (Viewing   │  │ (Billing,  │  │ (Session,  │  │    (Search)      │   │
-│  │  History)  │  │  Accounts) │  │  Metadata) │  │                  │   │
-│  └────────────┘  └────────────┘  └────────────┘  └─────────────────┘   │
-│                                                                          │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐                        │
-│  │   Kafka    │  │  Flink     │  │   Spark    │                        │
-│  │ (Events)   │  │ (Realtime) │  │  (Batch)   │                        │
-│  └────────────┘  └────────────┘  └────────────┘                        │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Clients["Client Devices<br/>(Smart TV, Mobile, Web, Gaming Console, Set-top Box)"]
+    Edge["AWS Edge (CloudFront)<br/>API Gateway, Authentication, Routing"]
+
+    Clients --> Edge
+    Edge --> CP
+    Edge --> DP
+
+    subgraph CP["Control Plane (AWS)"]
+        API[API Services]
+        Playback[Playback Service]
+        UserProfile[User Profile]
+        Rec[Recommendation]
+        Search[Search Service]
+        ABTest[A/B Test Engine]
+    end
+
+    subgraph DP["Data Plane (Open Connect CDN)"]
+        OCA[Open Connect Appliances<br/>ISP Embedded Caches]
+        IXP[IXP Caches]
+        S3Origin[("AWS S3 Origin<br/>Master Video Storage")]
+        OCA --> IXP --> S3Origin
+    end
+
+    CP --> DataLayer
+
+    subgraph DataLayer["Data Layer"]
+        Cassandra[("Cassandra<br/>Viewing History")]
+        MySQL[("MySQL<br/>Billing, Accounts")]
+        EVCache[("EVCache<br/>Session, Metadata")]
+        ES[("Elasticsearch<br/>Search")]
+        Kafka[Kafka<br/>Events]
+        Flink[Flink<br/>Realtime]
+        Spark[Spark<br/>Batch]
+    end
 ```
 
 ---
 
 ## Content Ingestion Pipeline
 
-```
-┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-│   Studio    │──▶│   Ingest    │──▶│  Validate   │──▶│   Encode    │
-│   Upload    │   │   Service   │   │   (QC)      │   │  Pipeline   │
-└─────────────┘   └─────────────┘   └─────────────┘   └─────────────┘
-                                                            │
-                          ┌─────────────────────────────────┘
-                          ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Encoding Farm (Cosmos)                            │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                    Per-Title Encoding                             │  │
-│   │                                                                   │  │
-│   │  Source ──▶ Shot Detection ──▶ Complexity Analysis ──▶ Encode    │  │
-│   │                                                                   │  │
-│   │  Output: Optimized bitrate ladder per title                      │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐      │
-│   │  H.264  │  │  H.265  │  │   VP9   │  │   AV1   │  │ Dolby   │      │
-│   │  1080p  │  │  4K HDR │  │  4K     │  │  4K     │  │ Vision  │      │
-│   └─────────┘  └─────────┘  └─────────┘  └─────────┘  └─────────┘      │
-└─────────────────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      Open Connect Distribution                           │
-│                                                                          │
-│   ┌────────────┐     ┌────────────┐     ┌────────────┐                  │
-│   │   S3       │────▶│   Fill     │────▶│   OCA      │                  │
-│   │  Origin    │     │  Service   │     │  (ISP/IXP) │                  │
-│   └────────────┘     └────────────┘     └────────────┘                  │
-│                                                                          │
-│   Popular content pre-positioned during off-peak hours                   │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    Upload[Studio Upload] --> Ingest[Ingest Service] --> Validate["Validate (QC)"] --> Encode[Encode Pipeline]
+
+    Encode --> Cosmos
+
+    subgraph Cosmos["Encoding Farm (Cosmos)"]
+        direction LR
+        subgraph PerTitle["Per-Title Encoding"]
+            Source[Source] --> ShotDet[Shot Detection] --> Complex[Complexity Analysis] --> EncodeStep[Encode]
+        end
+        EncodeStep --> H264[H.264 1080p]
+        EncodeStep --> H265[H.265 4K HDR]
+        EncodeStep --> VP9[VP9 4K]
+        EncodeStep --> AV1[AV1 4K]
+        EncodeStep --> Dolby[Dolby Vision]
+    end
+
+    Cosmos --> Dist
+
+    subgraph Dist["Open Connect Distribution"]
+        direction LR
+        S3[("S3 Origin")] --> Fill[Fill Service] --> OCA[OCA<br/>ISP/IXP]
+    end
 ```
 
 ### Encoding Service Implementation
@@ -294,37 +271,32 @@ class EncodingOrchestrator:
 
 ## Adaptive Bitrate Streaming
 
+```mermaid
+graph TD
+    subgraph ABR["Client-Side ABR Algorithm"]
+        subgraph BW["Bandwidth Estimation"]
+            DL[Download Time] --> Throughput
+            Throughput --> Smoothed[Smoothed Estimate]
+            DL --> Samples[Recent Samples]
+            Smoothed --> WA[Weighted Average]
+        end
+
+        BW --> Selection
+
+        subgraph Selection["Buffer-Based Selection"]
+            BufLevel[Buffer Level] --> Decision{Quality Decision}
+            BWEst[Bandwidth Estimate] --> Decision
+        end
+    end
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                    Client-Side ABR Algorithm                            │
-│                                                                         │
-│   ┌───────────────────────────────────────────────────────────────┐    │
-│   │                    Bandwidth Estimation                        │    │
-│   │                                                                │    │
-│   │   Download Time ──▶ Throughput ──▶ Smoothed Estimate          │    │
-│   │        │                              │                        │    │
-│   │        ▼                              ▼                        │    │
-│   │   ┌─────────┐                  ┌─────────────┐                │    │
-│   │   │ Recent  │                  │  Weighted   │                │    │
-│   │   │ Samples │                  │   Average   │                │    │
-│   │   └─────────┘                  └─────────────┘                │    │
-│   └───────────────────────────────────────────────────────────────┘    │
-│                              │                                          │
-│                              ▼                                          │
-│   ┌───────────────────────────────────────────────────────────────┐    │
-│   │                    Buffer-Based Selection                      │    │
-│   │                                                                │    │
-│   │   Buffer Level    Bandwidth Estimate    Quality Selection     │    │
-│   │       │                  │                    │                │    │
-│   │       ▼                  ▼                    ▼                │    │
-│   │   ┌─────────┐      ┌─────────┐         ┌─────────────┐        │    │
-│   │   │ < 10s   │  +   │ Low     │   ──▶   │ Lower Qual  │        │    │
-│   │   │ 10-30s  │  +   │ Medium  │   ──▶   │ Maintain    │        │    │
-│   │   │ > 30s   │  +   │ High    │   ──▶   │ Upgrade     │        │    │
-│   │   └─────────┘      └─────────┘         └─────────────┘        │    │
-│   └───────────────────────────────────────────────────────────────┘    │
-└────────────────────────────────────────────────────────────────────────┘
-```
+
+**Buffer-Based Quality Selection**
+
+| Buffer Level | Bandwidth Estimate | Quality Selection |
+|---|---|---|
+| < 10s | Low | Lower Quality |
+| 10-30s | Medium | Maintain |
+| > 30s | High | Upgrade |
 
 ### ABR Client Implementation
 
@@ -513,57 +485,40 @@ class NetflixABRController {
 
 ## Open Connect CDN Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Open Connect Architecture                         │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                          Control Plane                            │  │
-│   │                                                                   │  │
-│   │   ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │  │
-│   │   │   Steering   │  │    Fill     │  │    Health Monitoring    │ │  │
-│   │   │   Service    │  │   Service   │  │                         │ │  │
-│   │   └─────────────┘  └─────────────┘  └─────────────────────────┘ │  │
-│   │                                                                   │  │
-│   │   Determines which OCA serves each client request                 │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                          Data Plane                               │  │
-│   │                                                                   │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │                Tier 1: ISP Embedded                      │    │  │
-│   │   │                                                          │    │  │
-│   │   │    ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐         │    │  │
-│   │   │    │ OCA │  │ OCA │  │ OCA │  │ OCA │  │ OCA │ ...     │    │  │
-│   │   │    │Comcast│ │ AT&T│  │ NTT │  │ BT  │  │Telstra│       │    │  │
-│   │   │    └─────┘  └─────┘  └─────┘  └─────┘  └─────┘         │    │  │
-│   │   │                                                          │    │  │
-│   │   │    Closest to users, serves ~95% of traffic             │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │                              │                                    │  │
-│   │                              ▼                                    │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │              Tier 2: Internet Exchange Points            │    │  │
-│   │   │                                                          │    │  │
-│   │   │    ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐              │    │  │
-│   │   │    │DE-CIX│  │ AMS-IX│ │LINX  │  │ Equinix│ ...        │    │  │
-│   │   │    └──────┘  └──────┘  └──────┘  └──────┘              │    │  │
-│   │   │                                                          │    │  │
-│   │   │    Regional fallback, fills ISP caches                   │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │                              │                                    │  │
-│   │                              ▼                                    │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │                  Tier 3: AWS Origin                      │    │  │
-│   │   │                                                          │    │  │
-│   │   │    ┌──────────────────────────────────────────────┐     │    │  │
-│   │   │    │                   S3                          │     │    │  │
-│   │   │    │         (Complete Content Library)            │     │    │  │
-│   │   │    └──────────────────────────────────────────────┘     │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph OC["Open Connect Architecture"]
+        subgraph CtrlPlane["Control Plane"]
+            Steering[Steering Service]
+            FillSvc[Fill Service]
+            Health[Health Monitoring]
+        end
+
+        CtrlPlane --> DataPlane
+
+        subgraph DataPlane["Data Plane"]
+            subgraph Tier1["Tier 1: ISP Embedded<br/>~95% of traffic"]
+                Comcast[OCA Comcast]
+                ATT[OCA AT&T]
+                NTT[OCA NTT]
+                BT[OCA BT]
+                Telstra[OCA Telstra]
+            end
+
+            subgraph Tier2["Tier 2: Internet Exchange Points<br/>Regional fallback"]
+                DECIX[DE-CIX]
+                AMSIX[AMS-IX]
+                LINX[LINX]
+                Equinix[Equinix]
+            end
+
+            subgraph Tier3["Tier 3: AWS Origin"]
+                S3[("S3<br/>Complete Content Library")]
+            end
+
+            Tier1 --> Tier2 --> Tier3
+        end
+    end
 ```
 
 ### Steering Service Implementation
@@ -775,53 +730,38 @@ class FillService:
 
 ## Recommendation System
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     Netflix Recommendation System                        │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                      Data Collection                              │  │
-│   │                                                                   │  │
-│   │   Viewing History ──┐                                            │  │
-│   │   Search Queries ───┼──▶ Kafka ──▶ Flink ──▶ Feature Store      │  │
-│   │   Browse Behavior ──┤                                            │  │
-│   │   Ratings/Thumbs ───┘                                            │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                      │                                   │
-│                                      ▼                                   │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                     Model Training (Offline)                      │  │
-│   │                                                                   │  │
-│   │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │  │
-│   │   │ Collaborative │ │   Content   │  │   Deep     │             │  │
-│   │   │   Filtering   │  │   Based    │  │  Learning  │             │  │
-│   │   └─────────────┘  └─────────────┘  └─────────────┘             │  │
-│   │          │                │                │                      │  │
-│   │          └────────────────┼────────────────┘                      │  │
-│   │                           ▼                                       │  │
-│   │                    Ensemble Model                                 │  │
-│   │                           │                                       │  │
-│   │                           ▼                                       │  │
-│   │                    Model Registry                                 │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                      │                                   │
-│                                      ▼                                   │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                    Serving Layer (Online)                         │  │
-│   │                                                                   │  │
-│   │   User Request ──▶ Feature Fetch ──▶ Model Inference             │  │
-│   │                          │                 │                      │  │
-│   │                          ▼                 ▼                      │  │
-│   │                    ┌───────────┐    ┌───────────┐                │  │
-│   │                    │ EVCache   │    │  GPU      │                │  │
-│   │                    │ (User     │    │ Inference │                │  │
-│   │                    │  Features)│    │  Cluster  │                │  │
-│   │                    └───────────┘    └───────────┘                │  │
-│   │                                          │                        │  │
-│   │                                          ▼                        │  │
-│   │                              Personalized Rows                    │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph RecSys["Netflix Recommendation System"]
+        subgraph Collection["Data Collection"]
+            Views[Viewing History] --> Kafka[Kafka]
+            Searches[Search Queries] --> Kafka
+            Browse[Browse Behavior] --> Kafka
+            Ratings[Ratings/Thumbs] --> Kafka
+            Kafka --> Flink[Flink] --> FeatureStore[("Feature Store")]
+        end
+
+        Collection --> Training
+
+        subgraph Training["Model Training (Offline)"]
+            CF[Collaborative Filtering]
+            CB[Content Based]
+            DL[Deep Learning]
+            CF --> Ensemble[Ensemble Model]
+            CB --> Ensemble
+            DL --> Ensemble
+            Ensemble --> Registry[("Model Registry")]
+        end
+
+        Training --> Serving
+
+        subgraph Serving["Serving Layer (Online)"]
+            Request[User Request] --> Fetch[Feature Fetch] --> Inference[Model Inference]
+            Fetch --> EVCache[("EVCache<br/>User Features")]
+            Inference --> GPU[GPU Inference Cluster]
+            GPU --> Rows[Personalized Rows]
+        end
+    end
 ```
 
 ### Recommendation Service Implementation

@@ -27,69 +27,39 @@ Google Maps serves 1B+ monthly users with mapping, navigation, and location serv
 
 ## High-Level Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Client Applications                             │
-│              (Web, Android, iOS, Embedded, 3rd Party APIs)              │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                         HTTPS / gRPC
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                             Edge Layer                                   │
-│                                                                          │
-│  ┌─────────────────────┐  ┌─────────────────────────────────────────┐  │
-│  │   Global CDN        │  │       API Gateway / Load Balancer       │  │
-│  │  (Tile Caching)     │  │                                         │  │
-│  └─────────────────────┘  └─────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Service Layer                                   │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │                      Tile Service                                 │  │
-│  │   - Vector tile generation                                       │  │
-│  │   - Raster tile rendering                                        │  │
-│  │   - Level-of-detail management                                   │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐    │
-│  │   Routing       │  │   Geocoding     │  │   Places           │    │
-│  │   Service       │  │   Service       │  │   Service          │    │
-│  └─────────────────┘  └─────────────────┘  └─────────────────────┘    │
-│                                                                          │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐    │
-│  │   Traffic       │  │   ETA           │  │   Street View      │    │
-│  │   Service       │  │   Prediction    │  │   Service          │    │
-│  └─────────────────┘  └─────────────────┘  └─────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Data Layer                                     │
-│                                                                          │
-│  ┌────────────────────────────────────────────────────────────────────┐│
-│  │                        Road Graph                                   ││
-│  │                                                                     ││
-│  │   - Billions of road segments                                      ││
-│  │   - Pre-computed contraction hierarchies                           ││
-│  │   - Real-time edge weight updates (traffic)                        ││
-│  └────────────────────────────────────────────────────────────────────┘│
-│                                                                          │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐    │
-│  │  Bigtable       │  │  Spanner        │  │  Colossus           │    │
-│  │  (Place Data)   │  │  (Transactions) │  │  (Map Data, Images) │    │
-│  └─────────────────┘  └─────────────────┘  └─────────────────────┘    │
-│                                                                          │
-│  ┌─────────────────┐  ┌─────────────────┐                              │
-│  │  S2 Geometry    │  │  Traffic        │                              │
-│  │  Index          │  │  Aggregation    │                              │
-│  └─────────────────┘  └─────────────────┘                              │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Client["Client Applications<br/>(Web, Android, iOS, Embedded, 3rd Party APIs)"]
+
+    Client -->|"HTTPS / gRPC"| EdgeLayer
+
+    subgraph EdgeLayer["Edge Layer"]
+        CDN["Global CDN<br/>(Tile Caching)"]
+        APIGW["API Gateway / Load Balancer"]
+    end
+
+    EdgeLayer --> ServiceLayer
+
+    subgraph ServiceLayer["Service Layer"]
+        TileSvc["Tile Service<br/>- Vector tile generation<br/>- Raster tile rendering<br/>- Level-of-detail management"]
+        RoutingSvc["Routing Service"]
+        GeocodingSvc["Geocoding Service"]
+        PlacesSvc["Places Service"]
+        TrafficSvc["Traffic Service"]
+        ETASvc["ETA Prediction"]
+        StreetViewSvc["Street View Service"]
+    end
+
+    ServiceLayer --> DataLayer
+
+    subgraph DataLayer["Data Layer"]
+        RoadGraph[("Road Graph<br/>- Billions of road segments<br/>- Pre-computed contraction hierarchies<br/>- Real-time edge weight updates")]
+        Bigtable[("Bigtable<br/>(Place Data)")]
+        Spanner[("Spanner<br/>(Transactions)")]
+        Colossus[("Colossus<br/>(Map Data, Images)")]
+        S2[("S2 Geometry Index")]
+        TrafficAgg[("Traffic Aggregation")]
+    end
 ```
 
 ---
@@ -350,39 +320,36 @@ class TilePrefetcher:
 
 ## Routing with Contraction Hierarchies
 
+**Original Graph:**
+
+```mermaid
+graph LR
+    A -->|"5"| B
+    B -->|"3"| C
+    A -->|"2"| D
+    B -->|"4"| E
+    C -->|"6"| F
+    D -->|"7"| E
+    E -->|"2"| F
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Contraction Hierarchies                               │
-│                                                                          │
-│   Original Graph:                                                       │
-│   ┌─────────────────────────────────────────────────────────────────┐   │
-│   │       A ──5── B ──3── C                                         │   │
-│   │       │       │       │                                         │   │
-│   │       2       4       6                                         │   │
-│   │       │       │       │                                         │   │
-│   │       D ──7── E ──2── F                                         │   │
-│   └─────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│   After Contraction (shortcuts added):                                  │
-│   ┌─────────────────────────────────────────────────────────────────┐   │
-│   │       A ══════════9══════════ C   (shortcut via B)             │   │
-│   │       │                       │                                 │   │
-│   │       ║                       ║                                 │   │
-│   │       ║                       ║                                 │   │
-│   │       D ══════════════════12══ F   (multiple shortcuts)        │   │
-│   │                                                                  │   │
-│   │   Lower nodes contracted, shortcuts preserve distances          │   │
-│   └─────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│   Query: Bidirectional search, always go UP in hierarchy               │
-│   - Forward search from source (upward only)                            │
-│   - Backward search from target (upward only)                           │
-│   - Meet in the middle at high-importance node                          │
-│   - Unpack shortcuts to get actual path                                 │
-│                                                                          │
-│   Performance: O(log n) instead of O(n) for Dijkstra                   │
-└─────────────────────────────────────────────────────────────────────────┘
+
+**After Contraction (shortcuts added):**
+
+```mermaid
+graph LR
+    A ==>|"9 (shortcut via B)"| C
+    A -->|"2"| D
+    C -->|"6"| F
+    D ==>|"12 (multiple shortcuts)"| F
 ```
+
+> **Query:** Bidirectional search, always go UP in hierarchy
+> - Forward search from source (upward only)
+> - Backward search from target (upward only)
+> - Meet in the middle at high-importance node
+> - Unpack shortcuts to get actual path
+>
+> **Performance:** O(log n) instead of O(n) for Dijkstra
 
 ### Routing Service Implementation
 
@@ -685,50 +652,35 @@ class AlternativeRouteFinder:
 
 ## Real-Time Traffic
 
+```mermaid
+graph TD
+    subgraph Sources["Data Sources"]
+        Android["Android Devices"]
+        iOS["iOS Devices"]
+        Waze["Waze Reports"]
+    end
+
+    Android --> Stream
+    iOS --> Stream
+    Waze --> Stream
+    Stream["Location Updates Stream<br/>(Anonymized lat/lng, speed, heading)"]
+
+    Stream --> RawGPS["Raw GPS"]
+    RawGPS --> MapMatch["Map Match"]
+    MapMatch --> SpeedAgg["Speed Aggregate"]
+    SpeedAgg --> SegSpeed["Segment Speed"]
+
+    SegSpeed --> Output["Traffic Layer Output"]
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Traffic Data Pipeline                                 │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                    Data Sources                                   │  │
-│   │                                                                   │  │
-│   │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │  │
-│   │   │   Android   │  │    iOS      │  │   Waze      │             │  │
-│   │   │   Devices   │  │   Devices   │  │   Reports   │             │  │
-│   │   └─────────────┘  └─────────────┘  └─────────────┘             │  │
-│   │          │                │                │                      │  │
-│   │          └────────────────┼────────────────┘                      │  │
-│   │                           ▼                                       │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │              Location Updates Stream                     │    │  │
-│   │   │         (Anonymized lat/lng, speed, heading)            │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                      │                                   │
-│                                      ▼                                   │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                    Processing Pipeline                            │  │
-│   │                                                                   │  │
-│   │   Raw GPS ──▶ Map Match ──▶ Speed Aggregate ──▶ Segment Speed   │  │
-│   │                                                                   │  │
-│   │   Map Matching: Snap GPS points to road segments                 │  │
-│   │   Aggregation: Average speeds per segment per time window        │  │
-│   │   Output: Speed vs. free-flow ratio per road segment             │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                      │                                   │
-│                                      ▼                                   │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                    Traffic Layer Output                           │  │
-│   │                                                                   │  │
-│   │   Speed Ratio      Color           Edge Weight Multiplier        │  │
-│   │   ─────────────────────────────────────────────────────────      │  │
-│   │   > 0.8            Green           1.0 (free flow)               │  │
-│   │   0.5 - 0.8        Yellow          1.3                           │  │
-│   │   0.25 - 0.5       Orange          2.0                           │  │
-│   │   < 0.25           Red             3.0+ (severe congestion)      │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+
+**Traffic Layer Output:**
+
+| Speed Ratio | Color  | Edge Weight Multiplier     |
+|-------------|--------|----------------------------|
+| > 0.8       | Green  | 1.0 (free flow)            |
+| 0.5 - 0.8   | Yellow | 1.3                        |
+| 0.25 - 0.5  | Orange | 2.0                        |
+| < 0.25      | Red    | 3.0+ (severe congestion)   |
 
 ### Traffic Service Implementation
 

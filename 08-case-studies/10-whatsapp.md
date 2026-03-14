@@ -27,118 +27,83 @@ WhatsApp delivers 100B+ messages daily to 2B+ users with end-to-end encryption. 
 
 ## High-Level Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Mobile Clients                                  │
-│              (iOS, Android, WhatsApp Web via linking)                   │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                    TCP (XMPP-based proprietary protocol)
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Edge Layer                                     │
-│                                                                          │
-│  ┌─────────────────────┐  ┌─────────────────────────────────────────┐  │
-│  │   DNS-based Load    │  │     TCP Load Balancer (L4)              │  │
-│  │   Balancing         │  │     (Direct Server Return)              │  │
-│  └─────────────────────┘  └─────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Chat Servers (Erlang/BEAM)                            │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │                    Connection Handlers                            │  │
-│  │                                                                   │  │
-│  │   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐            │  │
-│  │   │  Node 1 │  │  Node 2 │  │  Node 3 │  │  Node 4 │ ...        │  │
-│  │   │  2M+    │  │  2M+    │  │  2M+    │  │  2M+    │            │  │
-│  │   │ conns   │  │ conns   │  │ conns   │  │ conns   │            │  │
-│  │   └─────────┘  └─────────┘  └─────────┘  └─────────┘            │  │
-│  │                                                                   │  │
-│  │   Each connection: 1 Erlang process (~2KB memory)                │  │
-│  │   Message routing via distributed Erlang                         │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Service Layer                                   │
-│                                                                          │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐    │
-│  │   Offline       │  │   Group         │  │   Media            │    │
-│  │   Message Queue │  │   Management    │  │   Service          │    │
-│  └─────────────────┘  └─────────────────┘  └─────────────────────┘    │
-│                                                                          │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐    │
-│  │   Push          │  │   Last Seen     │  │   Key              │    │
-│  │   Service       │  │   Service       │  │   Distribution     │    │
-│  └─────────────────┘  └─────────────────┘  └─────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Data Layer                                     │
-│                                                                          │
-│  ┌───────────────────────────────────────────────────────────────────┐ │
-│  │                    Mnesia (Erlang native)                          │ │
-│  │          - User sessions, routing tables, presence                 │ │
-│  │          - Distributed, in-memory with disk backup                 │ │
-│  └───────────────────────────────────────────────────────────────────┘ │
-│                                                                          │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐    │
-│  │  HBase/Cassandra│  │   Blob Storage  │  │   Push Gateways     │    │
-│  │  (Offline Msgs) │  │   (Media Files) │  │   (APNs, FCM)       │    │
-│  └─────────────────┘  └─────────────────┘  └─────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Clients["Mobile Clients<br/>(iOS, Android, WhatsApp Web via linking)"]
+    Clients -->|"TCP (XMPP-based proprietary protocol)"| Edge
+
+    subgraph Edge["Edge Layer"]
+        DNS["DNS-based Load Balancing"]
+        LB["TCP Load Balancer L4<br/>(Direct Server Return)"]
+    end
+
+    Edge --> ChatServers
+
+    subgraph ChatServers["Chat Servers (Erlang/BEAM)"]
+        direction TB
+        subgraph Handlers["Connection Handlers"]
+            N1["Node 1<br/>2M+ conns"]
+            N2["Node 2<br/>2M+ conns"]
+            N3["Node 3<br/>2M+ conns"]
+            N4["Node 4<br/>2M+ conns"]
+        end
+        ConnNote["Each connection: 1 Erlang process (~2KB memory)<br/>Message routing via distributed Erlang"]
+    end
+
+    ChatServers --> ServiceLayer
+
+    subgraph ServiceLayer["Service Layer"]
+        OMQ["Offline Message Queue"]
+        GM["Group Management"]
+        MS["Media Service"]
+        PS["Push Service"]
+        LS["Last Seen Service"]
+        KD["Key Distribution"]
+    end
+
+    ServiceLayer --> DataLayer
+
+    subgraph DataLayer["Data Layer"]
+        Mnesia[("Mnesia (Erlang native)<br/>User sessions, routing tables, presence<br/>Distributed, in-memory with disk backup")]
+        HBase[("HBase/Cassandra<br/>(Offline Msgs)")]
+        Blob[("Blob Storage<br/>(Media Files)")]
+        Push["Push Gateways<br/>(APNs, FCM)"]
+    end
 ```
 
 ---
 
 ## Erlang Connection Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Erlang/OTP Connection Model                           │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                    Why Erlang for WhatsApp                        │  │
-│   │                                                                   │  │
-│   │   1. Lightweight processes: 2KB per connection (vs MB for thread)│  │
-│   │   2. Preemptive scheduling: No connection starves others         │  │
-│   │   3. Hot code reload: Update without disconnecting users         │  │
-│   │   4. Distributed by design: Built-in node clustering             │  │
-│   │   5. Fault tolerance: "Let it crash" with supervisors           │  │
-│   │                                                                   │  │
-│   │   Result: 2M+ connections per server with commodity hardware     │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                    Process Architecture                           │  │
-│   │                                                                   │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │                  TCP Acceptor Pool                       │    │  │
-│   │   │              (Ranch / Cowboy acceptors)                  │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │                              │                                    │  │
-│   │                              ▼                                    │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │              Connection Supervisor                       │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │         │              │              │              │            │  │
-│   │         ▼              ▼              ▼              ▼            │  │
-│   │   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │  │
-│   │   │  Client  │  │  Client  │  │  Client  │  │  Client  │ ...    │  │
-│   │   │  Process │  │  Process │  │  Process │  │  Process │        │  │
-│   │   │  (User1) │  │  (User2) │  │  (User3) │  │  (User4) │        │  │
-│   │   └──────────┘  └──────────┘  └──────────┘  └──────────┘        │  │
-│   │                                                                   │  │
-│   │   Each process: socket handler, message queue, encryption state  │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph ErlangOTP["Erlang/OTP Connection Model"]
+        direction TB
+        subgraph WhyErlang["Why Erlang for WhatsApp"]
+            E1["1. Lightweight processes: 2KB per connection (vs MB for thread)"]
+            E2["2. Preemptive scheduling: No connection starves others"]
+            E3["3. Hot code reload: Update without disconnecting users"]
+            E4["4. Distributed by design: Built-in node clustering"]
+            E5["5. Fault tolerance: 'Let it crash' with supervisors"]
+            E6["Result: 2M+ connections per server with commodity hardware"]
+        end
+
+        subgraph ProcessArch["Process Architecture"]
+            TCP["TCP Acceptor Pool<br/>(Ranch / Cowboy acceptors)"]
+            Supervisor["Connection Supervisor"]
+            CP1["Client Process<br/>(User1)"]
+            CP2["Client Process<br/>(User2)"]
+            CP3["Client Process<br/>(User3)"]
+            CP4["Client Process<br/>(User4)"]
+            ProcNote["Each process: socket handler, message queue, encryption state"]
+
+            TCP --> Supervisor
+            Supervisor --> CP1
+            Supervisor --> CP2
+            Supervisor --> CP3
+            Supervisor --> CP4
+        end
+    end
 ```
 
 ### Connection Handler Implementation
@@ -617,41 +582,30 @@ class SignalProtocol:
 
 ## Message Delivery Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Message Delivery States                               │
-│                                                                          │
-│   ┌─────────────────────────────────────────────────────────────────┐   │
-│   │                                                                  │   │
-│   │   Sender              Server              Recipient              │   │
-│   │     │                   │                    │                   │   │
-│   │     │──── Message ─────▶│                    │                   │   │
-│   │     │                   │                    │                   │   │
-│   │     │◀─── Ack ──────────│  (single ✓)       │                   │   │
-│   │     │                   │                    │                   │   │
-│   │     │                   │                    │                   │   │
-│   │     │                   │──── Message ──────▶│                   │   │
-│   │     │                   │                    │                   │   │
-│   │     │                   │◀─── Ack ───────────│                   │   │
-│   │     │                   │                    │                   │   │
-│   │     │◀─ Delivery Rcpt ──│  (double ✓✓)      │                   │   │
-│   │     │                   │                    │                   │   │
-│   │     │                   │                    │ (user reads)      │   │
-│   │     │                   │                    │                   │   │
-│   │     │◀─ Read Receipt ───┼────────────────────│  (blue ✓✓)       │   │
-│   │     │                   │                    │                   │   │
-│   └─────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│   ┌─────────────────────────────────────────────────────────────────┐   │
-│   │                    Offline Message Handling                      │   │
-│   │                                                                  │   │
-│   │   If recipient offline:                                         │   │
-│   │   1. Message queued in persistent store (30 days retention)     │   │
-│   │   2. Push notification sent (FCM/APNs)                          │   │
-│   │   3. On reconnect, queued messages delivered                    │   │
-│   │   4. Delivery receipts sent back to sender                      │   │
-│   └─────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant Sender
+    participant Server
+    participant Recipient
+
+    Sender ->> Server: Message
+    Server -->> Sender: Ack (single check)
+
+    Server ->> Recipient: Message
+    Recipient -->> Server: Ack
+
+    Server -->> Sender: Delivery Receipt (double check)
+
+    Note over Recipient: User reads message
+
+    Recipient ->> Server: Read Receipt
+    Server -->> Sender: Read Receipt (blue double check)
+
+    Note over Server: Offline Message Handling
+    Note over Server: 1. Message queued in persistent store (30 days retention)
+    Note over Server: 2. Push notification sent (FCM/APNs)
+    Note over Server: 3. On reconnect, queued messages delivered
+    Note over Server: 4. Delivery receipts sent back to sender
 ```
 
 ### Message Queue Implementation
