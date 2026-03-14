@@ -551,7 +551,7 @@ Track and review:
 
 ### Alerting Health Metrics
 
-```promql
+```text
 # Alertmanager health
 up{job="alertmanager"} == 1
 
