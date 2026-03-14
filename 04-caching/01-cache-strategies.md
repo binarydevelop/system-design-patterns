@@ -456,6 +456,339 @@ Inventory: Write-around + invalidation
 
 ---
 
+## Hit Rate Economics
+
+Hit rate is not a vanity metric — it directly determines how much load your database absorbs.
+
+### The Core Formula
+
+```
+DB_QPS = total_QPS × (1 - hit_rate)
+```
+
+A seemingly small improvement in hit rate yields dramatic DB load reduction at scale:
+
+| Total QPS | Hit Rate | DB QPS | DB Load Reduction vs 80% |
+|-----------|----------|--------|--------------------------|
+| 10,000    | 80%      | 2,000  | —                        |
+| 10,000    | 90%      | 1,000  | 50%                      |
+| 10,000    | 95%      | 500    | 75%                      |
+| 10,000    | 99%      | 100    | 95%                      |
+
+Going from 95% to 99% cuts DB QPS by 5x. This is why the last few percent of hit rate are worth engineering effort — each percentage point removed from misses has outsized impact.
+
+### Break-Even Analysis
+
+Cache infrastructure is justified when:
+
+```
+cost_of_cache_infra < cost_of_DB_scaling_to_handle_misses
+```
+
+In practice, a 3-node Redis cluster (~$1,500/mo on cloud) can absorb millions of reads that would require scaling a primary database from a db.r6g.xlarge ($1,200/mo) to a db.r6g.4xlarge ($4,800/mo). The cache pays for itself when it prevents even one DB tier jump.
+
+### The 80/20 Rule of Caching
+
+Most production workloads follow a power-law distribution. Caching the top 20% most-accessed keys typically captures 80%+ of all read traffic. This means you rarely need to cache your entire dataset — identify the hot subset and cache aggressively there. Use access frequency analysis before blindly caching everything.
+
+### When Caching Hurts
+
+If your workload has a uniform random access pattern (every key equally likely), cache hit rate scales linearly with cache size — no shortcut. In such cases, caching may cost more than it saves. Scan-heavy analytics workloads also pollute caches with one-time-use data.
+
+---
+
+## Cache Sizing in Production
+
+The basic memory calculation from the sizing section above gets you started. Production sizing requires deeper analysis.
+
+### Working Set Estimation
+
+Your working set is the subset of data actively accessed within a given time window. To estimate it:
+
+1. **Sample access logs** over 1 full TTL window (e.g., if TTL = 1 hour, analyze 1 hour of logs)
+2. **Count unique keys** accessed in that window
+3. **Use the 90th percentile** across multiple windows to account for traffic variance
+4. Add 20-30% headroom for burst traffic and growth
+
+```bash
+# Quick Redis working set estimate from slowlog + keyspace analysis
+redis-cli INFO keyspace
+# db0:keys=2450000,expires=2100000,avg_ttl=3580000
+# 2.45M keys in use, most with TTL ~ 1 hour
+```
+
+### Redis Memory Overhead
+
+Redis is not a simple key-value byte store. Every key carries metadata:
+
+```
+String type:
+  key overhead:    ~56 bytes (dictEntry + SDS header + redisObject)
+  value overhead:  ~16 bytes (redisObject) + SDS header
+  total per entry: key_bytes + value_bytes + ~90 bytes fixed overhead
+
+Hash type (ziplist encoding, < 64 entries by default):
+  Stores fields compactly in a contiguous block
+  ~2x more memory-efficient than equivalent string keys
+  Threshold controlled by: hash-max-ziplist-entries (default 128)
+                           hash-max-ziplist-value   (default 64 bytes)
+  Exceeding thresholds → hashtable encoding (more memory, faster O(1) access)
+```
+
+Use `redis-cli MEMORY USAGE <key>` to measure actual per-key cost in production.
+
+### Memcached Slab Allocator
+
+Memcached pre-allocates memory into slab classes with fixed chunk sizes (64B, 128B, 256B, ...):
+
+```
+Slab class 1: 96-byte chunks
+Slab class 2: 120-byte chunks
+...
+Slab class 42: 1 MB chunks
+
+A 65-byte item → stored in a 96-byte chunk → 31 bytes wasted (slab waste)
+```
+
+Key flags:
+- `-I 2m` — max item size (default 1 MB, max 128 MB). Increasing this creates large slab classes.
+- Fragmentation is inherent: items rarely fit chunk boundaries exactly. Monitor `stats slabs` for `mem_wasted`.
+- If >30% memory is wasted, consider tuning `-f` (growth factor) to create more granular slab classes.
+
+### Production Sizing Formula
+
+```
+memory_required = avg_item_size × estimated_unique_keys × overhead_factor
+
+where:
+  avg_item_size   = key_bytes + value_bytes (measure from production samples)
+  unique_keys     = working set estimate from access log analysis
+  overhead_factor = 1.2 (Redis, well-tuned) to 1.5 (Memcached, high fragmentation)
+```
+
+Always validate estimates with a shadow deploy or canary before committing to instance sizes.
+
+---
+
+## Production Configuration
+
+### Redis Annotated Config
+
+```
+maxmemory 4gb
+# Hard memory ceiling. When hit, eviction policy kicks in.
+# Set to ~75% of instance RAM to leave room for fork (BGSAVE) overhead.
+
+maxmemory-policy allkeys-lru
+# Evict any key using approximated LRU when memory is full.
+# Use 'volatile-lru'  → only evict keys WITH a TTL set (safe for mixed workloads)
+# Use 'allkeys-lru'   → evict any key (best for pure cache, no persistent data)
+# Use 'allkeys-lfu'   → evict least-frequently-used (better for skewed access patterns)
+# Use 'noeviction'    → return errors on writes when full (use for session stores)
+
+lazyfree-lazy-eviction yes
+# Evict keys in a background thread instead of blocking the main thread.
+# Critical at high eviction rates — prevents latency spikes during memory pressure.
+
+lazyfree-lazy-expire yes
+# Delete expired keys in a background thread.
+# Same rationale: large keys expiring can block the event loop for milliseconds.
+
+tcp-keepalive 300
+# Send TCP keepalive probes every 300 seconds to detect dead connections.
+# Cloud load balancers often drop idle connections at 350-400s.
+# Set this lower than your LB idle timeout.
+```
+
+### When to Use Which Eviction Policy
+
+```
+allkeys-lru    → Pure cache. Every key is expendable.
+                  Most common in production.
+
+volatile-lru   → Mixed use: some keys are cache, some are persistent.
+                  Only keys with TTL are eviction candidates.
+                  Risk: if you forget to set TTL, those keys are never evicted.
+
+allkeys-lfu    → Access frequency matters more than recency.
+                  Better for CDN-style workloads where popular items
+                  should stay cached even if not accessed in the last minute.
+                  Redis 4.0+ only.
+
+volatile-ttl   → Evict keys with shortest remaining TTL first.
+                  Useful when TTL encodes priority (shorter TTL = lower value).
+```
+
+### Memcached Production Flags
+
+```bash
+memcached -m 4096 -I 2m -c 10000 -t 4
+#   -m 4096   → 4 GB memory limit
+#   -I 2m     → max item size 2 MB (default 1 MB)
+#   -c 10000  → max concurrent connections (default 1024)
+#   -t 4      → worker threads (match to available cores, not more)
+```
+
+Additional production flags:
+- `-o modern` — enables newer optimizations (slab rebalancing, LRU crawler)
+- `-v` / `-vv` — verbose logging (use in staging, not production)
+- `-R 200` — max requests per event (prevents starvation under load)
+
+---
+
+## Cache Key Design
+
+Good key design prevents collisions, simplifies debugging, and enables bulk invalidation.
+
+### Namespacing Convention
+
+Use a hierarchical `service:entity:id` pattern:
+
+```
+user-svc:profile:12345
+order-svc:order:abc-789
+catalog-svc:product:SKU-001
+```
+
+Benefits:
+- Instantly identifies which service owns the key (critical during incidents)
+- Enables pattern-based monitoring: `redis-cli --scan --pattern "user-svc:*"` to audit one service's footprint
+- Prevents cross-service key collisions without coordination
+
+### Version-Based Invalidation
+
+Prefix keys with a version number to enable instant bulk invalidation:
+
+```
+v3:user:12345
+v3:user:67890
+```
+
+When schema changes or a data migration occurs, increment to `v4:`. All `v3:` keys become unreachable and expire naturally via TTL. No need to enumerate and delete thousands of keys individually.
+
+This is cheaper than `SCAN` + `DEL` at scale, especially in clustered Redis where keys are spread across shards.
+
+### Hot Key Detection and Mitigation
+
+A hot key is a single key receiving disproportionate traffic, creating a bottleneck on one cache shard.
+
+Detection:
+```bash
+redis-cli --hotkeys
+# Requires maxmemory-policy to be LFU-based for accurate results.
+
+# Alternative: sample commands in real time
+redis-cli MONITOR | head -10000 | sort | uniq -c | sort -rn | head -20
+# WARNING: MONITOR is expensive. Run briefly and only in emergencies.
+```
+
+Mitigation strategies:
+- **Local L1 cache**: application-level in-process cache (e.g., Caffeine, Guava) with 1-5s TTL in front of Redis
+- **Key replication**: append a random suffix (`hot-key:{rand(1..8)}`) and read from a random replica. Write to all 8 copies on update.
+
+### Key Size Guidelines
+
+- Keep keys **under 200 bytes**. Redis stores keys in memory; bloated keys waste RAM at scale.
+- For long composite keys (e.g., multi-field lookups), hash the components:
+  ```
+  Instead of: user-svc:profile:region=us-east-1:plan=enterprise:cohort=2024Q1:id=12345
+  Use:        user-svc:profile:sha256(region=us-east-1:plan=enterprise:cohort=2024Q1):12345
+  ```
+- Document your key schema in a shared wiki. Teams will inevitably need to decode keys during incidents.
+
+---
+
+## Negative Caching
+
+### The Pattern
+
+Cache "not found" results to prevent repeated database queries for entities that do not exist:
+
+```python
+def get_user(user_id):
+    cached = cache.get(f"user:{user_id}")
+    if cached == SENTINEL_NOT_FOUND:
+        return None              # Known miss — skip DB entirely
+    if cached is not None:
+        return cached
+
+    user = db.query(user_id)
+    if user is None:
+        cache.set(f"user:{user_id}", SENTINEL_NOT_FOUND, ttl=60)  # Short TTL
+        return None
+
+    cache.set(f"user:{user_id}", user, ttl=3600)
+    return user
+```
+
+### Why It Matters
+
+Without negative caching, every lookup for a non-existent entity hits the database. Common scenarios:
+- **User lookup by email** for unregistered emails (login attempts, invite checks)
+- **Product catalog** lookups for discontinued SKUs still linked in old URLs
+- **Permission checks** for resources that were deleted
+
+A single bot or scraper can generate thousands of QPS for non-existent keys, hammering your DB with queries that always return zero rows.
+
+### Risks and Mitigation
+
+**Race condition**: a negative cache entry is written, then the entity is created (e.g., user registers). The short TTL window returns stale "not found" results.
+
+Mitigations:
+- **Short TTL** (30-60s) — bounds the staleness window
+- **Invalidate on create** — when inserting a new entity, explicitly delete its negative cache entry
+- **Use a distinct sentinel value** (not `None` or empty string) to distinguish "cached miss" from "not in cache"
+
+---
+
+## Production Failure Modes
+
+Caches fail in predictable ways. Recognizing these patterns early prevents cascading outages.
+
+### Memory Fragmentation
+
+```bash
+redis-cli INFO memory | grep mem_fragmentation_ratio
+# mem_fragmentation_ratio: 1.12    → healthy
+# mem_fragmentation_ratio: 1.8     → 80% overhead, wasting RAM
+# mem_fragmentation_ratio: 0.8     → swapping to disk, critical
+```
+
+- **Ratio > 1.5**: Redis allocated memory is heavily fragmented. Caused by variable-size key churn (frequent create/delete of different-sized values).
+- Fix: `MEMORY PURGE` (Redis 4+), or schedule a rolling restart. Use `activedefrag yes` for online defragmentation.
+- Prevention: prefer uniform value sizes, avoid mixing tiny and large keys in the same instance.
+
+### Eviction Storms
+
+When `maxmemory` is hit under high write rates, Redis enters a continuous eviction cycle:
+
+```
+write → evict to make room → write → evict → ...
+```
+
+Hit rate collapses because entries are evicted before they can be read again. Latency spikes as eviction competes with serving reads. Symptoms: `evicted_keys` counter climbing rapidly, hit rate plummeting.
+
+Fix: increase `maxmemory`, reduce TTLs to expire data before eviction kicks in, or shard to distribute the keyspace.
+
+### Cache Poisoning
+
+A stale or incorrect value is written to cache — and never corrected:
+
+```
+1. Request A reads DB (value = 100)
+2. Request B updates DB (value = 200) and invalidates cache
+3. Request A (slow, still running) writes its stale read (value = 100) to cache
+4. Cache now holds value = 100 with no TTL → permanently wrong
+```
+
+Prevention: always set a TTL, even on write-through entries. A 24-hour TTL is a safety net that bounds the damage from race conditions. For critical data, use versioned writes (CAS / `SET ... NX`).
+
+### Further Reading
+
+→ see `04-cache-stampede.md` for thundering herd and cache stampede solutions
+
+---
+
 ## Key Takeaways
 
 1. **Cache-aside is most common** - Simple, resilient, flexible
