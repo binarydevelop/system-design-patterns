@@ -28,40 +28,19 @@ Twitter handles 500M+ tweets per day with a fan-out-on-write architecture for ho
 
 ## High-Level Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Twitter Architecture                            │
-│                                                                              │
-│  ┌─────────────┐     ┌─────────────────────────────────────────────────┐   │
-│  │   Mobile    │────►│                   API Gateway                    │   │
-│  │   Clients   │     │        (Rate Limiting, Auth, Routing)           │   │
-│  └─────────────┘     └──────────────────────┬──────────────────────────┘   │
-│  ┌─────────────┐                            │                               │
-│  │    Web      │────────────────────────────┘                               │
-│  │   Clients   │                                                            │
-│  └─────────────┘                                                            │
-│                                              │                               │
-│         ┌────────────────────────────────────┼────────────────────────────┐ │
-│         │                                    │                            │ │
-│         ▼                                    ▼                            ▼ │
-│  ┌─────────────┐                    ┌─────────────┐              ┌──────────┐
-│  │   Tweet     │                    │  Timeline   │              │  Search  │
-│  │  Service    │                    │  Service    │              │ Service  │
-│  └──────┬──────┘                    └──────┬──────┘              └────┬─────┘
-│         │                                  │                          │     │
-│         ▼                                  ▼                          ▼     │
-│  ┌─────────────┐                    ┌─────────────┐              ┌──────────┐
-│  │   Tweet     │                    │  Timeline   │              │  Search  │
-│  │    DB       │                    │   Cache     │              │  Index   │
-│  │  (MySQL)    │                    │  (Redis)    │              │(Lucene)  │
-│  └─────────────┘                    └─────────────┘              └──────────┘
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────────┐│
-│  │                           Fan-out Service                               ││
-│  │                   (Distributes tweets to followers)                     ││
-│  └─────────────────────────────────────────────────────────────────────────┘│
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    MC["Mobile Clients"] --> AG["API Gateway\nRate Limiting · Auth · Routing"]
+    WC["Web Clients"] --> AG
+    AG --> TS["Tweet Service"]
+    AG --> TLS["Timeline Service"]
+    AG --> SS["Search Service"]
+    TS --> TDB[("Tweet DB\n(MySQL)")]
+    TS --> MS[("Media Service\n(S3)")]
+    TLS --> TC[("Timeline Cache\n(Redis)")]
+    SS --> SI[("Search Index\n(Lucene)")]
+    TS -.-> FO["Fan-out Service\nDistributes tweets to followers"]
+    FO -.-> TC
 ```
 
 ---
@@ -195,25 +174,19 @@ class TimelineService:
         return tweets[:count]
 ```
 
-```
-Hybrid Timeline Generation:
-
-┌──────────────────────────────────────────────────────────────────────┐
-│                        User's Home Timeline                          │
-│                                                                      │
-│   Pre-computed             Celebrity               Merged &          │
-│   Timeline Cache    +      Tweets           =      Sorted            │
-│                           (on-read)                                  │
-│   ┌────────────┐          ┌────────────┐          ┌────────────┐    │
-│   │ Tweet 5    │          │ Celeb A: 3 │          │ Tweet 7    │    │
-│   │ Tweet 4    │    +     │ Celeb B: 2 │    =     │ Tweet 6    │    │
-│   │ Tweet 2    │          │ Celeb C: 1 │          │ Tweet 5    │    │
-│   │ Tweet 1    │          │            │          │ Tweet 4    │    │
-│   └────────────┘          └────────────┘          │ ...        │    │
-│                                                   └────────────┘    │
-│   From regular               From followed        Final timeline    │
-│   users (pushed)             celebrities                            │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    subgraph precomputed["Pre-computed Timeline\n(fan-out-on-write)"]
+        P["Tweet 5, 4, 2, 1"]
+    end
+    subgraph celebrity["Celebrity Tweets\n(fetched on-read)"]
+        C["Celeb A: 3\nCeleb B: 2\nCeleb C: 1"]
+    end
+    subgraph merged["Merged & Sorted\nHome Timeline"]
+        M["Tweet 7, 6, 5, 4 ..."]
+    end
+    precomputed -->|"merge + sort"| merged
+    celebrity -->|"merge + sort"| merged
 ```
 
 ---
