@@ -838,11 +838,15 @@ jobs:
           layout: page
           title: 404 - Page Not Found
           ---
+          <script setup>
+          import { withBase } from 'vitepress'
+          </script>
+
           <div class="not-found">
-            <img src="/system-design-patterns/logo.svg" alt="Babushkai" class="not-found-logo" />
+            <img :src="withBase('/logo.svg')" alt="Babushkai" class="not-found-logo" />
             <h1>404</h1>
             <p>This layer of the doll doesn't exist yet.</p>
-            <a href="/system-design-patterns/" class="not-found-btn">Back to Home</a>
+            <a :href="withBase('/')" class="not-found-btn">Back to Home</a>
           </div>
           NOTFOUND
 
