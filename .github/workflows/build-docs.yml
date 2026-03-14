@@ -282,6 +282,9 @@ jobs:
             ignoreDeadLinks: true,
             
             head: [
+              ['link', { rel: 'preconnect', href: 'https://fonts.googleapis.com' }],
+              ['link', { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' }],
+              ['link', { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap' }],
               // favicon href must include base path (base config is at line ~279)
               ['link', { rel: 'icon', type: 'image/svg+xml', href: '/system-design-patterns/logo.svg' }],
               ['meta', { name: 'theme-color', content: '#E91E63' }],
@@ -907,8 +910,6 @@ jobs:
           THEME
 
           cat > .vitepress/theme/custom.css << 'CUSTOMCSS'
-          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-
           /* Pink theme to match Matryoshka logo */
           :root {
             --vp-font-family-base: 'Inter', sans-serif;
@@ -1186,20 +1187,6 @@ jobs:
             color: white;
           }
 
-          /* Feature cards 4-column grid on wide screens */
-          .VPFeatures .items {
-            display: grid !important;
-          }
-          @media (min-width: 960px) {
-            .VPFeatures .items {
-              grid-template-columns: repeat(4, 1fr) !important;
-            }
-          }
-          @media (min-width: 640px) and (max-width: 959px) {
-            .VPFeatures .items {
-              grid-template-columns: repeat(3, 1fr) !important;
-            }
-          }
           CUSTOMCSS
 
           echo "VitePress configuration generated successfully!"
