@@ -55,7 +55,6 @@ jobs:
 
           # Generate VitePress config with i18n
           cat > .vitepress/config.mts << 'VITECONFIG'
-          import { defineConfig } from 'vitepress'
           import { withMermaid } from 'vitepress-plugin-mermaid'
 
           // Shared sidebar configuration
@@ -274,7 +273,7 @@ jobs:
             },
           ]
 
-          export default withMermaid(defineConfig({
+          export default withMermaid({
             title: 'Babushkai System Design Patterns',
             description: 'A comprehensive guide to distributed systems and system design patterns',
             
@@ -376,7 +375,6 @@ jobs:
 
             lastUpdated: true,
             cleanUrls: true,
-          }),
           mermaid: {
             theme: 'base',
             themeVariables: {
@@ -394,6 +392,8 @@ jobs:
           },
           })
           VITECONFIG
+
+
 
           # Generate English homepage
           cat > index.md << 'HOMEPAGE'
