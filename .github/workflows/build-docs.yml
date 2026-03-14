@@ -282,11 +282,14 @@ jobs:
             ignoreDeadLinks: true,
             
             head: [
-              ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }],
+              // favicon href must include base path (base config is at line ~279)
+              ['link', { rel: 'icon', type: 'image/svg+xml', href: '/system-design-patterns/logo.svg' }],
               ['meta', { name: 'theme-color', content: '#E91E63' }],
               ['meta', { property: 'og:type', content: 'website' }],
               ['meta', { property: 'og:title', content: 'Babushkai System Design Patterns' }],
               ['meta', { property: 'og:description', content: 'A comprehensive guide to distributed systems' }],
+              ['meta', { property: 'og:image', content: 'https://babushkai.github.io/system-design-patterns/logo.svg' }],
+              ['meta', { name: 'twitter:card', content: 'summary' }],
             ],
 
             locales: {
@@ -857,51 +860,48 @@ jobs:
           import './custom.css'
           import { onMounted } from 'vue'
 
+          let translateInitialized = false
+
           export default {
             extends: DefaultTheme,
-            enhanceApp({ app }) {
-              // Add Google Translate on mount
-              if (typeof window !== 'undefined') {
-                onMounted(() => {
-                  // Create translate element container
-                  const translateDiv = document.createElement('div')
-                  translateDiv.id = 'google_translate_element'
-                  
-                  // Find navbar actions and insert translate widget
-                  const insertTranslate = () => {
-                    const navBarContent = document.querySelector('.VPNavBarExtra') || 
-                                          document.querySelector('.VPNavBarHamburger')?.parentElement
-                    if (navBarContent && !document.getElementById('google_translate_element')) {
-                      const wrapper = document.createElement('div')
-                      wrapper.className = 'translate-wrapper'
-                      wrapper.appendChild(translateDiv)
-                      navBarContent.parentElement?.insertBefore(wrapper, navBarContent)
-                      
-                      // Load Google Translate script
-                      if (!document.getElementById('google-translate-script')) {
-                        const script = document.createElement('script')
-                        script.id = 'google-translate-script'
-                        script.src = '//translate.google.com/translate_a/element.js?cb=googleTranslateElementInit'
-                        document.body.appendChild(script)
-                        
-                        // Initialize Google Translate
-                        ;(window as any).googleTranslateElementInit = function() {
-                          new (window as any).google.translate.TranslateElement({
-                            pageLanguage: 'en',
-                            includedLanguages: 'ja,zh-CN,zh-TW,ko,es,fr,de,pt,ru,ar,hi',
-                            layout: (window as any).google.translate.TranslateElement.InlineLayout.SIMPLE,
-                            autoDisplay: false
-                          }, 'google_translate_element')
-                        }
+            setup() {
+              onMounted(() => {
+                if (translateInitialized) return
+                translateInitialized = true
+
+                const translateDiv = document.createElement('div')
+                translateDiv.id = 'google_translate_element'
+
+                const insertTranslate = () => {
+                  const navBarContent = document.querySelector('.VPNavBarExtra') ||
+                                        document.querySelector('.VPNavBarHamburger')?.parentElement
+                  if (navBarContent && !document.getElementById('google_translate_element')) {
+                    const wrapper = document.createElement('div')
+                    wrapper.className = 'translate-wrapper'
+                    wrapper.appendChild(translateDiv)
+                    navBarContent.parentElement?.insertBefore(wrapper, navBarContent)
+
+                    if (!document.getElementById('google-translate-script')) {
+                      const script = document.createElement('script')
+                      script.id = 'google-translate-script'
+                      script.src = '//translate.google.com/translate_a/element.js?cb=googleTranslateElementInit'
+                      document.body.appendChild(script)
+
+                      ;(window as any).googleTranslateElementInit = function() {
+                        new (window as any).google.translate.TranslateElement({
+                          pageLanguage: 'en',
+                          includedLanguages: 'ja,zh-CN,zh-TW,ko,es,fr,de,pt,ru,ar,hi',
+                          layout: (window as any).google.translate.TranslateElement.InlineLayout.SIMPLE,
+                          autoDisplay: false
+                        }, 'google_translate_element')
                       }
                     }
                   }
-                  
-                  // Try immediately and also after a delay for SPA navigation
-                  insertTranslate()
-                  setTimeout(insertTranslate, 1000)
-                })
-              }
+                }
+
+                insertTranslate()
+                setTimeout(insertTranslate, 1000)
+              })
             }
           }
           THEME
@@ -950,7 +950,7 @@ jobs:
 
           /* AI accent styling in Babushkai - "i" as Matryoshka doll */
           .ai-accent {
-            color: #FF4081;
+            color: var(--vp-c-brand-1);
             font-weight: inherit;
             font-style: italic;
           }
@@ -990,30 +990,30 @@ jobs:
 
           /* Custom styled tip/warning/info containers */
           .vp-doc .custom-block.tip {
-            border-color: #E91E63;
-            background-color: rgba(233, 30, 99, 0.08);
+            border-color: var(--vp-c-brand-1);
+            background-color: var(--vp-c-brand-soft);
           }
 
           .vp-doc .custom-block.tip .custom-block-title {
-            color: #E91E63;
+            color: var(--vp-c-brand-1);
           }
 
           .vp-doc .custom-block.warning {
-            border-color: #FF4081;
-            background-color: rgba(255, 64, 129, 0.08);
+            border-color: var(--vp-c-brand-2);
+            background-color: var(--vp-c-brand-soft);
           }
 
           .vp-doc .custom-block.warning .custom-block-title {
-            color: #D81B60;
+            color: var(--vp-c-brand-2);
           }
 
           .vp-doc .custom-block.info {
-            border-color: #F8BBD9;
-            background-color: rgba(248, 187, 217, 0.15);
+            border-color: var(--vp-c-brand-3);
+            background-color: var(--vp-c-brand-soft);
           }
 
           .vp-doc .custom-block.info .custom-block-title {
-            color: #C2185B;
+            color: var(--vp-c-brand-3);
           }
 
           /* Sidebar group icons styling */
@@ -1025,39 +1025,39 @@ jobs:
 
           /* Code blocks with pink accent */
           .vp-doc div[class*='language-'] {
-            border-left: 3px solid #E91E63;
+            border-left: 3px solid var(--vp-c-brand-1);
           }
 
           /* Table header styling */
           .vp-doc table th {
-            background-color: rgba(233, 30, 99, 0.08);
-            border-bottom: 2px solid #E91E63;
+            background-color: var(--vp-c-brand-soft);
+            border-bottom: 2px solid var(--vp-c-brand-1);
           }
 
           /* Link styling */
           .vp-doc a {
-            color: #E91E63;
+            color: var(--vp-c-brand-1);
           }
 
           .vp-doc a:hover {
-            color: #FF4081;
+            color: var(--vp-c-brand-2);
           }
 
           /* Scrollbar styling (webkit) */
           ::-webkit-scrollbar-thumb {
-            background: #E91E63;
+            background: var(--vp-c-brand-1);
             border-radius: 4px;
           }
 
           ::-webkit-scrollbar-thumb:hover {
-            background: #D81B60;
+            background: var(--vp-c-brand-2);
           }
 
           /* TL;DR section styling */
           .vp-doc h2#tl-dr,
           .vp-doc h2#tldr {
-            color: #E91E63;
-            border-bottom: 2px solid #E91E63;
+            color: var(--vp-c-brand-1);
+            border-bottom: 2px solid var(--vp-c-brand-1);
             padding-bottom: 0.5rem;
           }
 
@@ -1174,7 +1174,7 @@ jobs:
           .not-found-btn {
             display: inline-flex;
             padding: 0.75rem 2rem;
-            background: #E91E63;
+            background: var(--vp-c-brand-1);
             color: white;
             border-radius: 8px;
             text-decoration: none;
@@ -1182,7 +1182,7 @@ jobs:
             transition: background 0.2s;
           }
           .not-found-btn:hover {
-            background: #D81B60;
+            background: var(--vp-c-brand-2);
             color: white;
           }
 

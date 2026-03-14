@@ -236,7 +236,7 @@ Dashboard Layout:
 
 ### Prometheus Queries (PromQL)
 
-```promql
+```text
 # Rate: Requests per second
 rate(http_requests_total[5m])
 
@@ -284,7 +284,7 @@ Resource Analysis:
 
 ### Key Resource Metrics
 
-```promql
+```text
 # CPU
 # Utilization: CPU usage percentage
 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
