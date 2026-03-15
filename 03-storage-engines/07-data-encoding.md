@@ -522,6 +522,211 @@ Prevents accidental breaking changes
 
 ---
 
+## Schema Evolution Strategies
+
+### Compatibility in Deployment Context
+
+```
+Forward (old code reads new data):  Deploy producers first. Unknown fields skipped.
+Backward (new code reads old data): Deploy consumers first. Missing fields defaulted.
+Full (both directions):             Deploy independently. Rolling deploys demand this.
+```
+
+### Format-Specific Evolution Rules
+
+**Protobuf:**
+- Adding `optional` field with new tag → forward + backward compatible
+- Removing field → mark tag as `reserved` forever
+- Changing `optional` to `repeated` → safe for scalar types
+- Never change a field's tag number — silently corrupts data
+
+```protobuf
+message User {
+  reserved 2, 5;           // field numbers retired forever
+  reserved "name", "age";  // field names retired forever
+  int32 id = 1;
+  string email = 3;
+  string phone = 4;
+}
+```
+
+**Avro:**
+- Reader schema + writer schema resolution at deserialization
+- Fields matched by name, not position
+- Adding field: must have default (backward compatible)
+- Removing field: removed field must have had default (forward compatible)
+- Renaming: use `aliases` for compatibility
+
+```json
+{
+  "type": "record", "name": "User",
+  "fields": [
+    {"name": "id", "type": "int"},
+    {"name": "full_name", "type": "string", "aliases": ["name"], "default": ""}
+  ]
+}
+```
+
+**JSON (with JSON Schema):**
+- No built-in evolution — schema is external and optional
+- `additionalProperties: true` (default) enables forward compatibility
+- Use `required` sparingly — every required field is a future migration burden
+- Versioning: URL path (`/v2/users`), header, or envelope (`{"version": 2, ...}`)
+
+### Compatibility Comparison
+
+| Feature | Protobuf | Avro | Thrift | JSON Schema |
+|---------|----------|------|--------|-------------|
+| Schema required? | Yes (.proto) | Yes (JSON/IDL) | Yes (.thrift) | Optional |
+| Forward compatible? | Yes (skip unknown tags) | Yes (schema resolution) | Yes (skip unknown tags) | Only with `additionalProperties` |
+| Backward compatible? | Yes (defaults for missing) | Yes (defaults required) | Yes (defaults for missing) | Manual handling |
+| Human readable wire format? | No | No | No (binary) / Yes (JSON protocol) | Yes |
+| Schema in payload? | No (tags only) | Writer schema or ID | No (tags only) | No |
+
+---
+
+## Schema Registry Deep Dive
+
+### Architecture and Workflow
+
+```
+Producer → registers schema → Registry assigns ID
+Producer → sends message: [magic:1B][schema_id:4B][payload]
+Consumer → reads schema_id from message → fetches schema from Registry
+Consumer → deserializes payload using fetched schema
+```
+
+### Confluent Schema Registry API
+
+```bash
+# Register schema → returns global ID
+POST /subjects/{subject}/versions  →  {"id": 42}
+
+# Fetch schema by ID
+GET /schemas/ids/{id}  →  {"schema": "{...}"}
+
+# Check compatibility before registering
+POST /compatibility/subjects/{subject}/versions/latest  →  {"is_compatible": true}
+
+# Set compatibility mode per subject
+PUT /config/{subject}  →  {"compatibility": "FULL"}
+```
+
+### Compatibility Modes in Practice
+
+```
+BACKWARD (default): New schema reads old data. Consumer-first deploys.
+FORWARD:            Old schema reads new data. Producer-first deploys.
+FULL:               Both directions. Independent deployment safe.
+
+*_TRANSITIVE variants: Check against ALL prior versions, not just last.
+  Use when cold storage may contain very old schema versions.
+
+NONE: No checking. Development only.
+```
+
+### Why Schema Registry Matters
+
+```
+Without registry:
+  - Schema changes coordinated via tickets/Slack → deployment coupling
+  - Bad schema change silently corrupts downstream data
+  - No audit trail of schema history
+
+With registry:
+  - Schemas versioned and immutable once registered
+  - Incompatible changes rejected automatically
+  - Consumers cache schemas locally — registry not on hot path
+```
+
+---
+
+## Encoding Performance Deep Dive
+
+### Benchmark Comparison (Typical 1 KB Object)
+
+| Format | Serialize | Deserialize | Encoded Size | Schema |
+|--------|-----------|-------------|--------------|--------|
+| JSON | ~100 MB/s | ~200 MB/s | 1000 B (baseline) | No |
+| JSON+gzip | ~50 MB/s | ~80 MB/s | ~400 B | No |
+| Protobuf | ~800 MB/s | ~1.5 GB/s | ~300 B | Yes |
+| Avro | ~600 MB/s | ~1.0 GB/s | ~280 B | Yes |
+| MessagePack | ~400 MB/s | ~800 MB/s | ~650 B | No |
+| FlatBuffers | ~1.5 GB/s | Zero-copy | ~450 B | Yes |
+| Cap'n Proto | Zero-copy | Zero-copy | ~500 B | Yes |
+
+*Numbers are order-of-magnitude guidance; vary by language, hardware, and data shape.*
+
+### Why Protobuf Is Fast
+
+```
+1. Varint encoding: Small integers use fewer bytes (1 → 1B, 300 → 2B)
+2. No field names on wire: Tags are 1-2 byte ints vs repeating key strings
+3. No parsing ambiguity: Types known at compile time from schema
+4. Generated code: Direct field access, no reflection or hash map lookups
+```
+
+### Zero-Copy Formats: When Parsing Is the Bottleneck
+
+```
+FlatBuffers (Google): Access fields directly from buffer, no deserialization.
+Cap'n Proto (by Protobuf creator): Zero-copy + built-in RPC system.
+
+Use when:
+  - Reading millions of records, accessing 1-2 fields each
+  - Memory-mapped file access, latency-sensitive IPC
+
+Avoid when:
+  - Data crosses network boundaries (alignment/endianness concerns)
+  - Need maximum compression (zero-copy formats are larger)
+```
+
+---
+
+## Choosing an Encoding Format
+
+### Decision Tree
+
+```
+Human readability needed?        → JSON (or YAML for config)
+Schema evolution critical?       → Protobuf or Avro
+  ├─ Kafka ecosystem?            → Avro + Schema Registry
+  └─ gRPC / internal RPC?        → Protobuf
+Browser-facing API?              → JSON
+High-performance IPC?            → FlatBuffers or Cap'n Proto
+Analytical storage?              → Parquet or ORC (see 06-column-storage.md)
+JSON-like flexibility, smaller?  → MessagePack or CBOR
+```
+
+### Common Patterns in Practice
+
+```
+Typical microservice architecture:
+  External API:    JSON over REST / GraphQL
+  Internal RPC:    Protobuf over gRPC
+  Event streaming: Avro + Schema Registry (Kafka)
+  Configuration:   YAML or JSON
+  Analytics:       Parquet in object storage
+```
+
+### Anti-Patterns to Avoid
+
+```
+JSON for internal service-to-service at scale:
+  Parsing overhead compounds across 10+ hops → use Protobuf/gRPC.
+
+Custom binary format:
+  No evolution, no tooling, maintenance burden → use established formats.
+
+Protobuf without schema versioning:
+  Nobody knows which .proto produced old data → use Schema Registry.
+
+required fields everywhere:
+  Can never be removed without breaking readers → prefer optional + defaults.
+```
+
+---
+
 ## Key Takeaways
 
 1. **JSON for readability** - Debug-friendly, universal

@@ -425,6 +425,238 @@ class WarmingMetrics:
 
 ---
 
+## Deployment Warming Strategies
+
+### Blue-Green with Warm Cache
+
+```
+Standard blue-green has a cold cache problem — green is idle with empty cache.
+
+Solution: warm green before switching traffic
+
+  Phase 1: Deploy new code to green
+  Phase 2: Run warming job against green's cache
+  Phase 3: Verify green cache hit rate > threshold (e.g. 90%)
+  Phase 4: Switch LB to green
+  Phase 5: Keep blue as fallback until green is confirmed stable
+```
+
+```python
+def blue_green_warm_and_switch(green_env):
+    """Warm green cache before cutting over traffic"""
+    hot_keys = get_hot_keys_from_analytics()
+    warm_keys_on_target(green_env.cache, hot_keys)
+
+    hit_rate = measure_hit_rate(green_env.cache, sample_keys=hot_keys[:1000])
+    if hit_rate < 0.90:
+        raise WarmingIncompleteError(f"Green hit rate {hit_rate:.0%}, aborting switch")
+
+    load_balancer.switch_to(green_env)
+    log.info(f"Switched to green, hit rate {hit_rate:.0%}")
+```
+
+### Canary Warming
+
+```
+Route a small slice of traffic to warm cache organically:
+
+  1% → 5% → 25% → 50% → 100%
+
+Monitor hit rate at each phase before ramping up.
+Rollback if hit rate does not converge within expected window.
+```
+
+### Rolling Deploy Challenge
+
+```
+Rolling deploys replace instances one at a time.
+Each new instance starts with an empty local cache.
+
+Problem:
+  Instance 1 replaced → cold, other 9 absorb load
+  Instance 2 replaced → cold, 8 warm + 2 cold
+  ...by instance 5, half the fleet is still cold
+
+Solutions:
+  1. Access log replay — feed last 24h logs to new instance before it joins LB
+  2. Cache snapshot transfer — DUMP old instance cache, RESTORE on new one
+  3. Shared cache layer — only L1 (in-process) cache needs re-warming
+```
+
+---
+
+## Cache Warming Infrastructure
+
+### Access Log Replay Pipeline
+
+```python
+def warm_from_access_logs(hours=24):
+    """Analyze recent access logs, extract unique keys, pre-populate cache"""
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    raw_keys = [
+        derive_cache_key(e.method, e.path, e.params)
+        for e in parse_access_logs(since=cutoff)
+    ]
+    unique_keys = list(dict.fromkeys(k for k in raw_keys if k))  # dedup, preserve order
+    log.info(f"Extracted {len(unique_keys)} unique keys from {hours}h of logs")
+    batch_warm(unique_keys)
+```
+
+### Redis DUMP/RESTORE for Cache Migration
+
+```python
+def migrate_cache(source_redis, target_redis, keys):
+    """Transfer cache entries between Redis instances via DUMP/RESTORE"""
+    migrated = 0
+    for key in keys:
+        ttl = source_redis.pttl(key)
+        if ttl < 0:
+            continue
+        dump = source_redis.dump(key)
+        if dump:
+            target_redis.restore(key, ttl, dump, replace=True)
+            migrated += 1
+    log.info(f"Migrated {migrated}/{len(keys)} keys")
+```
+
+### Kafka Consumer Lag as Warming Indicator
+
+```
+In event-sourced / CQRS systems, read-model caches are built from event streams.
+
+  Lag > 0  → projections not caught up → cache still cold
+  Lag = 0  → projections current       → read model cache is warm
+
+Use consumer lag as a readiness gate:
+  - New instance replays from last checkpoint
+  - Reports NOT READY until lag = 0
+  - Load balancer only routes traffic once ready
+```
+
+---
+
+## Warming at Scale
+
+### Warming Rate Limiting
+
+```python
+class TokenBucketWarmer:
+    """Control warm-up QPS to avoid hammering the database"""
+
+    def __init__(self, max_qps=500, burst=50):
+        self.max_qps = max_qps
+        self.tokens = burst
+        self.last_refill = time.monotonic()
+
+    def _refill(self):
+        now = time.monotonic()
+        self.tokens = min(burst, self.tokens + (now - self.last_refill) * self.max_qps)
+        self.last_refill = now
+
+    def warm_key(self, key):
+        self._refill()
+        if self.tokens < 1:
+            time.sleep(1.0 / self.max_qps)
+            self._refill()
+        self.tokens -= 1
+        value = database.get(key)
+        cache.set(key, value, ex=3600)
+```
+
+### Priority Warming
+
+```
+Not all keys deserve equal warming priority (Pareto distribution):
+
+  Top 1%  keys → ~40% of requests  ← warm first
+  Top 5%  keys → ~70% of requests  ← warm second
+  Top 20% keys → ~95% of requests  ← warm third
+  Remaining 80%  → 5% of requests  ← skip, lazy fill on miss
+```
+
+```python
+def priority_warm(tiers):
+    """Warm keys in priority order: hot first, long-tail last"""
+    warmer = TokenBucketWarmer(max_qps=1000)
+    for tier_name, keys in tiers:
+        log.info(f"Warming tier={tier_name}, keys={len(keys)}")
+        for key in keys:
+            warmer.warm_key(key)
+
+# Usage: warm top 1% first, then 5%, then 20%. Skip the remaining 80%.
+tiers = [
+    ("critical", get_top_percent_keys(1)),
+    ("hot",      get_top_percent_keys(5)),
+    ("warm",     get_top_percent_keys(20)),
+]
+priority_warm(tiers)
+```
+
+### Partial Warming
+
+```
+Full warming may be impractical at scale (50M keys = 90 min).
+Top 20% of keys covers ~95% of traffic and takes only 18 min.
+
+Strategy: warm top 20% proactively, let remaining 80% populate lazily on miss.
+Use shorter TTL on lazily-warmed keys to avoid stale long-tail data.
+```
+
+---
+
+## Monitoring Cache Temperature
+
+### Hit Rate as Temperature Indicator
+
+```
+Temperature zones (per-instance hit rate):
+
+  > 95%  │ HOT   │ Cache fully effective, normal operation
+  80-95% │ WARM  │ Acceptable, still converging after deploy
+  < 80%  │ COLD  │ Significant DB pressure, may need intervention
+
+Track per service instance — new instances will be colder than old ones.
+A fleet-wide average can mask a single cold instance causing DB spikes.
+```
+
+### Warming Completion Metric
+
+```python
+def measure_warming_completeness(expected_keys, cache):
+    """Calculate what % of expected keys are present in cache"""
+    sample = random.sample(expected_keys, min(1000, len(expected_keys)))
+    present = sum(1 for k in sample if cache.exists(k))
+    completeness = present / len(sample)
+
+    metrics.gauge("warming.completeness", completeness)
+    return completeness
+```
+
+### Alerting on Failed Warming
+
+```yaml
+# Prometheus alerting rule
+- alert: CacheWarmingStalled
+  expr: |
+    cache_hit_rate{instance=~".*-new-.*"} < 0.80
+    and on(instance) (time() - instance_start_time) > 300
+  for: 1m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Instance {{ $labels.instance }} hit rate < 80% after 5 min — warming may have failed"
+```
+
+```
+Playbook when alert fires:
+  1. Check warming job logs for errors (DB timeouts, key fetch failures)
+  2. Verify DB is not overloaded — reduce warming QPS if needed
+  3. Restart warming job if it crashed
+  4. Last resort: pull instance from LB until hit rate recovers
+```
+
+---
+
 ## Key Takeaways
 
 1. **Cold cache causes cascading failures** - Database can't handle sudden load

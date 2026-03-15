@@ -522,6 +522,235 @@ Good:
 
 ---
 
+## Lease-Based Leadership: Deep Dive
+
+### How Leases Work End-to-End
+
+A lease is a time-bounded grant that a lock service issues to a node. The holder owns the lease until TTL expires. No explicit release required—if the holder crashes, the lease simply expires and another node acquires it.
+
+```
+Lifecycle of a lease:
+
+  T=0   Node A: Grant(TTL=10s) → lease_id=abc123, revision=42
+  T=3   Node A: KeepAlive(abc123) → TTL reset to 10s from now
+  T=6   Node A: KeepAlive(abc123) → TTL reset to 10s from now
+  ...
+  T=22  Node A crashes. No more KeepAlive.
+  T=32  Lease expires. Key "/leader" deleted automatically.
+  T=32  Node B (watching "/leader") detects deletion → acquires new lease.
+```
+
+### Bounded Unavailability Window
+
+```
+Worst case unavailability = lease_ttl + election_time
+  e.g., 10s + 200ms ≈ 10.2s
+
+Compare with heartbeat-based detection:
+  unavailability = missed_heartbeats × interval + election_time
+  e.g., 3 × 2s + 5s = 11s (unbounded with unlucky timing)
+```
+
+### etcd Lease API
+
+```go
+// Grant: create a new lease with a TTL
+resp, _ := client.Grant(ctx, 10) // 10 second TTL
+
+// Attach the lease to a key (leader registration)
+_, _ = client.Put(ctx, "/service/leader", "node-1", clientv3.WithLease(resp.ID))
+
+// KeepAlive: auto-renew the lease in the background
+// Returns a channel; lease is renewed every TTL/3 automatically
+keepAliveCh, _ := client.KeepAlive(ctx, resp.ID)
+
+// Revoke: explicitly release the lease (graceful shutdown)
+_, _ = client.Revoke(ctx, resp.ID)
+```
+
+Followers watch for key deletion (`mvccpb.DELETE` event on `/service/leader`) and attempt to acquire a new lease when the leader's key disappears.
+
+### Clock Skew Risk
+
+```
+Lock service clock:  10:00:00  ──────────────────►  10:00:10 (lease expires)
+Leader clock (fast): 10:00:02  ──────────────────►  10:00:12
+
+Leader thinks it has 2 more seconds of valid lease.
+Lock service already expired at leader's 10:00:12 = service's 10:00:10.
+Window of danger: leader acts on an expired lease.
+```
+
+**Mitigation: Conservative Renewal Cadence**
+
+Renew at 1/3 of TTL. This gives 2/3 of the TTL as buffer for clock drift, network delay, and GC pauses.
+
+```
+TTL = 10s → renew every ~3.3s
+TTL = 30s → renew every ~10s
+
+If renewal fails:
+  - First miss: 6.7s remaining → retry immediately
+  - Second miss: 3.3s remaining → start stepping down
+  - Third miss: 0s → must stop all leader activity
+```
+
+---
+
+## Split-Brain and Fencing: Deep Dive
+
+### The GC Pause Scenario
+
+```
+T=0    Leader A acquires lease (token=100), starts processing writes
+T=5    Leader A enters full GC pause (stop-the-world, 30 seconds)
+T=10   Lease expires on lock service
+T=11   Leader B acquires lease (token=101), starts accepting writes
+T=35   Leader A's GC finishes. Local state says "I'm leader."
+       A writes to storage → DATA CORRUPTION if unfenced
+```
+
+This is not theoretical. JVM GC pauses of 10+ seconds are documented in production with large heaps.
+
+### Fencing Tokens as the Safety Net
+
+Every lease grant returns a monotonically increasing token. Storage must reject writes with stale tokens.
+
+```
+  Lock Service          Leader A           Leader B           Storage
+       │                    │                  │                  │
+       │──lease(tok=100)──►│                  │                  │
+       │                    │──write(tok=100)─────────────────►  │ ✓ accepted
+       │                    │    (GC pause)    │                  │
+       │──lease(tok=101)──────────────────────►│                  │
+       │                    │                  │──write(tok=101)─►│ ✓ accepted
+       │                    │  (GC resumes)    │                  │
+       │                    │──write(tok=100)─────────────────►  │ ✗ REJECTED
+       │                    │                  │                  │   (100 < 101)
+```
+
+### ZooKeeper and etcd Fencing Values
+
+```
+ZooKeeper: use zxid (transaction ID) as fencing token.
+  Globally incremented on every write. Use zxid from session creation.
+
+etcd: use revision (global monotonic counter) as fencing token.
+  resp, _ := client.Grant(ctx, 10)
+  fencingToken := resp.Header.Revision  // monotonic across all keys
+```
+
+### STONITH: When Fencing Tokens Are Not Feasible
+
+When storage does not support fencing tokens (legacy databases, third-party APIs), ensure the old leader is dead before the new one acts.
+
+```
+STONITH (Shoot The Other Node In The Head):
+  - Power-cycle via IPMI/BMC, terminate VM via hypervisor API
+  - Revoke network access via SDN rules
+
+Used by: Pacemaker/Corosync, VMware HA, AWS (terminate EC2 via API)
+
+Tradeoff:
+  + Guarantees old leader cannot act
+  - Requires infrastructure-level access and adds operational complexity
+```
+
+---
+
+## Leader Election in Practice: Ecosystem Patterns
+
+### Kubernetes Leader Election
+
+Kubernetes uses the `coordination.k8s.io/v1` Lease resource for built-in leader election. Controllers and operators use this to ensure only one instance is active.
+
+```yaml
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
+  name: my-controller-leader
+  namespace: kube-system
+spec:
+  holderIdentity: "controller-pod-abc"
+  leaseDurationSeconds: 15
+  acquireTime: "2025-01-15T10:00:00Z"
+  renewTime: "2025-01-15T10:00:10Z"
+  leaseTransitions: 3
+```
+
+```
+Sidecar pattern:
+  Pod = leader election sidecar + main application container
+  Sidecar renews lease → exposes /healthz as "leader"
+  Main container checks /healthz before doing leader work
+  Lease lost → sidecar unhealthy → main stops leader tasks
+```
+
+The `client-go` library provides `leaderelection.LeaderElector` with configurable callbacks for campaign, renewal, and step-down.
+
+### Redis RedLock: The Controversy
+
+Redlock attempts distributed locking across N independent Redis instances (typically 5). A lock is acquired when a majority (N/2+1) grant it within a time bound.
+
+```
+Redlock algorithm:
+  1. Get current time T1
+  2. SET key with NX + TTL on all N Redis instances
+  3. Lock acquired if majority (≥3/5) granted AND (T2-T1) < TTL
+  4. Effective TTL = original TTL - acquisition time
+
+Kleppmann critique: GC pauses break safety, no fencing tokens, assumes bounded drift
+Antirez response: clock drift bounded in practice with NTP
+
+Verdict:
+  ✓ Fine for distributed locks (mutual exclusion for efficiency)
+  ✗ Questionable for leader election requiring strong correctness
+```
+
+### Cloud-Native Approaches
+
+```
+AWS:
+  DynamoDB conditional writes:
+    PutItem with ConditionExpression:
+      "attribute_not_exists(leader_id) OR lease_expiry < :now"
+    Atomic, strongly consistent, no separate lock service needed.
+
+  ElastiCache (Redis) + Lua script:
+    Use SET NX EX for single-instance leader lock.
+    Avoid Redlock unless you need cross-AZ redundancy.
+
+GCP:
+  Cloud Spanner: TrueTime-based leases (bounded clock uncertainty).
+  Chubby (internal): lease-based lock service that inspired ZooKeeper.
+```
+
+---
+
+## Election Protocol Comparison
+
+| Property | Raft | ZooKeeper ZNodes | etcd Lease | Bully |
+|---|---|---|---|---|
+| **Detection time** | 1-5s | 5-30s (session) | 5-30s (TTL) | 2× RTT |
+| **Fencing** | Term number | zxid | Revision | None |
+| **Split-brain safety** | Strong (quorum) | Strong (quorum) | Strong (Raft-backed) | Weak |
+| **Ops complexity** | High | Medium | Medium | Low |
+| **Partition behavior** | Minority loses leader | Minority loses sessions | Minority loses leases | Both elect |
+| **Consistency** | Linearizable | Linearizable (writes) | Linearizable | None |
+
+### When to Use Each
+
+```
+Raft:       Already running Raft-based system, need strongest guarantees
+ZooKeeper:  Existing ZK infra (Kafka/HBase), need ordered succession
+etcd lease: Kubernetes-native, lightweight coordination, gRPC ecosystem
+Bully:      Single datacenter, no partition tolerance needed, prototyping
+```
+
+> **Scope note:** For detailed coverage of the consensus mechanisms underlying these protocols, see `08-consensus-algorithms.md`. For transactional guarantees built on top of leader election, see `07-distributed-transactions.md`.
+
+---
+
 ## Key Takeaways
 
 1. **Leader simplifies coordination** - Single decision maker
