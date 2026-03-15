@@ -483,6 +483,227 @@ def check_multi_leader_health():
 
 ---
 
+## Conflict Detection Timing
+
+The moment you choose to detect conflicts determines the fundamental character of your multi-leader system. There are two approaches, and the choice is not really a choice at all.
+
+### Synchronous Detection
+
+Detect conflicts at write time by coordinating with other leaders before acknowledging the write.
+
+```
+Client → Leader A: write(x, 1)
+Leader A → Leader B: "I'm about to write x, any conflicts?"
+Leader B → Leader A: "No conflict" (or "Conflict — reject")
+Leader A → Client: "Write accepted"
+
+Round-trip cost: cross-datacenter latency added to every write
+```
+
+This approach requires the same cross-leader communication that single-leader replication uses. If Leader B is unreachable, Leader A must either block (losing availability) or proceed without checking (losing the guarantee). You have re-invented single-leader replication with extra steps.
+
+### Asynchronous Detection
+
+Accept the write immediately, detect conflicts when replication delivers the write to other leaders.
+
+```
+Client → Leader A: write(x, 1)       ← returns immediately
+Leader A → Leader B: replicate(x, 1) ← happens later
+Leader B: detects conflict with local write(x, 2)
+Leader B: applies resolution strategy
+```
+
+This is the standard approach. The write is fast because it only touches the local leader. Conflicts surface later — seconds or minutes later in cross-region setups — and are resolved after the fact.
+
+### The Fundamental Tradeoff
+
+```
+Synchronous:  Strong consistency + high write latency + reduced availability
+Asynchronous: Eventual consistency + low write latency  + high availability
+```
+
+Most multi-leader systems choose async detection because latency is the reason you chose multi-leader in the first place. If you could tolerate cross-datacenter round-trips on every write, you would use single-leader replication and avoid the entire conflict problem. Choosing synchronous conflict detection in a multi-leader setup is a contradiction — you pay the complexity cost of multi-leader without getting the latency benefit.
+
+The exception: systems like Galera Cluster use "virtually synchronous" certification-based replication where the conflict check happens at commit time with minimal coordination. This works within a single region but breaks down at cross-region latencies.
+
+---
+
+## Real System Implementations
+
+Understanding how production systems implement multi-leader replication reveals the gap between theory and practice. Most systems make significant compromises.
+
+### CockroachDB
+
+CockroachDB is **not true multi-leader**. It uses Raft consensus per range (a subset of keys), with a single leaseholder per range that accepts writes. From a client perspective it may look multi-leader — any node can accept a write request — but the node proxies that write to the leaseholder for the relevant range. This is single-leader-per-partition, not multi-leader.
+
+```
+Client → Node 3 → (proxy) → Node 1 (leaseholder for range) → Raft consensus → commit
+```
+
+This distinction matters: CockroachDB provides serializable isolation precisely because it avoids multi-leader conflicts.
+
+### MySQL Group Replication (Multi-Primary Mode)
+
+True multi-leader. All members accept writes. Conflict detection uses **certification-based replication**: each transaction carries a write set (the set of rows it modified). At commit time, the group communication layer checks whether any concurrent transaction modified overlapping rows. If so, the later transaction is rolled back.
+
+```
+Transaction T1 on Node A: write set = {row 5, row 12}
+Transaction T2 on Node B: write set = {row 12, row 30}
+Overlap on row 12 → T2 is rolled back, client must retry
+```
+
+This is synchronous conflict detection, which limits MySQL Group Replication to low-latency network environments (same region).
+
+### PostgreSQL BDR (Bi-Directional Replication)
+
+Asynchronous multi-leader replication with column-level conflict detection. If two leaders update different columns of the same row, BDR merges them without flagging a conflict. Supports CRDT-based data types for automatic resolution. See `01-foundations/04-consistency-models.md` for CRDT details.
+
+```
+Leader A: UPDATE user SET name='Alice' WHERE id=1
+Leader B: UPDATE user SET email='a@new.com' WHERE id=1
+
+Column-level detection → no conflict → merge both changes
+Row-level detection → conflict → requires resolution
+```
+
+### Google Docs (Operational Transformation)
+
+Technically multi-leader: every open client is a leader that accepts local edits immediately. Conflict resolution uses Operational Transformation (OT), which transforms concurrent operations so they can be applied in any order and converge to the same document state.
+
+```
+User A inserts "X" at position 5
+User B inserts "Y" at position 3 (concurrent)
+
+OT transforms A's operation: insert "X" at position 6 (shifted by B's insert)
+Both converge to same document
+```
+
+OT works for character-level operations but does not generalize to arbitrary database writes.
+
+### DynamoDB Global Tables
+
+Multi-region multi-leader using last-writer-wins resolution. Each item carries a version attribute and a timestamp. Concurrent writes to the same item in different regions result in the higher-timestamp write winning. DynamoDB does not expose conflicts to the application — the losing write is silently discarded.
+
+```
+Region us-east-1: PutItem(pk="user#1", name="Alice", ts=100)
+Region eu-west-1: PutItem(pk="user#1", name="Bob",   ts=102)
+
+Resolution: name="Bob" (ts 102 > 100)
+Alice's write is lost — no notification, no record
+```
+
+This is acceptable for session data, caches, and last-login timestamps. It is not acceptable for financial records, inventory counts, or anything where silent data loss causes business impact.
+
+---
+
+## Multi-Leader Anti-Patterns
+
+These are recurring mistakes that cause production incidents in multi-leader deployments. Each looks harmless in a single-leader setup but becomes dangerous when multiple leaders accept concurrent writes.
+
+### Auto-Increment Primary Keys
+
+```
+Leader A: INSERT user → id = 101
+Leader B: INSERT user → id = 101
+
+Replication: two different users with id = 101
+Foreign keys, application caches, API responses — all corrupted
+```
+
+**Fix:** Use UUIDs, Snowflake IDs (Twitter-style time-sortable distributed IDs), or pre-allocated ID ranges per leader. UUIDs are simplest but use 128 bits and fragment B-tree indexes. Snowflake IDs give sortability without coordination.
+
+### Foreign Key Constraints Across Leaders
+
+```
+Leader A: DELETE FROM users WHERE id = 123
+Leader B: INSERT INTO orders (user_id) VALUES (123)  ← concurrent
+
+After replication:
+  Leader A has an order referencing a deleted user
+  Leader B has a deleted user with no dangling orders (order was inserted before delete arrived)
+  State diverges between leaders
+```
+
+**Fix:** Use soft deletes (`deleted_at` timestamp) so the row always exists for FK purposes. Or drop FK constraints entirely and enforce referential integrity at the application level with async repair jobs.
+
+### Unique Constraints
+
+```
+Leader A: INSERT INTO users (email) VALUES ('alice@example.com')  ← succeeds locally
+Leader B: INSERT INTO users (email) VALUES ('alice@example.com')  ← succeeds locally
+
+After replication: two rows with same email on both leaders
+Unique index is violated — most databases reject the replicated row
+  leaving the two leaders permanently diverged
+```
+
+**Fix:** Route all writes for unique-constrained entities to a single designated leader (effectively falling back to single-leader for those tables). Alternatively, use deterministic conflict resolution (e.g., keep the row with the lower UUID).
+
+### Triggers and Stored Procedures
+
+Triggers that fire on write may produce different side effects on each leader depending on local state at execution time. A trigger that sends a notification email will send it twice — once on each leader when replication applies the write.
+
+**Fix:** Design triggers to be idempotent and deterministic. Better yet, move side-effect logic out of the database and into application-level event handlers that deduplicate.
+
+### Schema Changes (DDL)
+
+```
+Leader A: ALTER TABLE users ADD COLUMN phone VARCHAR(20)
+Leader B: ALTER TABLE users ADD COLUMN phone INTEGER
+
+Both succeed locally. Replication of data rows now fails
+because column types don't match.
+```
+
+**Fix:** Coordinate DDL changes through a single control plane. Apply schema migrations to all leaders in a defined order. Tools like `pt-online-schema-change` or `gh-ost` help but must be orchestrated across leaders.
+
+---
+
+## Monitoring Multi-Leader Health
+
+Standard database monitoring is necessary but not sufficient for multi-leader. You must monitor the replication relationships themselves — and monitor them in both directions.
+
+### Replication Lag Per Direction
+
+In single-leader, lag is unidirectional: leader → follower. In multi-leader, every pair of leaders has bidirectional replication, and lag may differ by direction.
+
+```
+A → B lag: 200ms  (normal — cross-Atlantic)
+B → A lag: 45s    (problem — B's outbound replication is stalled)
+
+Monitor each direction independently. Alert thresholds should
+account for expected cross-region latency.
+```
+
+### Conflict Rate Tracking
+
+Track conflicts per second, broken down by table and conflict type. A sudden spike in conflict rate usually indicates an application bug (e.g., a new code path that stopped routing writes to the correct leader) rather than an infrastructure problem.
+
+```
+Baseline: 2 conflicts/sec (acceptable for this workload)
+Alert:    50 conflicts/sec sustained for 5 minutes
+Action:   check recent deployments, examine conflict details
+```
+
+### Divergence Detection
+
+Even with conflict resolution, leaders can silently diverge due to bugs in replication or resolution logic. Run periodic full-table checksums to verify that leaders hold identical data.
+
+```
+MySQL:   pt-table-checksum — computes per-chunk CRC32 across replicas
+Postgres: pg_comparator — detects row-level differences between instances
+
+Schedule: nightly for large tables, hourly for critical small tables
+```
+
+### Queue Depth and Split-Brain Indicators
+
+Monitor pending replication events per leader. A growing queue means replication is falling behind consumption — eventually the queue fills and replication stalls or drops events.
+
+Split-brain detection: if both leaders are accepting writes for the same key space but replication between them has been down for longer than your alert threshold, you are accumulating conflicts that will be painful to resolve. Alert on `replication_link_down AND write_rate > 0` for both leaders simultaneously.
+
+---
+
 ## Key Takeaways
 
 1. **Writes anywhere** - Low latency, but conflicts possible

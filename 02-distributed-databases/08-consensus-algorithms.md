@@ -518,6 +518,297 @@ Data: Simpler replication (cheaper)
 
 ---
 
+## Raft Internals Deep Dive
+
+### Election Timeout Randomization
+
+```
+Default range: 150–300ms (per the Raft paper)
+
+Why this range?
+  - Lower bound must be >> network RTT + disk fsync
+  - Upper bound caps worst-case failover time
+
+Too narrow (150–160ms): simultaneous timeouts → split votes → no progress
+Too wide (150–5000ms): safe, but 5s worst-case failover is unacceptable
+
+Production tuning (etcd recommendation):
+  election_timeout >= 10 × round_trip_time
+  election_timeout >= 10 × disk_fsync_latency
+```
+
+### Log Compaction and Snapshotting
+
+```
+Problem: Raft log grows unbounded → memory and disk pressure
+
+Compaction flow:
+  1. State machine serializes state to snapshot file
+  2. Tag with last_included_index and last_included_term
+  3. Discard log entries up to that index
+  4. On restart: load snapshot, replay remaining log
+
+InstallSnapshot RPC (leader → far-behind follower):
+  - Leader sends snapshot in chunks → follower replaces entire state
+  - Follower discards log entries ≤ snapshot index
+  - Resumes normal AppendEntries from snapshot index + 1
+  - Triggered when follower too far behind or just joined
+
+Gotcha: snapshot creation can block state machine
+  - Use copy-on-write (RocksDB checkpoint) or fork-based snapshots
+```
+
+### Pre-Vote Protocol (Raft §9.6)
+
+```
+Problem: Server partitioned from leader, increments term repeatedly
+  - When partition heals, its high term forces current leader to step down
+  - Unnecessary election disrupts healthy cluster
+
+Pre-vote solution:
+  1. Candidate sends PreVote (does NOT increment term yet)
+  2. Other nodes reply: "Would you vote for me IF I started an election?"
+  3. Only if pre-vote majority succeeds → candidate increments term, runs real election
+  4. Partitioned server fails pre-vote → never disrupts the cluster
+
+Adopted by: etcd (default since v3.4), TiKV, CockroachDB
+```
+
+### Membership Changes in Practice
+
+```
+Joint consensus (Raft paper): commit C_old,new (both quorums needed),
+  then commit C_new. Correct but complex to implement.
+
+Single-server changes (widely adopted):
+  - Add/remove one node at a time → old and new quorums always overlap
+  - Used by: etcd, CockroachDB, Consul
+
+Learner nodes (non-voting replicas):
+  - Receive AppendEntries but do NOT vote
+  - Let new node catch up before counting toward quorum
+  - Without learners: {A,B,C} → {A,B,C,D}, D empty log
+    If B fails, quorum needs 3/4, but D can't ack → stuck
+  - With learners: D catches up first, then promoted to voter
+  - Supported by: etcd (--learner flag), TiKV
+```
+
+---
+
+## Paxos vs Raft: The Real Differences
+
+### What the Papers Actually Specify
+
+```
+Paxos (Lamport, 1998/2001):
+  - Single-decree: fully specified
+  - Multi-decree: under-specified — no leader election, no log compaction,
+    no membership changes. Each impl fills gaps differently.
+
+Raft (Ongaro & Ousterhout, 2014):
+  - One paper covers everything: election, replication, safety,
+    membership changes, compaction. Implementable from the paper alone.
+```
+
+### Leader Completeness Property
+
+```
+Raft's key insight: "A leader always has all committed entries in its log"
+  - Logs never flow follower → leader
+  - Conflict resolution trivial: leader's log wins
+
+Paxos lacks this: any node can propose → must reconcile gaps,
+  acceptors may have entries the proposer doesn't
+```
+
+### Performance in Practice
+
+```
+Throughput: Raft ≈ Multi-Paxos (both bottleneck on disk fsync + network)
+The real difference is implementability:
+  - Google needed 2+ years for Paxos in Chubby
+  - etcd shipped production Raft in months
+  - Fewer bugs = fewer consensus violations in production
+```
+
+### When to Use Which
+
+```
+             │ Raft            │ Multi-Paxos      │ EPaxos
+─────────────┼─────────────────┼──────────────────┼──────────────────
+Leader       │ Required        │ Required         │ No (leaderless)
+Geo-friendly │ Poor            │ Poor             │ Good
+Complexity   │ Low             │ High             │ Very High
+Used by      │ etcd, Consul,   │ Spanner, Chubby  │ Research only
+             │ CockroachDB     │                  │
+Best for     │ Most new systems│ Google-scale     │ Multi-region
+```
+
+---
+
+## Production Consensus Configuration
+
+### etcd Tuning
+
+```
+Key flags:
+  --heartbeat-interval    100ms  (default)
+  --election-timeout     1000ms  (default)
+
+Critical rule: disk_fsync_latency < election_timeout / 10
+  fsync 80ms → election timeout ≥ 800ms
+  Why? Slow fsync delays heartbeat → followers start elections
+
+Disk: SSD required, dedicated WAL disk, monitor wal_fsync_duration_seconds
+```
+
+### ZooKeeper Tuning
+
+```
+tickTime:   2000ms  (base time unit, heartbeat = 1 tick)
+initLimit:  10      (ticks for follower to sync with leader on startup)
+syncLimit:  5       (ticks for follower to fall behind before being dropped)
+
+Session timeout: client-negotiated, bounded by [2×tickTime, 20×tickTime]
+  - Too low: transient network blip kills sessions, ephemeral nodes vanish
+  - Too high: dead client's locks held too long
+
+ZAB vs Raft:
+  - ZAB uses TCP ordering guarantee to simplify replication
+  - Recovery protocol differs: ZAB syncs full history, Raft uses log matching
+```
+
+### Cluster Sizing
+
+```
+Nodes │ Quorum │ Failures tolerated │ Notes
+──────┼────────┼────────────────────┼─────────────────────────
+  3   │   2    │        1           │ Minimum production setup
+  5   │   3    │        2           │ Standard for most systems
+  7   │   4    │        3           │ Rare; higher write latency
+  9   │   5    │        4           │ Almost never justified
+
+Why not more?
+  - Every write must reach majority → more nodes = higher latency
+  - Diminishing returns: 3→5 doubles fault tolerance, 5→7 adds only 1
+  - Cross-region: each additional region adds RTT to commit latency
+```
+
+### Cross-Region Consensus
+
+```
+Fundamental constraint:
+  Commit latency ≥ max RTT to reach quorum across regions
+
+Approaches:
+  1. Spanner (TrueTime): atomic clocks → bounded uncertainty (~7ms),
+     read-only txns skip consensus, writes still pay cross-region RTT
+  2. CockroachDB (Leaseholder): leaseholder serves reads locally,
+     writes need Raft quorum, lease migrates toward traffic
+  3. Raft with witnesses: full replicas in 2 regions, lightweight
+     witness in 3rd (votes but stores no data → cheaper)
+```
+
+### What to Monitor
+
+```
+Critical metrics (etcd/Raft-based systems):
+  1. Committed index lag (leader - follower) → follower falling behind
+  2. Proposal apply duration → state machine bottleneck
+  3. Snapshot send duration → follower was very far behind
+  4. Leader changes counter → frequent = instability
+  5. Proposal failures → normal during elections, abnormal otherwise
+  6. wal_fsync_duration_seconds → disk health indicator
+```
+
+---
+
+## Consensus Failure Modes
+
+### Split Vote Loops
+
+```
+Scenario: 5-node cluster, leader crashes
+  T=0:     Leader dies
+  T=150ms: B and C timeout simultaneously, both become candidates
+  T=152ms: B gets vote from D, C gets vote from E → 2 each, no majority
+  T=300ms: Both timeout, increment term, retry → cycle repeats
+
+Root cause: election timeouts too close together
+Fix: widen randomization range, ensure ≥ 10× RTT spread
+In practice: resolves within 1-3 rounds (sustained loops near-impossible)
+```
+
+### Slow Follower Impact
+
+```
+Myth: "Slow followers don't affect commits — leader only needs majority"
+
+Reality: tail latency shifts when a fast follower degrades
+
+  5-node cluster, follower latencies: 1ms, 2ms, 50ms, 200ms
+  Commit waits for 2nd fastest → 2ms (good)
+
+  If one fast follower degrades:  1ms, 80ms, 50ms, 200ms
+  Commit waits for 2nd fastest → 50ms (slow follower now in quorum)
+
+Takeaway: monitor per-follower replication latency, not just average
+```
+
+### Disk I/O Stalls
+
+```
+Scenario: fsync on follower takes > election timeout
+  1. Disk stalls (GC pause, I/O contention, EBS hiccup)
+  2. Follower can't ack → election timer fires → starts election
+  3. If its log is current, it wins → old leader steps down
+  4. Workload shifts to new leader → its disk might stall too
+  Result: election storm, cascading leader changes
+
+Prevention:
+  - Dedicated SSD for consensus WAL (never share with app I/O)
+  - Election timeout >> worst-case fsync (measure p999, not p50)
+  - Pre-vote prevents stalled node from disrupting cluster
+```
+
+### Asymmetric Network Partitions
+
+```
+Topology: A ↔ B OK, A ↔ C OK, B ↔ C BROKEN
+
+If A is leader:
+  - Reaches both B and C → quorum intact, commits proceed normally
+
+If B is leader:
+  - B + A = majority → commits succeed
+  - C can't reach leader → stale reads, eventually times out
+  - C starts elections, increments terms → disruptive without pre-vote
+
+Key insight: asymmetric partitions are hardest to reason about
+  - Test with Jepsen, Toxiproxy, or tc netem
+  - Pre-vote prevents term inflation from partially isolated nodes
+```
+
+### Leader Thrashing
+
+```
+Symptoms: leader changes every few seconds, write latency spikes (~1-2s
+  per election), sawtooth pattern in leader_changes counter
+
+Common causes:
+  1. Aggressive timeout + bursty load → leader misses heartbeat window
+  2. Resource contention → GC pause > election timeout
+  3. Clock skew → lease-based reads break (leader/follower disagree)
+
+Fixes:
+  - Increase election timeout (trade availability for stability)
+  - Isolate consensus process from application (dedicated CPU/disk)
+  - Priority-based election: prefer nodes with better hardware
+  - Check quorum: leader steps down if can't reach majority
+```
+
+---
+
 ## Key Takeaways
 
 1. **Consensus solves agreement** - One value, all nodes agree
