@@ -462,6 +462,372 @@ BF.EXISTS myfilter item2  # Returns 0 (definitely not)
 
 ---
 
+## Sizing a Bloom Filter
+
+### The Core Formulas
+
+```
+Given:
+  n = expected number of elements
+  p = desired false positive rate (e.g., 0.01 for 1%)
+
+Optimal bit array size:
+  m = -(n × ln(p)) / (ln(2))²
+
+Optimal number of hash functions:
+  k = (m / n) × ln(2)
+```
+
+### Worked Example
+
+```
+Goal: Store 10 million elements with 1% false positive rate
+
+Step 1 — Compute m (bits):
+  m = -(10,000,000 × ln(0.01)) / (ln(2))²
+  m = -(10,000,000 × (-4.605)) / (0.4805)
+  m = 95,850,584 bits ≈ 95.9M bits ≈ 12 MB
+
+Step 2 — Compute k (hash functions):
+  k = (95,850,584 / 10,000,000) × ln(2)
+  k = 9.585 × 0.693
+  k ≈ 6.64 → round to 7 hash functions
+
+Result: 12 MB of memory, 7 hash functions, 1% FPR
+  Compare: storing 10M 64-byte keys directly = 640 MB
+  Bloom filter uses ~53× less memory
+```
+
+### Memory Per Element at Different FPR Targets
+
+```
+┌──────────────────┬──────────────────┬────────────────────────┬───────────┐
+│ Target FPR       │ Bits per Element │ Memory for 10M entries │ k (hashes)│
+├──────────────────┼──────────────────┼────────────────────────┼───────────┤
+│ 10%   (0.1)      │  4.8 bits        │  6.0 MB                │  3        │
+│ 1%    (0.01)     │  9.6 bits        │ 12.0 MB                │  7        │
+│ 0.1%  (0.001)    │ 14.4 bits        │ 18.0 MB                │ 10        │
+│ 0.01% (0.0001)   │ 19.2 bits        │ 24.0 MB                │ 13        │
+│ 0.001%(0.00001)  │ 24.0 bits        │ 30.0 MB                │ 17        │
+└──────────────────┴──────────────────┴────────────────────────┴───────────┘
+
+Key insight: each additional 4.8 bits/element buys you one order of magnitude
+improvement in false positive rate. Diminishing returns beyond 0.01%.
+```
+
+### Practical Sizing Checklist
+
+```
+1. Estimate n conservatively — overcount by 20-30% for growth headroom
+2. Pick p based on workload:
+   - Read-heavy, point lookups → 0.01 (1%) is usually fine
+   - Expensive downstream operations → 0.001 (0.1%) worth the extra memory
+   - Cheap downstream operations → 0.1 (10%) saves memory
+3. Verify m fits in memory budget
+4. Round k to nearest integer — off-by-one has negligible impact
+```
+
+---
+
+## Bloom Filters in Real Systems
+
+### RocksDB
+
+```
+Per-SST bloom filter. Each SSTable file gets its own bloom filter stored
+in the file's metadata block.
+
+Configuration: bits_per_key (default 10 → ~1% FPR)
+  options.filter_policy.reset(NewBloomFilterPolicy(10));
+
+Impact:
+  - Point lookup on non-existent key: 1 bloom check vs reading index + data block
+  - Reduces read amplification by ~100× for negative lookups
+  - Full filter (not block-based) avoids index lookup to find filter block
+  - Bloom filter is loaded into block cache on first access
+
+Tuning:
+  - bits_per_key = 10 → good default for most workloads
+  - bits_per_key = 15-20 → for workloads with many point lookups on missing keys
+  - Bloom filters do NOT help range scans — only point lookups (Get/MultiGet)
+```
+
+### Cassandra
+
+```
+Partition-level bloom filter. One filter per SSTable, keyed on partition key.
+
+Configuration: bloom_filter_fp_chance per table (default 0.01)
+  ALTER TABLE users WITH bloom_filter_fp_chance = 0.001;
+
+Guidelines:
+  - Read-heavy table (95%+ reads): set to 0.001 — memory cost is marginal
+  - Write-heavy table (high compaction): set to 0.1 — saves memory, writes
+    will naturally consolidate SSTables
+  - Counter tables: default 0.01 is fine
+  - Tables accessed primarily by range scan: set to 1.0 to disable entirely
+
+Memory impact:
+  bloom_filter_fp_chance = 0.01 → ~10 bits/partition key
+  bloom_filter_fp_chance = 0.001 → ~15 bits/partition key
+  Monitor via nodetool tablestats → "Bloom filter space used"
+```
+
+### HBase
+
+```
+Per-StoreFile bloom filter. Configurable granularity per column family.
+
+Schema configuration:
+  create 'my_table', {NAME => 'cf', BLOOMFILTER => 'ROW'}
+
+Granularity options:
+  NONE       — no bloom filter
+  ROW        — bloom on row key (default, best for row-level gets)
+  ROWCOL     — bloom on row + column qualifier (for wide rows with column gets)
+
+ROW vs ROWCOL:
+  ROW:    good when you read entire rows, 1 entry per row
+  ROWCOL: good when you read specific columns from wide rows,
+          1 entry per (row, column) pair — more memory, fewer false positives
+```
+
+### PostgreSQL
+
+```
+No built-in bloom filter for heap tables, but the bloom extension provides
+multi-column bloom indexes.
+
+  CREATE EXTENSION bloom;
+  CREATE INDEX idx_bloom ON orders USING bloom (customer_id, product_id)
+    WITH (length=80, col1=2, col2=4);
+
+Use case: ad-hoc queries filtering on arbitrary column combinations.
+Traditional B-tree index only helps if query matches the leftmost prefix.
+Bloom index handles any subset of indexed columns.
+
+Trade-off: higher false positive rate than B-tree (requires recheck),
+but single index covers all column combinations.
+```
+
+### Redis (RedisBloom Module)
+
+```
+Server-side bloom filter via BF.* commands.
+
+  BF.RESERVE usernames 0.001 1000000    # 0.1% FPR, 1M capacity
+  BF.ADD usernames "alice"
+  BF.EXISTS usernames "alice"           # → 1
+  BF.EXISTS usernames "bob"             # → 0
+
+  BF.MADD usernames "bob" "charlie"     # bulk insert
+  BF.MEXISTS usernames "bob" "dave"     # bulk check
+
+Auto-scaling: BF.ADD without BF.RESERVE creates a default filter (capacity
+100, FPR 0.01) that scales automatically via sub-filters.
+
+Use case: rate limiting, username uniqueness pre-check, deduplication
+in streaming pipelines.
+```
+
+---
+
+## Bloom Filter Variants
+
+### Counting Bloom Filter
+
+```
+Replaces single bits with n-bit counters (typically 4 bits).
+
+  Add:    increment counters at hash positions
+  Delete: decrement counters at hash positions
+  Query:  check all counters > 0
+
+Trade-offs:
+  + Supports deletion
+  - 4× more memory (4 bits per counter vs 1 bit)
+  - Counter overflow risk with 4-bit counters (max 15)
+  - Rarely used in production — cuckoo filter is usually better for deletion
+```
+
+### Cuckoo Filter
+
+```
+Uses cuckoo hashing with fingerprints stored in a hash table.
+
+  Insert: store fingerprint at one of two candidate buckets
+          if both full, evict an existing entry and relocate it
+  Delete: remove fingerprint from its bucket
+  Query:  check both candidate buckets for fingerprint
+
+Trade-offs:
+  + Supports deletion without extra memory overhead
+  + Better space efficiency than counting bloom at FPR < 3%
+  + Constant-time lookups (check exactly 2 buckets)
+  - Insertion can fail at high load factor (>95%)
+  - Duplicate insertions require tracking (same item inserted twice)
+```
+
+### Ribbon Filter (RocksDB)
+
+```
+Newer filter designed for static datasets (write-once, read-many).
+Used in RocksDB since v6.15 as an alternative to standard bloom.
+
+  How: solves a system of linear equations over GF(2) during construction
+  Result: ~30% more space-efficient than standard bloom for same FPR
+
+Trade-offs:
+  + 30% smaller than standard bloom at same FPR
+  + Same query speed as standard bloom
+  - 3-4× slower to build (acceptable for SSTable write path)
+  - Not suitable for dynamic sets (no incremental add)
+
+RocksDB usage:
+  options.filter_policy.reset(NewRibbonFilterPolicy(10));
+```
+
+### Quotient Filter
+
+```
+Cache-friendly alternative using open addressing.
+
+  Stores quotient and remainder of hash in a compact hash table.
+  Uses linear probing — sequential memory access pattern.
+
+Trade-offs:
+  + Cache-friendly (sequential access, good for CPU cache lines)
+  + Supports merging two filters (useful for LSM compaction)
+  + Supports deletion and resizing
+  - ~10-25% more space than standard bloom for same FPR
+  - More complex implementation
+```
+
+### Comparison Table
+
+```
+┌─────────────────┬──────────┬──────────────────┬────────────┬─────────────┐
+│ Filter          │ Deletion │ Space Efficiency  │ Build Time │ Query Time  │
+├─────────────────┼──────────┼──────────────────┼────────────┼─────────────┤
+│ Standard Bloom  │ No       │ Baseline         │ Fast       │ O(k)        │
+│ Counting Bloom  │ Yes      │ 3-4× worse       │ Fast       │ O(k)        │
+│ Cuckoo Filter   │ Yes      │ Better at <3% FPR│ Fast       │ O(1)        │
+│ Ribbon Filter   │ No       │ 30% better       │ 3-4× slower│ O(k)        │
+│ Quotient Filter │ Yes      │ 10-25% worse     │ Fast       │ Amortized   │
+└─────────────────┴──────────┴──────────────────┴────────────┴─────────────┘
+
+Selection guide:
+  - Default choice for storage engines → Standard Bloom or Ribbon
+  - Need deletion → Cuckoo filter
+  - Need merging (e.g., compaction) → Quotient filter
+  - Need deletion + memory constrained → Cuckoo filter (not counting bloom)
+```
+
+---
+
+## Production Pitfalls
+
+### Undersized Bloom Filter
+
+```
+Symptom: FPR climbs well above configured target
+Cause:   more elements inserted than planned capacity (n)
+
+Example:
+  Filter sized for 1M elements at 1% FPR
+  Actually inserted 5M elements
+  Effective FPR: ~18% — filter is nearly useless
+
+Fix: monitor actual FPR → (false positives / total negative queries)
+  If actual FPR > 2× target, rebuild with larger capacity.
+  Proactive: size for 1.5-2× expected growth from the start.
+```
+
+### Hash Function Quality
+
+```
+Poor hash functions produce correlated bit positions.
+Effective FPR becomes much worse than theoretical.
+
+Bad choices:
+  - MD5 / SHA-256: cryptographic, slow, overkill — not designed for bloom
+  - Java .hashCode(): poor avalanche properties, correlated outputs
+  - Simple modular hashing: clustering
+
+Good choices:
+  - MurmurHash3: fast, excellent distribution, standard in most systems
+  - xxHash: fastest option, good distribution, used in newer systems
+  - CityHash/FarmHash: Google's family, excellent for strings
+
+Double hashing technique:
+  Compute h1 and h2 once, derive k hashes as h_i = h1 + i × h2
+  Proven to preserve theoretical FPR guarantees (Kirsch & Mitzenmacher, 2006)
+```
+
+### Memory Pressure at Scale
+
+```
+Bloom filters live in memory for fast access. At scale, they add up.
+
+Example budget:
+  100 GB dataset, average key size 64 bytes → ~1.6B keys
+  10 bits/key bloom filter = 16 Gbit = 2 GB of bloom filters
+  That's 2 GB of memory just for bloom filters
+
+Mitigation:
+  - Tiered bloom filters: keep L0-L1 bloom filters in memory, load
+    deeper levels on demand from block cache
+  - RocksDB: bloom filters stored in block cache, subject to eviction
+  - Cassandra: bloom filters loaded at startup, monitor heap usage
+    via nodetool tablestats
+
+Rule of thumb: budget 1-2% of dataset size for bloom filters at 1% FPR
+```
+
+### False Negatives After Resize
+
+```
+Standard bloom filters CANNOT be resized in place.
+
+If dataset grows beyond planned capacity:
+  1. FPR degrades silently (no error, just more false positives)
+  2. Must rebuild: create new larger filter, re-insert all elements
+  3. Rebuilding requires access to all original elements (or re-scan data)
+
+Alternatives for growing datasets:
+  - Scalable Bloom Filter (SBF): chain of filters with tightening FPR
+    Each new sub-filter uses stricter p to keep aggregate FPR bounded
+  - Partitioned approach: one bloom filter per partition/SSTable
+    As new SSTables are created, each gets a correctly sized filter
+    (This is exactly what LSM-tree storage engines do)
+```
+
+### Monitoring Bloom Filter Effectiveness
+
+```
+Key metrics to track:
+
+  1. Bloom filter hit rate = true negatives / total queries
+     - "How often does the filter save a disk read?"
+     - Healthy: >90% for workloads with many missing-key lookups
+     - Low hit rate → workload is mostly positive lookups, filter adds overhead
+
+  2. Actual FPR = false positives / (false positives + true negatives)
+     - Compare against configured FPR
+     - Significantly higher → filter is overfull, needs rebuild
+
+  3. Useful reads saved = bloom true negatives × avg disk read cost
+     - Quantifies the value of the bloom filter in latency or IOPS terms
+
+  4. Memory overhead ratio = bloom filter memory / total memory budget
+     - Keep under 5% of total memory as a guideline
+
+RocksDB exposes: rocksdb.bloom.filter.useful, rocksdb.bloom.filter.full.positive
+Cassandra exposes: BloomFilterFalsePositives, BloomFilterFalseRatio per table
+```
+
+---
+
 ## Key Takeaways
 
 1. **False positives, never false negatives** - "Maybe yes" or "definitely no"

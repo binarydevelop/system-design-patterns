@@ -470,6 +470,258 @@ def handle_message(message):
 
 ---
 
+## Debezium CDC Implementation
+
+### Architecture Deep Dive
+
+Debezium is a distributed platform for change data capture built on top of Kafka Connect. For the outbox pattern, Debezium reads the database transaction log directly — no polling queries, no application-level hooks — and publishes row-level changes to Kafka topics.
+
+```
+Database Transaction Log ──► Debezium Connector ──► Kafka Connect ──► Kafka Topic
+     (WAL / binlog)            (source connector)    (worker cluster)    (outbox.events.*)
+```
+
+### PostgreSQL: Logical Replication
+
+PostgreSQL uses Write-Ahead Logging (WAL) for crash recovery. Debezium creates a **logical replication slot** using the `pgoutput` plugin (built-in since PostgreSQL 10) to stream changes.
+
+- Replication slot guarantees no WAL segments are recycled before Debezium consumes them
+- `pgoutput` decodes WAL entries into logical change events (INSERT, UPDATE, DELETE)
+- No polling of the outbox table — changes are pushed from WAL as they commit
+- Requires `wal_level = logical` in `postgresql.conf`
+
+### MySQL: Binlog Consumption
+
+MySQL's binary log records all data modifications. Debezium connects as a replica:
+
+- Reads binlog events, filters for the outbox table via `table.include.list`
+- Supports both row-based and mixed binlog formats (row-based required for full change capture)
+- Connector tracks binlog filename + position for resume after restart
+
+### Connector Configuration
+
+```json
+{
+  "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+  "database.hostname": "db-primary",
+  "database.port": "5432",
+  "database.user": "debezium_replication",
+  "database.dbname": "app",
+  "slot.name": "outbox_slot",
+  "plugin.name": "pgoutput",
+  "table.include.list": "public.outbox_events",
+  "transforms": "outbox",
+  "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+  "transforms.outbox.table.field.event.key": "aggregate_id",
+  "transforms.outbox.table.field.event.type": "event_type",
+  "transforms.outbox.table.field.event.payload": "payload",
+  "transforms.outbox.route.topic.replacement": "outbox.events.${routedByValue}"
+}
+```
+
+### EventRouter Transform
+
+The `EventRouter` Single Message Transform (SMT) is the critical piece that makes Debezium outbox-aware:
+
+- Extracts the event payload from the outbox row's `payload` column — no envelope wrapping
+- Routes to the correct Kafka topic based on `aggregate_type` (e.g., `outbox.events.Order`)
+- Sets the Kafka message key to `aggregate_id` — ensures partition-level ordering per entity
+- Optionally removes the outbox row after publishing (via `route.tombstone.on.empty.payload`)
+
+### Ordering Guarantee
+
+Events are published in WAL commit order within a single Kafka partition. Since `aggregate_id` is the partition key, all events for the same aggregate land in the same partition and arrive in the exact order they were committed to the database. Cross-aggregate ordering is not guaranteed across partitions — this is by design.
+
+---
+
+## Outbox Table Schema Design
+
+### Minimal Schema
+
+```sql
+CREATE TABLE outbox_events (
+    id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    aggregate_type VARCHAR(255) NOT NULL,   -- e.g., 'Order', 'Payment'
+    aggregate_id  VARCHAR(255) NOT NULL,   -- entity's business ID
+    event_type    VARCHAR(255) NOT NULL,   -- e.g., 'OrderCreated', 'PaymentFailed'
+    payload       JSONB       NOT NULL,    -- full event body
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+### Why `aggregate_id` Matters
+
+The `aggregate_id` column serves dual purpose:
+
+1. **Kafka partition key** — Debezium's EventRouter (or the polling publisher) uses this as the message key. Kafka hashes it to a partition, guaranteeing all events for the same entity arrive in order.
+2. **Consumer correlation** — downstream services use `aggregate_id` to reconstruct entity state without querying the source.
+
+### Payload Strategy: Full vs Reference
+
+| Strategy | Tradeoff |
+|---|---|
+| **Full payload** (entire event body in JSONB) | Self-contained events, larger rows, consumers need nothing else |
+| **Reference** (event ID + type, consumer fetches details) | Small outbox rows, but introduces coupling — consumer must call back to source service |
+
+Prefer full payload unless event size routinely exceeds 1MB. Self-contained events decouple services more effectively.
+
+### Retention and Cleanup
+
+With CDC (Debezium), processed rows can be deleted immediately — Debezium tracks its position in the WAL via the replication slot, not by reading the outbox table. Keeping the table small reduces vacuum overhead and index bloat.
+
+For polling-based implementations, retain rows until `published_at` is set, then delete via a scheduled cleanup job.
+
+### Indexes
+
+- **Primary key on `id`** — required for deduplication and lookups
+- **Partial index on `created_at WHERE published_at IS NULL`** — for polling-based publishers to find unpublished rows efficiently
+- Avoid indexing `payload` — JSONB GIN indexes on the outbox table add write overhead with no read benefit
+
+### Table Partitioning
+
+For high-throughput systems, partition the outbox table by `created_at` using PostgreSQL's native partitioning or `pg_partman`:
+
+```sql
+CREATE TABLE outbox_events (
+    id UUID NOT NULL DEFAULT gen_random_uuid(),
+    aggregate_type VARCHAR(255) NOT NULL,
+    aggregate_id VARCHAR(255) NOT NULL,
+    event_type VARCHAR(255) NOT NULL,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+) PARTITION BY RANGE (created_at);
+```
+
+Partitioning enables `DROP`-based cleanup (dropping old partitions) instead of row-level `DELETE`, avoiding table bloat and long-running vacuum operations.
+
+---
+
+## Polling vs CDC Tradeoffs
+
+### Comparison Matrix
+
+| Aspect | Polling | CDC (Debezium) |
+|---|---|---|
+| **Latency** | Polling interval bound (100ms–5s typical) | Near-real-time (<100ms from commit) |
+| **Ordering** | `ORDER BY created_at` may have gaps under concurrent writes | WAL order is exact commit order |
+| **Database load** | Repeated queries on outbox table; mitigated with `FOR UPDATE SKIP LOCKED` | Reads from replication slot — minimal incremental load |
+| **Operational complexity** | Simple SQL query + cron or loop | Debezium + Kafka Connect cluster + monitoring |
+| **Failure recovery** | Re-poll from last processed ID or `published_at IS NULL` | Debezium resumes from stored WAL offset |
+| **Infrastructure** | Application + database only | Kafka, Kafka Connect, Debezium, Schema Registry |
+| **Throughput ceiling** | Limited by poll query speed + batch size | WAL streaming scales with database write throughput |
+
+### When to Choose Polling
+
+- Small-to-medium event volume (< 1,000 events/second)
+- No existing Kafka infrastructure and no plan to adopt it
+- Team prefers operational simplicity over latency
+- Events are not latency-sensitive (batch processing, daily reports)
+
+### When to Choose CDC
+
+- High throughput (> 1,000 events/second sustained)
+- Strict ordering requirements within an aggregate
+- Existing Kafka infrastructure with operational expertise
+- Near-real-time event propagation is a business requirement
+- Multiple consumers need the same event stream (Kafka topic fan-out)
+
+### Hybrid Approach
+
+Some systems start with polling and migrate to CDC as scale demands. The outbox table schema remains identical — only the publisher mechanism changes. This makes polling a safe starting point with a clear upgrade path.
+
+---
+
+## Outbox Pattern Failure Modes
+
+### Replication Slot Bloat (CDC)
+
+When Debezium is down or unable to consume, PostgreSQL retains WAL segments referenced by the replication slot. Unchecked, this fills disk and crashes the database.
+
+**Detection:** Monitor `pg_replication_slots` — compare `confirmed_flush_lsn` against `pg_current_wal_lsn()`. A growing delta indicates Debezium is falling behind.
+
+```sql
+SELECT slot_name,
+       pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) AS bytes_behind
+FROM pg_replication_slots
+WHERE slot_name = 'outbox_slot';
+```
+
+**Mitigation:** Set `max_slot_wal_keep_size` (PostgreSQL 13+) to cap retained WAL. Alert when lag exceeds a threshold (e.g., 1GB). If Debezium is unrecoverable, drop and recreate the slot — accept that some events may need re-publishing from the outbox table.
+
+### Duplicate Events on Consumer Restart
+
+If a consumer crashes after processing an event but before committing its offset, it will re-receive the event on restart. Consumers must be idempotent. See `04-delivery-guarantees.md` for patterns.
+
+### Schema Evolution
+
+Adding or removing fields in the outbox payload breaks consumers that expect a fixed structure. Strategies:
+
+- **Avro + Schema Registry:** Enforce forward and backward compatibility at the schema level. Debezium natively integrates with Confluent Schema Registry.
+- **JSONB with additive changes only:** Never remove fields, only add optional ones. Consumers ignore unknown fields.
+- **Versioned event types:** Use `OrderCreated.v2` as the `event_type` to distinguish incompatible schema versions.
+
+### Large Payloads
+
+Outbox rows with large JSONB payloads (>100KB) slow down WAL replication and increase Kafka message size. Options:
+
+- Store the full payload in a separate table; the outbox row holds a reference (event ID + aggregate type). Consumers fetch the payload from an API or object store.
+- Compress payloads before writing to the outbox column.
+- Claim-check pattern: write the payload to S3/GCS, store the object key in the outbox row.
+
+### Transaction Ordering Across Aggregates
+
+A single database transaction may write outbox entries for multiple aggregates (e.g., `Order` and `Payment`). These events land on different Kafka partitions and may arrive at consumers in any order. Design consumers to handle this:
+
+- Do not assume cross-aggregate causal ordering
+- Use explicit correlation IDs if downstream logic requires coordinated processing
+- If strict cross-aggregate ordering is required, route all related events through the same `aggregate_id` — but this limits partition parallelism
+
+---
+
+## Alternatives to Outbox
+
+### Listen/Notify (PostgreSQL)
+
+PostgreSQL's `NOTIFY` can be issued inside the same transaction as the business write. A listening process receives the notification and publishes to the broker.
+
+```sql
+-- Inside transaction
+INSERT INTO orders (...) VALUES (...);
+NOTIFY order_events, '{"order_id": "abc", "type": "OrderCreated"}';
+```
+
+**Limitation:** Notifications are not persisted. If the listener is disconnected or crashes, events are lost permanently. No replay capability. Only suitable for non-critical, best-effort notifications.
+
+### Transactional Messaging (XA/2PC)
+
+Enlist both the database and the message broker in a distributed transaction using XA. Both commit or both roll back.
+
+**Limitation:** Most message brokers (Kafka, RabbitMQ, SQS) do not support XA. Even where supported, 2PC is slow (coordinator round-trips), fragile (coordinator failure blocks all participants), and operationally painful. The outbox pattern exists precisely because XA is impractical at scale.
+
+### Domain Events Published After Commit
+
+```python
+def create_order(order_data):
+    order = save_to_db(order_data)
+    # DB committed, now publish
+    broker.publish(OrderCreated(order))  # crash here = lost event
+```
+
+The gap between commit and publish is the exact vulnerability the outbox pattern eliminates. Any crash, network timeout, or process kill in that window causes a lost event with no recovery path.
+
+### Event Table with Application Polling
+
+Similar to outbox but without the formal outbox structure — the application writes events to a generic table and polls it for publishing. Functionally equivalent to the outbox pattern but often lacks the explicit `aggregate_id` partitioning and idempotency design.
+
+### When Outbox Is Overkill
+
+- Internal service communication where the caller retries on failure (synchronous HTTP with retry)
+- Non-critical notifications (email, Slack alerts) where occasional loss is acceptable
+- Single-service architectures with no downstream consumers
+- Prototyping or MVP stages where operational simplicity outweighs reliability guarantees
+
+---
+
 ## Key Takeaways
 
 1. **Solves dual-write problem** - Atomic database + message
