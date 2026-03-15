@@ -38,36 +38,14 @@ HDDs: Much faster (10-100x improvement)
 
 ### Overview
 
-```
-                  ┌─────────────┐
-   Writes ──────► │  MemTable   │  (In-memory, sorted)
-                  │  (mutable)  │
-                  └──────┬──────┘
-                         │ Flush when full
-                         ▼
-                  ┌─────────────┐
-                  │ Immutable   │  (Being flushed)
-                  │  MemTable   │
-                  └──────┬──────┘
-                         │ 
-                         ▼
-            ┌────────────────────────┐
-            │      Level 0           │  (Recent, unsorted between files)
-            │  [SST][SST][SST]       │
-            └───────────┬────────────┘
-                        │ Compact
-                        ▼
-            ┌────────────────────────┐
-            │      Level 1           │  (Sorted, non-overlapping)
-            │  [SST][SST][SST][SST]  │
-            └───────────┬────────────┘
-                        │ Compact
-                        ▼
-            ┌────────────────────────┐
-            │      Level 2           │  (Larger, non-overlapping)
-            │  [SST][SST][SST][SST]  │
-            └────────────────────────┘
-                      ...
+```mermaid
+graph TD
+    W["Writes"] -->|"insert"| MT["MemTable<br/>(in-memory, sorted, mutable)"]
+    MT -->|"flush when full"| IMT["Immutable MemTable<br/>(being flushed)"]
+    IMT -->|"write to disk"| L0[("Level 0<br/>SST · SST · SST<br/>(recent, unsorted between files)")]
+    L0 -->|"compact"| L1[("Level 1<br/>SST · SST · SST · SST<br/>(sorted, non-overlapping)")]
+    L1 -->|"compact"| L2[("Level 2<br/>SST · SST · SST · SST<br/>(larger, non-overlapping)")]
+    L2 -->|"compact"| MORE["..."]
 ```
 
 ### MemTable
@@ -542,24 +520,18 @@ Monitor via:
 
 ### The Amplification Tradeoff Triangle
 
+```mermaid
+graph TD
+    WA["Write Amp"] --- PICK["pick 2"]
+    RA["Read Amp"] --- PICK
+    SA["Space Amp"] --- PICK
+
+    PICK -.- NOTE1["Leveled: low RA, low SA, high WA"]
+    PICK -.- NOTE2["Tiered: low WA, high RA, high SA"]
+    PICK -.- NOTE3["Hybrid: middle ground on all three"]
 ```
-You can optimize for at most 2 out of 3:
 
-        Write Amp
-           ▲
-          ╱ ╲
-         ╱   ╲
-        ╱     ╲
-       ╱       ╲
-      ╱  pick 2  ╲
-     ╱             ╲
-    ◄───────────────►
-Read Amp         Space Amp
-
-Leveled compaction:   low RA, low SA, high WA
-Tiered compaction:    low WA, high RA, high SA
-Hybrid (universal):   middle ground on all three
-
+```
 Concrete numbers (RocksDB leveled, size_ratio=10, 6 levels):
   WA ≈ 20×  |  SA ≈ 1.1×  |  RA ≈ 1 disk read per point lookup (with bloom)
 

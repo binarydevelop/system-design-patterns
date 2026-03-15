@@ -58,20 +58,19 @@ Phase 2: Commit (Decision)
 
 ### Sequence Diagram
 
-```
-Coordinator          Participant A          Participant B
-     │                    │                      │
-     │───PREPARE─────────►│                      │
-     │───PREPARE──────────┼─────────────────────►│
-     │                    │                      │
-     │◄──VOTE_YES─────────│                      │
-     │◄──VOTE_YES─────────┼──────────────────────│
-     │                    │                      │
-     │───COMMIT──────────►│                      │
-     │───COMMIT───────────┼─────────────────────►│
-     │                    │                      │
-     │◄──ACK──────────────│                      │
-     │◄──ACK──────────────┼──────────────────────│
+```mermaid
+sequenceDiagram
+    participant C as Coordinator
+    participant A as Participant A
+    participant B as Participant B
+    C->>A: PREPARE
+    C->>B: PREPARE
+    A-->>C: VOTE_YES
+    B-->>C: VOTE_YES
+    C->>A: COMMIT
+    C->>B: COMMIT
+    A-->>C: ACK
+    B-->>C: ACK
 ```
 
 ### State Machine
@@ -234,18 +233,12 @@ No central coordinator
 Services react to events
 ```
 
-```
-┌─────────────┐     FlightReserved     ┌─────────────┐
-│   Flight    │───────────────────────►│    Hotel    │
-│   Service   │◄───────────────────────│   Service   │
-└─────────────┘     HotelFailed        └─────────────┘
-       │                                      │
-       │ FlightCancelled                      │ HotelReserved
-       ▼                                      ▼
-    [Done]                              ┌─────────────┐
-                                        │     Car     │
-                                        │   Service   │
-                                        └─────────────┘
+```mermaid
+graph LR
+    Flight["Flight<br/>Service"] -->|FlightReserved| Hotel["Hotel<br/>Service"]
+    Hotel -.->|HotelFailed| Flight
+    Flight -->|FlightCancelled| Done["[Done]"]
+    Hotel -->|HotelReserved| Car["Car<br/>Service"]
 ```
 
 ### Orchestration (Central Coordinator)
@@ -264,18 +257,15 @@ Easier to understand and debug
 Single point of failure
 ```
 
-```
-                  ┌──────────────────┐
-                  │ Saga Coordinator │
-                  └────────┬─────────┘
-                           │
-         ┌─────────────────┼─────────────────┐
-         │                 │                 │
-         ▼                 ▼                 ▼
-   ┌───────────┐    ┌───────────┐    ┌───────────┐
-   │  Flight   │    │   Hotel   │    │    Car    │
-   │  Service  │    │  Service  │    │  Service  │
-   └───────────┘    └───────────┘    └───────────┘
+```mermaid
+graph TD
+    SC["Saga Coordinator"]
+    F["Flight<br/>Service"]
+    H["Hotel<br/>Service"]
+    C["Car<br/>Service"]
+    SC --> F
+    SC --> H
+    SC --> C
 ```
 
 ### Compensating Transactions

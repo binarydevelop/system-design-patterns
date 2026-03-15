@@ -42,19 +42,16 @@ With secondary index: O(1) or O(few) partitions
 
 Each partition maintains its own index for local data.
 
-```
-Partition 1:                    Partition 2:
-┌─────────────────────────┐    ┌─────────────────────────┐
-│ Data:                   │    │ Data:                   │
-│  user_id=1, email=a@x   │    │  user_id=1001, email=d@x│
-│  user_id=2, email=b@x   │    │  user_id=1002, email=e@x│
-│  user_id=3, email=c@x   │    │  user_id=1003, email=f@x│
-│                         │    │                         │
-│ Local Index (email):    │    │ Local Index (email):    │
-│  a@x → user_id=1        │    │  d@x → user_id=1001     │
-│  b@x → user_id=2        │    │  e@x → user_id=1002     │
-│  c@x → user_id=3        │    │  f@x → user_id=1003     │
-└─────────────────────────┘    └─────────────────────────┘
+```mermaid
+graph LR
+    subgraph Partition 1
+        D1["Data:<br/>user_id=1, email=a@x<br/>user_id=2, email=b@x<br/>user_id=3, email=c@x"]
+        I1["Local Index email:<br/>a@x → user_id=1<br/>b@x → user_id=2<br/>c@x → user_id=3"]
+    end
+    subgraph Partition 2
+        D2["Data:<br/>user_id=1001, email=d@x<br/>user_id=1002, email=e@x<br/>user_id=1003, email=f@x"]
+        I2["Local Index email:<br/>d@x → user_id=1001<br/>e@x → user_id=1002<br/>f@x → user_id=1003"]
+    end
 ```
 
 ### Write Path
@@ -106,22 +103,17 @@ Scatter-gather to all partitions ✗
 
 Index partitioned separately from data.
 
-```
-Data Partitions:                Index Partitions (by email hash):
-┌───────────────┐              ┌───────────────────────────┐
-│ Partition 1   │              │ Index Partition 1 (a-m)   │
-│ user_id 1-1000│              │  alice@x → user_id=5      │
-└───────────────┘              │  bob@x → user_id=1500     │
-┌───────────────┐              │  carol@x → user_id=2500   │
-│ Partition 2   │              └───────────────────────────┘
-│ user_id 1001- │              ┌───────────────────────────┐
-│         2000  │              │ Index Partition 2 (n-z)   │
-└───────────────┘              │  ned@x → user_id=42       │
-┌───────────────┐              │  zoe@x → user_id=999      │
-│ Partition 3   │              └───────────────────────────┘
-│ user_id 2001- │
-│         3000  │
-└───────────────┘
+```mermaid
+graph LR
+    subgraph Data Partitions
+        P1[("Partition 1<br/>user_id 1-1000")]
+        P2[("Partition 2<br/>user_id 1001-2000")]
+        P3[("Partition 3<br/>user_id 2001-3000")]
+    end
+    subgraph Index Partitions — by email hash
+        IP1["Index Partition 1 (a-m)<br/>alice@x → user_id=5<br/>bob@x → user_id=1500<br/>carol@x → user_id=2500"]
+        IP2["Index Partition 2 (n-z)<br/>ned@x → user_id=42<br/>zoe@x → user_id=999"]
+    end
 ```
 
 ### Write Path
@@ -418,22 +410,20 @@ Trade-off:
 
 ### External Search System
 
+```mermaid
+graph TD
+    PG[("PostgreSQL<br/>source of truth")]
+    ES[("Elasticsearch<br/>search")]
+    PG -.->|CDC or batch sync| ES
+    App["Application"] -->|1. search for IDs| ES
+    App -->|2. fetch full records| PG
 ```
-PostgreSQL (source of truth)
-        │
-        ▼ (CDC or batch sync)
-   Elasticsearch (search)
-
-Query flow:
-  1. Search Elasticsearch for IDs
-  2. Fetch full records from PostgreSQL
 
 Trade-off:
-  + Purpose-built search
-  + Complex query support
-  - Operational complexity
-  - Eventual consistency
-```
+- (+) Purpose-built search
+- (+) Complex query support
+- (-) Operational complexity
+- (-) Eventual consistency
 
 ---
 
@@ -566,20 +556,18 @@ MongoDB secondary indexes are **local to each shard**:
 
 A common pattern for complex queries is maintaining Elasticsearch alongside a primary database:
 
+```mermaid
+graph TD
+    PG2[("PostgreSQL<br/>source of truth")]
+    ES2[("Elasticsearch<br/>query index")]
+    PG2 -.->|CDC: Debezium / DynamoDB Streams / Change Streams| ES2
+    App2["Application"] -->|1. query for matching document IDs| ES2
+    App2 -->|2. fetch full records by primary key| PG2
+    App2 -->|3. return merged results| Client2["Client"]
 ```
-PostgreSQL (source of truth)
-      │
-      ▼ CDC (Debezium / DynamoDB Streams / Change Streams)
-Elasticsearch (query index)
-      │
-Query path:
-  1. App queries Elasticsearch for matching document IDs
-  2. App fetches full records from PostgreSQL by primary key
-  3. Return merged results
 
-Consistency: eventual (CDC lag typically <1s)
-Failure mode: search degrades, primary DB unaffected
-```
+Consistency: eventual (CDC lag typically <1s).
+Failure mode: search degrades, primary DB unaffected.
 
 This separates the write-optimized path (OLTP database) from the read-optimized path (search engine) — each system does what it does best.
 

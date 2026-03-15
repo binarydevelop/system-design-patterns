@@ -213,22 +213,19 @@ Terms used to detect stale leaders
 6. Leader sends heartbeats to maintain authority
 ```
 
-```
-Node A          Node B          Node C
-   │               │               │
-   │  (timeout)    │               │
-   │───►Candidate  │               │
-   │               │               │
-   │──RequestVote─►│               │
-   │──RequestVote──┼──────────────►│
-   │               │               │
-   │◄──Vote────────│               │
-   │◄──Vote────────┼───────────────│
-   │               │               │
-   │───►Leader     │               │
-   │               │               │
-   │──Heartbeat───►│               │
-   │──Heartbeat────┼──────────────►│
+```mermaid
+sequenceDiagram
+    participant A as Node A
+    participant B as Node B
+    participant C as Node C
+    Note over A: Timeout → Candidate
+    A->>B: RequestVote
+    A->>C: RequestVote
+    B-->>A: Vote
+    C-->>A: Vote
+    Note over A: Becomes Leader
+    A->>B: Heartbeat
+    A->>C: Heartbeat
 ```
 
 ### Log Replication
@@ -423,18 +420,15 @@ One at a time guarantees overlap between old and new quorums
 
 ### Replicated State Machine
 
+```mermaid
+graph LR
+    N1["Node 1<br/>Log: [A][B][C]<br/>State: X (from ABC)"]
+    N2["Node 2<br/>Log: [A][B][C]<br/>State: X (from ABC)"]
+    N3["Node 3<br/>Log: [A][B][C]<br/>State: X (from ABC)"]
+```
+
 ```
 Same log → Same state
-
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   Log:      │    │   Log:      │    │   Log:      │
-│ [A][B][C]   │    │ [A][B][C]   │    │ [A][B][C]   │
-├─────────────┤    ├─────────────┤    ├─────────────┤
-│ State: X    │    │ State: X    │    │ State: X    │
-│ (from ABC)  │    │ (from ABC)  │    │ (from ABC)  │
-└─────────────┘    └─────────────┘    └─────────────┘
-   Node 1            Node 2             Node 3
-
 All nodes apply same operations in same order
 All arrive at same state
 ```
@@ -496,22 +490,18 @@ Resume replication from index N+1
 
 ### Architecture Pattern
 
+```mermaid
+graph TD
+    M["Metadata<br/>(Raft/etcd)"]
+    S1[("Data Shard 1<br/>(primary-backup)")]
+    S2[("Data Shard 2<br/>(primary-backup)")]
+    S3[("Data Shard 3<br/>(primary-backup)")]
+    M --> S1
+    M --> S2
+    M --> S3
 ```
-                    ┌──────────────┐
-                    │   Metadata   │
-                    │ (Raft/etcd)  │
-                    └──────┬───────┘
-                           │
-         ┌─────────────────┼─────────────────┐
-         │                 │                 │
-         ▼                 ▼                 ▼
-   ┌───────────┐    ┌───────────┐    ┌───────────┐
-   │  Data     │    │   Data    │    │   Data    │
-   │  Shard 1  │    │  Shard 2  │    │  Shard 3  │
-   │ (primary- │    │ (primary- │    │ (primary- │
-   │  backup)  │    │  backup)  │    │  backup)  │
-   └───────────┘    └───────────┘    └───────────┘
 
+```
 Consensus for: Who owns which shard, leader election
 Data: Simpler replication (cheaper)
 ```
