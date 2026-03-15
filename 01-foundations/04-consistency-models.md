@@ -21,43 +21,19 @@ A consistency model is a contract between the system and application:
 
 ## The Consistency Spectrum
 
-```
-Strongest
-    │
-    ▼
-┌─────────────────────┐
-│  Strict Consistency │  (Theoretical - requires instantaneous global updates)
-└──────────┬──────────┘
-           │
-┌──────────▼──────────┐
-│   Linearizability   │  (Single object, real-time ordering)
-└──────────┬──────────┘
-           │
-┌──────────▼──────────┐
-│    Sequential       │  (Global order, but not real-time)
-│    Consistency      │
-└──────────┬──────────┘
-           │
-┌──────────▼──────────┐
-│     Causal          │  (Only causally related ops ordered)
-│     Consistency     │
-└──────────┬──────────┘
-           │
-┌──────────▼──────────┐
-│   Read-Your-Writes  │  (See your own writes)
-└──────────┬──────────┘
-           │
-┌──────────▼──────────┐
-│    Monotonic Reads  │  (Never go backwards)
-└──────────┬──────────┘
-           │
-┌──────────▼──────────┐
-│     Eventual        │  (Eventually all see same value)
-│     Consistency     │
-└─────────────────────┘
-    │
-    ▼
-Weakest
+```mermaid
+graph TD
+    S["<b>Strongest</b>"]
+    A["Strict Consistency<br/><i>Theoretical - requires instantaneous global updates</i>"]
+    B["Linearizability<br/><i>Single object, real-time ordering</i>"]
+    C["Sequential Consistency<br/><i>Global order, but not real-time</i>"]
+    D["Causal Consistency<br/><i>Only causally related ops ordered</i>"]
+    E["Read-Your-Writes<br/><i>See your own writes</i>"]
+    F["Monotonic Reads<br/><i>Never go backwards</i>"]
+    G["Eventual Consistency<br/><i>Eventually all see same value</i>"]
+    W["<b>Weakest</b>"]
+
+    S --> A --> B --> C --> D --> E --> F --> G --> W
 ```
 
 ---
@@ -68,17 +44,17 @@ Weakest
 
 Every operation appears to take effect atomically at some point between its start and end. All operations have a global order respecting real-time.
 
-```
-Timeline:
-              ┌─────────────┐
-    Client A: │  write(x,1) │
-              └─────────────┘
-                    ▲
-                    │ linearization point
-                    │
-              ┌─────┴─────────────┐
-    Client B: │     read(x) → 1   │
-              └───────────────────┘
+```mermaid
+sequenceDiagram
+    participant A as Client A
+    participant Sys as System
+    participant B as Client B
+
+    A->>Sys: write(x, 1)
+    Note over Sys: linearization point
+    Sys-->>A: ack
+    B->>Sys: read(x)
+    Sys-->>B: x = 1
 ```
 
 ### Properties
@@ -127,18 +103,17 @@ CAS(expected, new) → atomic read-modify-write
 
 All operations appear to execute in some sequential order, and each processor's operations appear in program order. But this order doesn't need to match real-time.
 
-```
-Actual execution:
-  Time →
-  Node A: write(x,1) ─────────────────────
-  Node B: ───────────────── write(x,2) ───
-  Node C: ────────── read(x)→? ───────────
+```mermaid
+sequenceDiagram
+    participant A as Node A
+    participant B as Node B
+    participant C as Node C
 
-Sequential consistency allows:
-  read(x) → 1  (order: write(1), read, write(2))
-  read(x) → 2  (order: write(2), read, write(1))
-  
-But NOT: reading 1, then 2, then 1 again
+    A->>A: write(x, 1)
+    C->>C: read(x) → ?
+    B->>B: write(x, 2)
+
+    Note over A,C: Sequential consistency allows:<br/>read(x) → 1 (order: write(1), read, write(2))<br/>read(x) → 2 (order: write(2), read, write(1))<br/>But NOT: reading 1, then 2, then 1 again
 ```
 
 ### Difference from Linearizability
@@ -302,15 +277,19 @@ All nodes see: write(x, 5) happens before write(y, 10)
 
 If no new updates are made, eventually all replicas converge to the same value.
 
-```
-write(x, 1) at node A
+```mermaid
+sequenceDiagram
+    participant A as Node A
+    participant B as Node B
+    participant C as Node C
 
-Time →
-  Node A: x=1 ─────────────────────────────
-  Node B: x=0 ──── x=1 (propagated) ───────
-  Node C: x=0 ────────────── x=1 ──────────
-                              ↑
-                    Eventual convergence
+    Note over A: write(x, 1)
+    A->>A: x = 1
+    A-->>B: propagate
+    B->>B: x = 1
+    A-->>C: propagate
+    C->>C: x = 1
+    Note over A,C: Eventual convergence — all nodes now have x = 1
 ```
 
 ### What Eventual Consistency Does NOT Guarantee

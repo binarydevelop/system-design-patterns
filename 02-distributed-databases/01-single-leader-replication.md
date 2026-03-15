@@ -10,26 +10,17 @@ Single-leader (master-slave) replication routes all writes through one node (the
 
 ### Basic Architecture
 
-```
-                    Writes
-                      │
-                      ▼
-              ┌───────────────┐
-              │    Leader     │
-              │   (Primary)   │
-              └───────┬───────┘
-                      │
-          ┌───────────┼───────────┐
-          │           │           │
-          ▼           ▼           ▼
-    ┌──────────┐ ┌──────────┐ ┌──────────┐
-    │ Follower │ │ Follower │ │ Follower │
-    │    1     │ │    2     │ │    3     │
-    └──────────┘ └──────────┘ └──────────┘
-          │           │           │
-          └───────────┼───────────┘
-                      │
-                   Reads
+```mermaid
+graph TD
+    Writes:::invisible -->|Writes| Leader["Leader<br/>(Primary)"]
+    Leader --> F1[("Follower 1")]
+    Leader --> F2[("Follower 2")]
+    Leader --> F3[("Follower 3")]
+    F1 --> Reads:::invisible
+    F2 --> Reads
+    F3 --> Reads
+
+    classDef invisible fill:none,stroke:none
 ```
 
 ### Write Path
@@ -69,18 +60,16 @@ Followers:
 
 Leader waits for follower acknowledgment before confirming write.
 
-```
-┌────────┐    ┌────────┐    ┌──────────┐
-│ Client │    │ Leader │    │ Follower │
-└───┬────┘    └───┬────┘    └────┬─────┘
-    │             │              │
-    │──write(x)──►│              │
-    │             │──replicate──►│
-    │             │              │
-    │             │◄────ack──────│
-    │             │              │
-    │◄───ok───────│              │
-    │             │              │
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Leader
+    participant Follower
+
+    Client->>Leader: write(x)
+    Leader->>Follower: replicate
+    Follower-->>Leader: ack
+    Leader-->>Client: ok
 ```
 
 **Guarantees:**
@@ -96,17 +85,16 @@ Leader waits for follower acknowledgment before confirming write.
 
 Leader confirms immediately, replicates in background.
 
-```
-┌────────┐    ┌────────┐    ┌──────────┐
-│ Client │    │ Leader │    │ Follower │
-└───┬────┘    └───┬────┘    └────┬─────┘
-    │             │              │
-    │──write(x)──►│              │
-    │◄───ok───────│              │
-    │             │              │
-    │             │──replicate──►│
-    │             │              │
-    │             │◄────ack──────│
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Leader
+    participant Follower
+
+    Client->>Leader: write(x)
+    Leader-->>Client: ok
+    Leader->>Follower: replicate
+    Follower-->>Leader: ack
 ```
 
 **Trade-offs:**
@@ -118,10 +106,11 @@ Leader confirms immediately, replicates in background.
 
 One follower is synchronous, others asynchronous.
 
-```
-Leader ──sync──► Follower 1 (must ack)
-       └─async─► Follower 2 (background)
-       └─async─► Follower 3 (background)
+```mermaid
+graph LR
+    Leader --> |sync| F1["Follower 1<br/>(must ack)"]
+    Leader -.-> |async| F2["Follower 2<br/>(background)"]
+    Leader -.-> |async| F3["Follower 3<br/>(background)"]
 ```
 
 **Used by:** MySQL semi-sync, PostgreSQL sync_commit
@@ -267,18 +256,13 @@ Prevention:
 
 Distribute read load across followers.
 
-```
-            ┌────────────────────────────┐
-            │       Load Balancer        │
-            └─────────────┬──────────────┘
-                          │
-    ┌─────────────────────┼─────────────────────┐
-    │         │           │           │         │
-    ▼         ▼           ▼           ▼         ▼
-┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
-│ Leader │ │Follower│ │Follower│ │Follower│ │Follower│
-│(writes)│ │(reads) │ │(reads) │ │(reads) │ │(reads) │
-└────────┘ └────────┘ └────────┘ └────────┘ └────────┘
+```mermaid
+graph TD
+    LB["Load Balancer"] --> Leader["Leader<br/>(writes)"]
+    LB --> F1[("Follower<br/>(reads)")]
+    LB --> F2[("Follower<br/>(reads)")]
+    LB --> F3[("Follower<br/>(reads)")]
+    LB --> F4[("Follower<br/>(reads)")]
 ```
 
 ### Read Scaling Math
@@ -301,22 +285,15 @@ Writes still limited to single leader
 
 Place followers in different regions.
 
+```mermaid
+graph TD
+    Leader["US-East (Leader)"] -.-> F1[("US-West<br/>Follower")]
+    Leader -.-> F2[("Europe<br/>Follower")]
+    Leader -.-> F3[("Asia<br/>Follower")]
+    Leader -.-> F4[("US-East<br/>Follower")]
 ```
-┌─────────────────┐
-│ US-East (Leader)│
-└────────┬────────┘
-         │
-    ┌────┼────┬────────────┐
-    │    │    │            │
-    ▼    ▼    ▼            ▼
-┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐
-│US-West│ │Europe│ │ Asia │ │US-East│
-│Follow│ │Follow│ │Follow│ │Follow │
-└──────┘ └──────┘ └──────┘ └──────┘
 
-Users read from closest follower
-Writes go to leader (higher latency for distant users)
-```
+Users read from closest follower. Writes go to leader (higher latency for distant users).
 
 ---
 
@@ -461,15 +438,19 @@ def check_replication_health():
 
 The primary spawns one **WAL sender** process per connected replica. Each WAL sender reads from the Write-Ahead Log and streams records over PostgreSQL's replication protocol (a libpq connection in `replication` mode). On the replica side, a **WAL receiver** process accepts the stream, writes records to the replica's local WAL files, and then hands them to the startup process for replay against the data files.
 
-```
-Primary                                      Replica
-┌──────────────┐    replication protocol    ┌──────────────┐
-│  WAL Sender  │ ────────────────────────►  │ WAL Receiver │
-│  (per replica)│   (streaming walsender)   │              │
-└──────┬───────┘                            └──────┬───────┘
-       │                                           │
-  reads WAL                                  writes to local WAL
-  segments                                   startup process replays
+```mermaid
+graph LR
+    subgraph Primary
+        WS["WAL Sender<br/>(per replica)"]
+        WAL[("WAL<br/>Segments")]
+        WAL -->|reads| WS
+    end
+    subgraph Replica
+        WR["WAL Receiver"]
+        LocalWAL[("Local WAL<br/>+ Startup Replay")]
+        WR -->|writes to| LocalWAL
+    end
+    WS -->|replication protocol<br/>(streaming walsender)| WR
 ```
 
 This is a push-based model: the primary pushes WAL as it's generated. The replica does not poll. If the replica falls behind, the WAL sender catches up from the retained WAL segments.
@@ -530,19 +511,11 @@ Best practice: use replication slots for reliability, but pair them with monitor
 
 **Patroni** is the de facto standard for PostgreSQL HA. Its architecture:
 
-```
-┌────────────┐   ┌────────────┐   ┌────────────┐
-│  PG Node 1 │   │  PG Node 2 │   │  PG Node 3 │
-│  (primary)  │   │  (replica) │   │  (replica) │
-│  + Patroni  │   │  + Patroni │   │  + Patroni │
-└──────┬─────┘   └──────┬─────┘   └──────┬─────┘
-       │                │                │
-       └────────────────┼────────────────┘
-                        │
-                ┌───────▼───────┐
-                │  DCS (etcd /  │
-                │  Consul / ZK) │
-                └───────────────┘
+```mermaid
+graph TD
+    N1["PG Node 1<br/>(primary)<br/>+ Patroni"] --> DCS[("DCS<br/>(etcd / Consul / ZK)")]
+    N2["PG Node 2<br/>(replica)<br/>+ Patroni"] --> DCS
+    N3["PG Node 3<br/>(replica)<br/>+ Patroni"] --> DCS
 ```
 
 Each Patroni agent holds a **leader lock** in the DCS with a TTL (typically 30s). The primary must renew the lock before expiry or lose leadership.
@@ -675,18 +648,16 @@ MySQL's `Seconds_Behind_Master` is a single coarser metric. It measures the diff
 
 ### Topology
 
-```
-Primary (US-East)
-    │
-    ├──► Regional Replica (EU-West)
-    │         │
-    │         ├──► Local Replica (EU-West AZ1)
-    │         └──► Local Replica (EU-West AZ2)
-    │
-    └──► Regional Replica (AP-Southeast)
-              │
-              ├──► Local Replica (AP-SE AZ1)
-              └──► Local Replica (AP-SE AZ2)
+```mermaid
+graph TD
+    Primary["Primary<br/>(US-East)"] -.-> EU[("Regional Replica<br/>(EU-West)")]
+    Primary -.-> AP[("Regional Replica<br/>(AP-Southeast)")]
+
+    EU -.-> EU1[("Local Replica<br/>(EU-West AZ1)")]
+    EU -.-> EU2[("Local Replica<br/>(EU-West AZ2)")]
+
+    AP -.-> AP1[("Local Replica<br/>(AP-SE AZ1)")]
+    AP -.-> AP2[("Local Replica<br/>(AP-SE AZ2)")]
 ```
 
 ### Use Case

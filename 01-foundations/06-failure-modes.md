@@ -8,41 +8,17 @@ Distributed systems fail in complex ways. Understanding failure modes helps desi
 
 ## Failure Model Hierarchy
 
-```
-Most severe
-    │
-    ▼
-┌─────────────────────┐
-│  Byzantine Failure  │  Arbitrary behavior, potentially malicious
-└──────────┬──────────┘
-           │
-┌──────────▼──────────┐
-│  Authentication     │  Wrong identity claims
-│  Failure            │
-└──────────┬──────────┘
-           │
-┌──────────▼──────────┐
-│   Performance       │  Slow responses (not just no response)
-│   Failure           │
-└──────────┬──────────┘
-           │
-┌──────────▼──────────┐
-│   Omission          │  Message lost (send or receive)
-│   Failure           │
-└──────────┬──────────┘
-           │
-┌──────────▼──────────┐
-│   Crash-Recovery    │  Stop, possibly restart later
-│   Failure           │
-└──────────┬──────────┘
-           │
-┌──────────▼──────────┐
-│   Crash-Stop        │  Stop and never recover
-│   Failure           │
-└─────────────────────┘
-    │
-    ▼
-Least severe
+```mermaid
+graph TD
+    SEVERE["⬆ Most severe"]:::label --> BYZ
+    BYZ["Byzantine Failure<br/>Arbitrary behavior, potentially malicious"] --> AUTH
+    AUTH["Authentication Failure<br/>Wrong identity claims"] --> PERF
+    PERF["Performance Failure<br/>Slow responses, not just no response"] --> OMIT
+    OMIT["Omission Failure<br/>Message lost: send or receive"] --> CR
+    CR["Crash-Recovery Failure<br/>Stop, possibly restart later"] --> CS
+    CS["Crash-Stop Failure<br/>Stop and never recover"] --> LEAST["⬇ Least severe"]:::label
+
+    classDef label fill:none,stroke:none,color:#888
 ```
 
 Each level includes all behaviors of levels below it.
@@ -230,23 +206,17 @@ Byzantine node B:
 
 ### Byzantine Generals Problem
 
+```mermaid
+graph TD
+    GA["General A"] -->|"Attack at dawn"| L1["Lieutenant 1"]
+    GA -->|"Attack at dawn"| L2["Lieutenant 2<br/>(traitor)"]
+    L2 -->|"Tells A: Attack at dawn"| GA
+    L2 -->|"Tells 1: Retreat"| L1
+
+    style L2 fill:#f66,stroke:#900,color:#fff
 ```
-┌─────────┐     "Attack at dawn"    ┌─────────┐
-│ General │ ────────────────────────│Lieutenant│
-│    A    │                         │    1     │
-└─────────┘                         └──────────┘
-     │                                    │
-     │ "Attack at dawn"                   │ "Attack at dawn"
-     │                                    │ (or does he lie?)
-     ▼                                    ▼
-┌─────────────────────────────────────────────┐
-│     Lieutenant 2 (traitor)                  │
-│     Tells A: "Attack at dawn"               │
-│     Tells 1: "Retreat"                      │
-└─────────────────────────────────────────────┘
 
 With f traitors, need 3f+1 nodes to reach consensus
-```
 
 ### BFT Tolerance Requirements
 
@@ -296,15 +266,11 @@ Can we continue operating?
 
 Two parts of system believe they're authoritative.
 
-```
-         Network Partition
-              ────X────
-             /         \
-   ┌────────┐           ┌────────┐
-   │ Node A │           │ Node B │
-   │ "I am  │           │ "I am  │
-   │ leader"│           │ leader"│
-   └────────┘           └────────┘
+```mermaid
+graph LR
+    A["Node A<br/>I am leader"] ---|"Network Partition ✕"| B["Node B<br/>I am leader"]
+
+    linkStyle 0 stroke:red,stroke-dasharray:5
 ```
 
 **Consequences:**
@@ -468,39 +434,36 @@ raise PermanentFailure()
 
 ### Circuit Breaker
 
-```
-States: CLOSED → OPEN → HALF-OPEN
+```mermaid
+stateDiagram-v2
+    [*] --> CLOSED
+    CLOSED --> OPEN : failures > threshold
+    OPEN --> HALF_OPEN : after timeout
+    HALF_OPEN --> CLOSED : test call succeeds
+    HALF_OPEN --> OPEN : test call fails
 
-CLOSED:
-  Allow calls
-  Track failures
-  If failures > threshold: → OPEN
-
-OPEN:
-  Reject calls immediately
-  After timeout: → HALF-OPEN
-
-HALF-OPEN:
-  Allow one test call
-  If success: → CLOSED
-  If failure: → OPEN
+    CLOSED : Allow calls
+    CLOSED : Track failures
+    OPEN : Reject calls immediately
+    HALF_OPEN : Allow one test call
 ```
 
 ### Bulkhead
 
 Isolate resources to prevent cascade.
 
-```
-┌─────────────────────────────────────┐
-│             Application             │
-├───────────────┬─────────────────────┤
-│  DB Pool      │  External API Pool  │
-│  (max 20)     │  (max 10)           │
-└───────────────┴─────────────────────┘
+```mermaid
+graph TD
+    APP["Application"] --> DB["DB Pool<br/>(max 20)"]
+    APP --> EXT["External API Pool<br/>(max 10)"]
 
-If External API hangs: Only its pool exhausted
-Database calls still work
+    style APP fill:#369,stroke:#036,color:#fff
+    style DB fill:#6a6,stroke:#363,color:#fff
+    style EXT fill:#c66,stroke:#933,color:#fff
 ```
+
+If External API hangs: Only its pool exhausted.
+Database calls still work.
 
 ### Timeouts
 
