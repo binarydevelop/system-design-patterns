@@ -10,35 +10,21 @@ Rate limiting controls the number of requests a client can make within a time wi
 
 Without rate limiting:
 
-```
-                    ┌─────────────────────────────────┐
-                    │          API Server             │
-                    │                                 │
-   Legitimate ──────┤  CPU: 100%                      │
-   Users            │  Memory: 95%                    │
-                    │  Connections: EXHAUSTED         │
-   Abusive   ───────┤                                 │
-   Client           │  Status: OVERWHELMED            │
-   (10000 req/s)    │                                 │
-                    └─────────────────────────────────┘
-                              │
-                              ▼
-                    All users experience failures
+```mermaid
+graph TD
+    A[Legitimate Users] --> C[API Server<br/>CPU: 100%<br/>Memory: 95%<br/>Connections: EXHAUSTED<br/>Status: OVERWHELMED]
+    B[Abusive Client<br/>10000 req/s] --> C
+    C --> D[All users experience failures]
 ```
 
 With rate limiting:
 
-```
-                    ┌─────────────────────────────────┐
-                    │         Rate Limiter            │
-                    └─────────────┬───────────────────┘
-                                  │
-   Legitimate ────────────────────┼────► Allowed (100 req/s each)
-   Users                          │
-                                  │
-   Abusive   ─────────────────────┴────► Rejected (429 Too Many Requests)
-   Client                               (exceeds 100 req/s limit)
-   (10000 req/s)
+```mermaid
+graph TD
+    A[Legitimate Users] --> RL[Rate Limiter]
+    B[Abusive Client<br/>10000 req/s] --> RL
+    RL -->|Allowed<br/>100 req/s each| C[API Server]
+    RL -->|Rejected<br/>429 Too Many Requests| D[Blocked<br/>exceeds 100 req/s limit]
 ```
 
 ---
@@ -691,30 +677,10 @@ Retry-After: 45
 
 ## Multi-Tier Rate Limiting
 
-```
-Rate Limiting Tiers:
-
-┌─────────────────────────────────────────────────────────────────────┐
-│                          Global Tier                                 │
-│                  100,000 requests/second total                       │
-│                  (protects entire system)                            │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                          Per-API Tier                                │
-│                                                                      │
-│   /api/search: 10,000 req/s    /api/write: 1,000 req/s              │
-│   (expensive operation)         (database writes)                    │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Per-User Tier                                │
-│                                                                      │
-│   Free: 100 req/min            Pro: 1000 req/min                    │
-│   Enterprise: 10000 req/min                                          │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    G[Global Tier<br/>100,000 req/s total<br/>protects entire system] --> API[Per-API Tier<br/>/api/search: 10,000 req/s<br/>/api/write: 1,000 req/s]
+    API --> U[Per-User Tier<br/>Free: 100 req/min<br/>Pro: 1000 req/min<br/>Enterprise: 10000 req/min]
 ```
 
 ```go
@@ -962,38 +928,11 @@ func (q *QuotaRateLimiter) CheckQuota(userID string) QuotaResult {
 
 ## Rate Limiting at Different Layers
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                           CDN/Edge                                   │
-│        • IP-based DDoS protection                                    │
-│        • Geographic rate limiting                                    │
-│        • Bot detection                                               │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                         API Gateway                                  │
-│        • API key validation                                          │
-│        • Tier-based limits                                           │
-│        • Endpoint-specific limits                                    │
-│        • Request counting                                            │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Application Layer                               │
-│        • Business logic limits                                       │
-│        • User quotas                                                 │
-│        • Resource-specific limits                                    │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Database                                     │
-│        • Connection pooling                                          │
-│        • Query rate limiting                                         │
-│        • Read/write quotas                                           │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    CDN[CDN/Edge<br/>IP-based DDoS protection<br/>Geographic rate limiting<br/>Bot detection] --> GW[API Gateway<br/>API key validation<br/>Tier-based limits<br/>Endpoint-specific limits<br/>Request counting]
+    GW --> APP[Application Layer<br/>Business logic limits<br/>User quotas<br/>Resource-specific limits]
+    APP --> DB[("Database<br/>Connection pooling<br/>Query rate limiting<br/>Read/write quotas")]
 ```
 
 ---

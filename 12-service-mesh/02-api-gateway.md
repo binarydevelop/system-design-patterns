@@ -10,16 +10,19 @@ An API gateway is a single entry point for all client requests, handling cross-c
 
 ### Without API Gateway
 
+```mermaid
+graph LR
+    MA[Mobile App] --> Auth[Auth Service]
+    MA --> US[User Service]
+    MA --> OS[Order Service]
+    MA --> PS[Product Service]
+    MA --> Pay[Payment Service]
+    MA --> NS[Notification Service]
+    WA[Web App] --> Auth & US & OS & PS & Pay & NS
+    PA[Partner API] --> Auth & US & OS & PS & Pay & NS
 ```
-Mobile App                     Web App                    Partner API
-    │                             │                           │
-    ├─── Auth ───────────────────►│ Auth Service             │
-    ├─── Users ──────────────────►│ User Service             │
-    ├─── Orders ─────────────────►│ Order Service            │
-    ├─── Products ───────────────►│ Product Service          │
-    ├─── Payments ───────────────►│ Payment Service          │
-    └─── Notifications ──────────►│ Notification Service     │
 
+```
 Problems:
 - Clients know about internal services
 - Each service handles authentication
@@ -31,31 +34,15 @@ Problems:
 
 ### With API Gateway
 
-```
-Mobile App      Web App       Partner API
-    │              │              │
-    └──────────────┼──────────────┘
-                   │
-                   ▼
-         ┌─────────────────────┐
-         │    API Gateway      │
-         │                     │
-         │ • Authentication    │
-         │ • Rate Limiting     │
-         │ • Request Routing   │
-         │ • Protocol Trans.   │
-         │ • Response Cache    │
-         │ • Request Aggregate │
-         │ • SSL Termination   │
-         └──────────┬──────────┘
-                    │
-    ┌───────────────┼───────────────┐
-    │               │               │
-    ▼               ▼               ▼
-┌────────┐    ┌──────────┐    ┌────────────┐
-│  User  │    │  Order   │    │  Product   │
-│Service │    │ Service  │    │  Service   │
-└────────┘    └──────────┘    └────────────┘
+```mermaid
+graph TD
+    MA[Mobile App] --> GW
+    WA[Web App] --> GW
+    PA[Partner API] --> GW
+    GW["API Gateway<br/><br/>Authentication<br/>Rate Limiting<br/>Request Routing<br/>Protocol Translation<br/>Response Cache<br/>Request Aggregation<br/>SSL Termination"]
+    GW --> US[User Service]
+    GW --> OS[Order Service]
+    GW --> PS[Product Service]
 ```
 
 ---
@@ -308,51 +295,26 @@ class ProtocolTranslator:
 
 Single gateway for all external traffic.
 
-```
-Internet
-    │
-    ▼
-┌─────────────────────────────────────────┐
-│           Edge API Gateway               │
-│                                          │
-│  • DDoS protection                       │
-│  • Bot detection                         │
-│  • Global rate limiting                  │
-│  • SSL termination                       │
-│  • Geographic routing                    │
-└────────────────┬────────────────────────┘
-                 │
-    ┌────────────┼────────────┐
-    ▼            ▼            ▼
-┌────────┐  ┌────────┐  ┌────────┐
-│Service │  │Service │  │Service │
-│   A    │  │   B    │  │   C    │
-└────────┘  └────────┘  └────────┘
+```mermaid
+graph TD
+    I[Internet] --> EG["Edge API Gateway<br/><br/>DDoS protection<br/>Bot detection<br/>Global rate limiting<br/>SSL termination<br/>Geographic routing"]
+    EG --> SA[Service A]
+    EG --> SB[Service B]
+    EG --> SC[Service C]
 ```
 
 ### Backends for Frontends (BFF)
 
 Dedicated gateway per client type.
 
-```
-┌──────────┐  ┌──────────┐  ┌──────────┐
-│Mobile App│  │  Web App │  │Partner   │
-└────┬─────┘  └────┬─────┘  │   API    │
-     │             │        └────┬─────┘
-     ▼             ▼             ▼
-┌─────────┐  ┌─────────┐  ┌─────────────┐
-│ Mobile  │  │   Web   │  │   Partner   │
-│   BFF   │  │   BFF   │  │     BFF     │
-│         │  │         │  │             │
-│• Smaller│  │• Rich   │  │• API keys   │
-│  payloads│  │  responses│ │• Webhooks  │
-│• Offline│  │• SSR    │  │• Versioning│
-│  support│  │  support│  │             │
-└────┬────┘  └────┬────┘  └──────┬──────┘
-     │            │              │
-     └────────────┼──────────────┘
-                  │
-         Common Backend Services
+```mermaid
+graph TD
+    MA[Mobile App] --> MBFF["Mobile BFF<br/>Smaller payloads<br/>Offline support"]
+    WA[Web App] --> WBFF["Web BFF<br/>Rich responses<br/>SSR support"]
+    PA[Partner API] --> PBFF["Partner BFF<br/>API keys<br/>Webhooks<br/>Versioning"]
+    MBFF --> CBS[Common Backend Services]
+    WBFF --> CBS
+    PBFF --> CBS
 ```
 
 ```python
@@ -396,21 +358,14 @@ class WebBFF:
 
 Separate gateways for different business domains.
 
-```
-                    Internet
-                        │
-           ┌────────────┼────────────┐
-           ▼            ▼            ▼
-    ┌────────────┐ ┌────────────┐ ┌────────────┐
-    │  Commerce  │ │   Media    │ │   Admin    │
-    │  Gateway   │ │  Gateway   │ │  Gateway   │
-    └─────┬──────┘ └─────┬──────┘ └─────┬──────┘
-          │              │              │
-    ┌─────┴─────┐  ┌─────┴─────┐  ┌─────┴─────┐
-    │ Product   │  │  Video    │  │   User    │
-    │ Cart      │  │  Audio    │  │  Config   │
-    │ Checkout  │  │  Image    │  │  Reports  │
-    └───────────┘  └───────────┘  └───────────┘
+```mermaid
+graph TD
+    I[Internet] --> CG[Commerce Gateway]
+    I --> MG[Media Gateway]
+    I --> AG[Admin Gateway]
+    CG --> CS["Product<br/>Cart<br/>Checkout"]
+    MG --> MS["Video<br/>Audio<br/>Image"]
+    AG --> AS["User<br/>Config<br/>Reports"]
 ```
 
 ---

@@ -54,23 +54,14 @@ Auto-scaled Capacity:
 
 ## Auto-Scaling Components
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                       Auto-Scaling System                            │
-│                                                                      │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐          │
-│  │   Metrics    │───►│   Scaling    │───►│   Scaling    │          │
-│  │  Collector   │    │   Decision   │    │   Executor   │          │
-│  └──────────────┘    │    Engine    │    └──────────────┘          │
-│         ▲            └──────────────┘           │                   │
-│         │                   │                   │                   │
-│         │                   ▼                   ▼                   │
-│  ┌──────┴──────┐    ┌──────────────┐    ┌──────────────┐          │
-│  │  Instances  │    │   Scaling    │    │   Health     │          │
-│  │  (CPU, Mem) │    │   Policies   │    │   Checks     │          │
-│  └─────────────┘    └──────────────┘    └──────────────┘          │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    I[Instances<br/>CPU, Mem] --> MC[Metrics<br/>Collector]
+    MC --> DE[Scaling<br/>Decision Engine]
+    DE --> SE[Scaling<br/>Executor]
+    DE --> SP[Scaling<br/>Policies]
+    SE --> HC[Health<br/>Checks]
+    SE --> I
 ```
 
 ---

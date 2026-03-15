@@ -72,48 +72,52 @@ def reduce(word, counts):
 
 ### MapReduce Architecture
 
-```
-                         ┌─────────────────────────────────────────┐
-                         │            Job Tracker                   │
-                         │                                          │
-                         │  • Job scheduling                        │
-                         │  • Task assignment                       │
-                         │  • Progress monitoring                   │
-                         └─────────────────┬───────────────────────┘
-                                           │
-             ┌─────────────────────────────┼─────────────────────────────┐
-             │                             │                             │
-             ▼                             ▼                             ▼
-    ┌─────────────────┐           ┌─────────────────┐           ┌─────────────────┐
-    │   Task Tracker  │           │   Task Tracker  │           │   Task Tracker  │
-    │     (Node 1)    │           │     (Node 2)    │           │     (Node 3)    │
-    │                 │           │                 │           │                 │
-    │  ┌───────────┐  │           │  ┌───────────┐  │           │  ┌───────────┐  │
-    │  │ Map Task  │  │           │  │ Map Task  │  │           │  │ Map Task  │  │
-    │  └───────────┘  │           │  └───────────┘  │           │  └───────────┘  │
-    │  ┌───────────┐  │           │  ┌───────────┐  │           │  ┌───────────┐  │
-    │  │Reduce Task│  │           │  │Reduce Task│  │           │  │Reduce Task│  │
-    │  └───────────┘  │           │  └───────────┘  │           │  └───────────┘  │
-    │                 │           │                 │           │                 │
-    │  ┌───────────┐  │           │  ┌───────────┐  │           │  ┌───────────┐  │
-    │  │   HDFS    │  │           │  │   HDFS    │  │           │  │   HDFS    │  │
-    │  │   Block   │  │           │  │   Block   │  │           │  │   Block   │  │
-    │  └───────────┘  │           │  └───────────┘  │           │  └───────────┘  │
-    └─────────────────┘           └─────────────────┘           └─────────────────┘
+```mermaid
+graph TD
+    JT["Job Tracker<br/><br/>Job scheduling<br/>Task assignment<br/>Progress monitoring"]
+    JT --> TT1
+    JT --> TT2
+    JT --> TT3
+
+    subgraph TT1["Task Tracker (Node 1)"]
+        M1[Map Task]
+        R1[Reduce Task]
+        H1[("HDFS Block")]
+    end
+
+    subgraph TT2["Task Tracker (Node 2)"]
+        M2[Map Task]
+        R2[Reduce Task]
+        H2[("HDFS Block")]
+    end
+
+    subgraph TT3["Task Tracker (Node 3)"]
+        M3[Map Task]
+        R3[Reduce Task]
+        H3[("HDFS Block")]
+    end
 ```
 
 ### Data Locality
 
+```mermaid
+graph TD
+    subgraph N1["Node 1"]
+        BA1[Block A]
+        BB1[Block B]
+    end
+    subgraph N2["Node 2"]
+        BA2[Block A]
+        BC2[Block C]
+    end
+    subgraph N3["Node 3"]
+        BB3[Block B]
+        BC3[Block C]
+    end
+```
+
 ```
 Principle: Move computation to data, not data to computation
-
-HDFS Block distribution:
-┌──────────┐  ┌──────────┐  ┌──────────┐
-│  Node 1  │  │  Node 2  │  │  Node 3  │
-├──────────┤  ├──────────┤  ├──────────┤
-│ Block A  │  │ Block A  │  │ Block B  │
-│ Block B  │  │ Block C  │  │ Block C  │
-└──────────┘  └──────────┘  └──────────┘
 
 Task scheduling preference:
 1. Data-local:     Run on node that has the block (best)
@@ -207,41 +211,27 @@ daily_revenue.write.mode("overwrite").parquet("s3://bucket/reports/daily_revenue
 
 ### Spark Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Driver Program                            │
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                    SparkContext                          │   │
-│  │                                                          │   │
-│  │  • Create RDDs                                           │   │
-│  │  • Build DAG                                             │   │
-│  │  • Schedule tasks                                        │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-                    ┌────────┴────────┐
-                    │  Cluster Manager │
-                    │  (YARN/Mesos/K8s)│
-                    └────────┬────────┘
-                             │
-         ┌───────────────────┼───────────────────┐
-         ▼                   ▼                   ▼
-┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-│     Executor    │ │     Executor    │ │     Executor    │
-│     (Node 1)    │ │     (Node 2)    │ │     (Node 3)    │
-│                 │ │                 │ │                 │
-│ ┌─────────────┐ │ │ ┌─────────────┐ │ │ ┌─────────────┐ │
-│ │    Task     │ │ │ │    Task     │ │ │ │    Task     │ │
-│ └─────────────┘ │ │ └─────────────┘ │ │ └─────────────┘ │
-│ ┌─────────────┐ │ │ ┌─────────────┐ │ │ ┌─────────────┐ │
-│ │    Task     │ │ │ │    Task     │ │ │ │    Task     │ │
-│ └─────────────┘ │ │ └─────────────┘ │ │ └─────────────┘ │
-│                 │ │                 │ │                 │
-│ ┌─────────────┐ │ │ ┌─────────────┐ │ │ ┌─────────────┐ │
-│ │    Cache    │ │ │ │    Cache    │ │ │ │    Cache    │ │
-│ └─────────────┘ │ │ └─────────────┘ │ │ └─────────────┘ │
-└─────────────────┘ └─────────────────┘ └─────────────────┘
+```mermaid
+graph TD
+    DP["Driver Program<br/><br/>SparkContext<br/>Create RDDs, Build DAG, Schedule tasks"]
+    CM["Cluster Manager<br/>(YARN/Mesos/K8s)"]
+    DP --> CM
+
+    CM --> E1
+    CM --> E2
+    CM --> E3
+
+    subgraph E1["Executor (Node 1)"]
+        T1A[Task] --- T1B[Task] --- C1[Cache]
+    end
+
+    subgraph E2["Executor (Node 2)"]
+        T2A[Task] --- T2B[Task] --- C2[Cache]
+    end
+
+    subgraph E3["Executor (Node 3)"]
+        T3A[Task] --- T3B[Task] --- C3[Cache]
+    end
 ```
 
 ---
@@ -250,36 +240,13 @@ daily_revenue.write.mode("overwrite").parquet("s3://bucket/reports/daily_revenue
 
 ### Extract, Transform, Load
 
-```
-┌─────────────────┐
-│    EXTRACT      │
-│                 │
-│ • Databases     │
-│ • APIs          │
-│ • Files         │
-│ • Streams       │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   TRANSFORM     │
-│                 │
-│ • Clean         │
-│ • Validate      │
-│ • Enrich        │
-│ • Aggregate     │
-│ • Join          │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│      LOAD       │
-│                 │
-│ • Data Warehouse│
-│ • Data Lake     │
-│ • Search Index  │
-│ • Analytics DB  │
-└─────────────────┘
+```mermaid
+graph TD
+    E["EXTRACT<br/><br/>Databases<br/>APIs<br/>Files<br/>Streams"]
+    T["TRANSFORM<br/><br/>Clean<br/>Validate<br/>Enrich<br/>Aggregate<br/>Join"]
+    L["LOAD<br/><br/>Data Warehouse<br/>Data Lake<br/>Search Index<br/>Analytics DB"]
+
+    E --> T --> L
 ```
 
 ### Pipeline Implementation
@@ -463,35 +430,15 @@ with DAG(
 
 ### DAG Visualization
 
-```
-                        ┌─────────────────────┐
-                        │  wait_for_orders    │
-                        │  (ExternalSensor)   │
-                        └──────────┬──────────┘
-                                   │
-                                   ▼
-                        ┌─────────────────────┐
-                        │   extract_data      │
-                        │   (SparkSubmit)     │
-                        └──────────┬──────────┘
-                                   │
-                                   ▼
-                        ┌─────────────────────┐
-                        │   transform_data    │
-                        │   (SparkSubmit)     │
-                        └──────────┬──────────┘
-                                   │
-                                   ▼
-                        ┌─────────────────────┐
-                        │   load_warehouse    │
-                        │   (SparkSubmit)     │
-                        └──────────┬──────────┘
-                                   │
-                                   ▼
-                        ┌─────────────────────┐
-                        │  quality_check      │
-                        │   (Python)          │
-                        └─────────────────────┘
+```mermaid
+graph TD
+    W["wait_for_orders<br/>(ExternalSensor)"]
+    E["extract_data<br/>(SparkSubmit)"]
+    T["transform_data<br/>(SparkSubmit)"]
+    L["load_warehouse<br/>(SparkSubmit)"]
+    Q["quality_check<br/>(Python)"]
+
+    W --> E --> T --> L --> Q
 ```
 
 ---

@@ -10,101 +10,57 @@ A circuit breaker prevents cascading failures in distributed systems by monitori
 
 Without circuit breaker:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Cascade Failure                               │
-│                                                                      │
-│   Service A          Service B          Service C                   │
-│   ┌───────┐         ┌───────┐          ┌───────┐                   │
-│   │       │────────►│       │─────────►│       │                   │
-│   │       │ waiting │       │ waiting  │  ╳    │ DOWN!             │
-│   │       │◄────────│       │◄─────────│       │                   │
-│   │       │ timeout │       │ timeout  │       │                   │
-│   └───────┘         └───────┘          └───────┘                   │
-│       │                 │                                           │
-│       │                 │                                           │
-│       ▼                 ▼                                           │
-│   Thread Pool       Thread Pool                                     │
-│   EXHAUSTED         EXHAUSTED                                       │
-│       │                 │                                           │
-│       ▼                 ▼                                           │
-│   Service A          Service B                                      │
-│     DOWN              DOWN           ← Cascade failure!             │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant A as Service A
+    participant B as Service B
+    participant C as Service C (DOWN)
+
+    A->>B: Request
+    B->>C: Request
+    C--xB: Timeout
+    B--xA: Timeout
+    Note over B: Thread Pool EXHAUSTED
+    Note over A: Thread Pool EXHAUSTED
+    Note over A,B: Cascade failure — both services DOWN
 ```
 
 With circuit breaker:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Circuit Breaker Protection                        │
-│                                                                      │
-│   Service A          Service B          Service C                   │
-│   ┌───────┐         ┌───────┐          ┌───────┐                   │
-│   │       │         │   CB  │          │       │                   │
-│   │       │────────►│  ──── │    ╳     │  ╳    │ DOWN!             │
-│   │       │         │ OPEN! │          │       │                   │
-│   │       │◄────────│       │          │       │                   │
-│   │       │ fallback│       │          │       │                   │
-│   └───────┘         └───────┘          └───────┘                   │
-│       │                                                             │
-│       │                                                             │
-│       ▼                                                             │
-│   Returns cached    Service B stays healthy                         │
-│   or default data   (doesn't wait for C)                            │
-│                                                                      │
-│   All services remain operational!                                   │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant A as Service A
+    participant B as Service B (CB OPEN)
+    participant C as Service C (DOWN)
+
+    A->>B: Request
+    Note over B: Circuit Breaker is OPEN
+    B-->>A: Fallback response
+    Note over A: Returns cached or default data
+    Note over A,B: All services remain operational
 ```
 
 ---
 
 ## Circuit Breaker States
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                      │
-│                          CLOSED                                      │
-│                     (Normal Operation)                               │
-│                                                                      │
-│                    Requests pass through                             │
-│                    Failures are counted                              │
-│                                                                      │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │
-                           │ Failure threshold exceeded
-                           │ (e.g., 5 failures in 10 seconds)
-                           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                      │
-│                           OPEN                                       │
-│                    (Failing Fast)                                    │
-│                                                                      │
-│                    All requests fail immediately                     │
-│                    No calls to downstream service                    │
-│                                                                      │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │
-                           │ Timeout expires
-                           │ (e.g., 30 seconds)
-                           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                      │
-│                        HALF-OPEN                                     │
-│                    (Testing Recovery)                                │
-│                                                                      │
-│                    Limited requests pass through                     │
-│                    Testing if service recovered                      │
-│                                                                      │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │
-          ┌────────────────┴────────────────┐
-          │                                 │
-          │ Success                         │ Failure
-          ▼                                 ▼
-     ┌─────────┐                      ┌──────────┐
-     │ CLOSED  │                      │   OPEN   │
-     └─────────┘                      └──────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Open: Failure threshold exceeded<br/>(e.g. 5 failures in 10s)
+    Open --> HalfOpen: Timeout expires<br/>(e.g. 30 seconds)
+    HalfOpen --> Closed: Success
+    HalfOpen --> Open: Failure
+
+    state Closed {
+        [*]: Requests pass through<br/>Failures are counted
+    }
+    state Open {
+        [*]: All requests fail immediately<br/>No calls to downstream
+    }
+    state HalfOpen {
+        [*]: Limited requests pass through<br/>Testing if service recovered
+    }
 ```
 
 ---
@@ -999,30 +955,25 @@ func (sc *ServiceCaller) ProcessOrder(order any) (paymentResult, inventoryResult
 }
 ```
 
-```
-Bulkhead Isolation:
+```mermaid
+graph TD
+    TP[Application Thread Pool] --> PB[Payment Bulkhead<br/>20 slots]
+    TP --> IB[Inventory Bulkhead<br/>50 slots]
+    TP --> SB[Shipping Bulkhead<br/>30 slots]
 
-┌────────────────────────────────────────────────────────────────────┐
-│                        Application Thread Pool                      │
-└────────────────────────────────────────────────────────────────────┘
-         │                        │                        │
-         ▼                        ▼                        ▼
-┌────────────────┐      ┌────────────────┐      ┌────────────────┐
-│    Payment     │      │   Inventory    │      │   Shipping     │
-│   Bulkhead     │      │   Bulkhead     │      │   Bulkhead     │
-│   (20 slots)   │      │   (50 slots)   │      │   (30 slots)   │
-├────────────────┤      ├────────────────┤      ├────────────────┤
-│ Circuit Breaker│      │ Circuit Breaker│      │ Circuit Breaker│
-└───────┬────────┘      └───────┬────────┘      └───────┬────────┘
-        │                       │                       │
-        ▼                       ▼                       ▼
-   Payment API            Inventory API           Shipping API
+    PB --> PCB[Circuit Breaker]
+    IB --> ICB[Circuit Breaker]
+    SB --> SCB[Circuit Breaker]
+
+    PCB --> PA[Payment API]
+    ICB --> IA[Inventory API]
+    SCB --> SA[Shipping API]
+```
 
 If Payment API is slow/down:
 - Only Payment bulkhead is affected
 - Inventory and Shipping continue working
 - No cascading thread exhaustion
-```
 
 ---
 
