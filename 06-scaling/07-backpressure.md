@@ -10,46 +10,25 @@ Backpressure is a flow control mechanism where downstream components signal upst
 
 Without backpressure:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Unbounded Queue Problem                          │
-│                                                                      │
-│   Producer         Queue              Consumer                      │
-│  (fast: 1000/s)    (unbounded)       (slow: 100/s)                 │
-│                                                                      │
-│   [████] ──────►  [████████████...] ──────►  [██]                  │
-│                        │                                            │
-│                        ▼                                            │
-│                   Memory grows                                      │
-│                   without bound                                     │
-│                        │                                            │
-│                        ▼                                            │
-│                   OutOfMemoryError!                                 │
-│                   System crashes                                    │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    P[Producer<br/>1000/s] --> Q[Queue<br/>unbounded]
+    Q --> C[Consumer<br/>100/s]
+    Q --> M[Memory grows<br/>without bound]
+    M --> OOM[OutOfMemoryError!<br/>System crashes]
 ```
 
 With backpressure:
 
+```mermaid
+graph LR
+    P[Producer<br/>adjusts to 100/s] --> Q[Queue<br/>bounded]
+    Q --> C[Consumer<br/>100/s]
+    Q -.->|Slow down!| P
+    C -.->|Propagate back| P
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Backpressure Flow Control                         │
-│                                                                      │
-│   Producer         Queue              Consumer                      │
-│  (adjusts to       (bounded)         (100/s)                       │
-│   100/s)                                                            │
-│                                                                      │
-│   [██] ──────►  [████████] ──────►  [██]                           │
-│     ▲               │                 │                             │
-│     │               │                 │                             │
-│     └───────────────┘                 │                             │
-│        "Slow down!"                   │                             │
-│     └─────────────────────────────────┘                             │
-│        Propagate back                                               │
-│                                                                      │
-│   Memory stays bounded, system stays stable                         │
-└─────────────────────────────────────────────────────────────────────┘
-```
+
+Memory stays bounded, system stays stable.
 
 ---
 
@@ -382,23 +361,17 @@ class ProcessingSubscriber(Subscriber[dict]):
         self.buffer.clear()
 ```
 
-```
-Pull-Based Backpressure:
+```mermaid
+sequenceDiagram
+    participant S as Subscriber
+    participant P as Publisher
 
-Subscriber: "Give me 10 items"
-                │
-                ▼
-Publisher:  [1][2][3][4][5][6][7][8][9][10] ──────► Subscriber
-                │
-                │ Subscriber processes...
-                │
-Subscriber: "Give me 10 more"
-                │
-                ▼
-Publisher:  [11][12][13]... ──────► Subscriber
-
-Key: Publisher only sends what subscriber requests
-     No buffer overflow possible
+    S->>P: Request 10 items
+    P-->>S: Items 1-10
+    Note over S: Processing...
+    S->>P: Request 10 more
+    P-->>S: Items 11-20
+    Note over S,P: Publisher only sends what<br/>subscriber requests.<br/>No buffer overflow possible.
 ```
 
 ---

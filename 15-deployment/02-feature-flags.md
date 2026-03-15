@@ -10,23 +10,16 @@ Feature flags decouple deployment from release, letting you ship code to product
 
 ### Deployment vs. Release
 
+```mermaid
+graph LR
+    T1["T1: Flag OFF<br/>Feature invisible"] --> T2["T2: Flag ON 1%<br/>Test small group"]
+    T2 --> T3["T3: Flag ON 10%<br/>Expand gradually"]
+    T3 --> T4["T4: Flag ON 100%<br/>Full release"]
+    T4 --> T5["T5: Remove flag<br/>Clean up code"]
+    T1 & T2 & T3 & T4 -.->|Turn flag OFF| RB["Instant rollback"]
 ```
-Traditional:
-Deploy = Release = Risk
 
-With Feature Flags:
-┌─────────────────────────────────────────────────────────────────┐
-│  Code deployed to production (behind flag = OFF)                 │
-│                                                                 │
-│  Time T1: Flag OFF → Feature invisible to users                 │
-│  Time T2: Flag ON for 1% → Test with small group               │
-│  Time T3: Flag ON for 10% → Expand gradually                   │
-│  Time T4: Flag ON for 100% → Full release                      │
-│  Time T5: Remove flag → Clean up code                          │
-│                                                                 │
-│  At any point: Turn flag OFF → Instant rollback                 │
-└─────────────────────────────────────────────────────────────────┘
-
+```
 Separation:
 - Deploy: Code goes to production (low risk)
 - Release: Feature enabled for users (controlled)
@@ -207,74 +200,40 @@ class MultivariateFlag:
 
 ### Client-Side Evaluation
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Application                              │
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                    Feature Flag SDK                      │   │
-│  │                                                          │   │
-│  │  ┌──────────────┐    ┌──────────────────────────────┐   │   │
-│  │  │    Cache     │    │    Evaluation Engine         │   │   │
-│  │  │              │    │                              │   │   │
-│  │  │  All flag    │───►│  1. Load flag config         │   │   │
-│  │  │  configs     │    │  2. Evaluate rules           │   │   │
-│  │  │              │    │  3. Return result            │   │   │
-│  │  └──────────────┘    └──────────────────────────────┘   │   │
-│  │         ▲                                                │   │
-│  │         │ Sync (polling or streaming)                    │   │
-│  └─────────┼────────────────────────────────────────────────┘   │
-│            │                                                     │
-└────────────┼─────────────────────────────────────────────────────┘
-             │
-             │
-┌────────────▼─────────────────────────────────────────────────────┐
-│                    Feature Flag Service                          │
-│                                                                 │
-│  ┌───────────────┐    ┌───────────────┐    ┌───────────────┐   │
-│  │   Dashboard   │    │     API       │    │   Database    │   │
-│  │               │    │               │    │               │   │
-│  │  - Create     │───►│  - CRUD flags │───►│  - Flag       │   │
-│  │  - Edit       │    │  - Stream     │    │    configs    │   │
-│  │  - Toggle     │    │    updates    │    │  - Audit log  │   │
-│  └───────────────┘    └───────────────┘    └───────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Application
+        subgraph SDK["Feature Flag SDK"]
+            CACHE["Cache<br/>All flag configs"] --> EE["Evaluation Engine<br/>1. Load flag config<br/>2. Evaluate rules<br/>3. Return result"]
+        end
+    end
 
+    subgraph FFS["Feature Flag Service"]
+        DASH["Dashboard<br/>Create, Edit, Toggle"] --> API["API<br/>CRUD flags<br/>Stream updates"]
+        API --> DB[("Database<br/>Flag configs<br/>Audit log")]
+    end
+
+    FFS -->|Sync<br/>polling or streaming| CACHE
+```
+
+```
 Pros: Low latency, works offline
 Cons: All flags sent to client (size), sync delay
 ```
 
 ### Server-Side Evaluation
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Application                              │
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                    Feature Flag SDK                      │   │
-│  │                                                          │   │
-│  │  is_enabled("feature_x", user_context)                  │   │
-│  │              │                                           │   │
-│  │              │ HTTP/gRPC                                 │   │
-│  │              ▼                                           │   │
-│  └──────────────┼───────────────────────────────────────────┘   │
-│                 │                                                │
-└─────────────────┼────────────────────────────────────────────────┘
-                  │
-                  │
-┌─────────────────▼────────────────────────────────────────────────┐
-│                    Feature Flag Service                          │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │                  Evaluation Engine                         │  │
-│  │                                                            │  │
-│  │  1. Receive context (user_id, attributes)                 │  │
-│  │  2. Load flag config                                       │  │
-│  │  3. Evaluate rules                                         │  │
-│  │  4. Return result                                          │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant App as Application<br/>Feature Flag SDK
+    participant FFS as Feature Flag Service<br/>Evaluation Engine
 
+    App->>FFS: is_enabled("feature_x", user_context)<br/>HTTP/gRPC
+    Note over FFS: 1. Receive context<br/>2. Load flag config<br/>3. Evaluate rules
+    FFS-->>App: 4. Return result
+```
+
+```
 Pros: Sensitive rules stay server-side, always fresh
 Cons: Latency, network dependency
 ```

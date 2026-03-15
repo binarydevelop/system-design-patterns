@@ -57,37 +57,14 @@ Monday 10:00 AM (scale down):
 
 ## Service Discovery Components
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Service Registry                             │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │  Service: payment-service                                  │ │
-│  │  Instances:                                                │ │
-│  │    - id: payment-1, host: 10.0.1.5, port: 8080, healthy   │ │
-│  │    - id: payment-2, host: 10.0.1.6, port: 8080, healthy   │ │
-│  │    - id: payment-3, host: 10.0.1.7, port: 8080, unhealthy │ │
-│  │  Metadata:                                                 │ │
-│  │    - version: 2.1.0                                        │ │
-│  │    - datacenter: us-east-1                                │ │
-│  └───────────────────────────────────────────────────────────┘ │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │  Service: user-service                                     │ │
-│  │  Instances:                                                │ │
-│  │    - id: user-1, host: 10.0.2.1, port: 8080, healthy      │ │
-│  │  Metadata:                                                 │ │
-│  │    - version: 1.5.0                                        │ │
-│  └───────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-             │                               │
-             │ Register/Heartbeat            │ Query
-             │                               │
-    ┌────────┴────────┐            ┌────────┴────────┐
-    │  Service        │            │  Service        │
-    │  Provider       │            │  Consumer       │
-    │ (payment-svc)   │            │ (order-svc)     │
-    └─────────────────┘            └─────────────────┘
+```mermaid
+graph TD
+    SR["Service Registry<br/><br/>payment-service:<br/>payment-1: 10.0.1.5:8080 healthy<br/>payment-2: 10.0.1.6:8080 healthy<br/>payment-3: 10.0.1.7:8080 unhealthy<br/>version: 2.1.0 | dc: us-east-1<br/><br/>user-service:<br/>user-1: 10.0.2.1:8080 healthy<br/>version: 1.5.0"]
+    SP["Service Provider<br/>(payment-svc)"]
+    SC["Service Consumer<br/>(order-svc)"]
+
+    SP -->|Register/Heartbeat| SR
+    SC -->|Query| SR
 ```
 
 ### Registration
@@ -171,28 +148,16 @@ class HealthChecker:
 
 Client queries registry and performs load balancing itself.
 
-```
-┌─────────────┐                              ┌─────────────┐
-│   Client    │                              │  Registry   │
-│  Service    │                              │ (Consul,    │
-│             │      1. Query registry       │  Eureka)    │
-│             │─────────────────────────────►│             │
-│             │                              │             │
-│             │      2. Return instances     │             │
-│             │◄─────────────────────────────│             │
-└──────┬──────┘                              └─────────────┘
-       │
-       │ 3. Client chooses instance
-       │    (round-robin, random, etc.)
-       │
-       ▼
-┌──────────────────────────────────────────────────────────┐
-│                    Target Service                         │
-│  ┌─────────┐    ┌─────────┐    ┌─────────┐              │
-│  │Instance1│    │Instance2│    │Instance3│              │
-│  │10.0.1.5 │    │10.0.1.6 │    │10.0.1.7 │              │
-│  └─────────┘    └─────────┘    └─────────┘              │
-└──────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant C as Client Service
+    participant R as Registry<br/>(Consul, Eureka)
+    participant T as Target Service<br/>Instance1/2/3
+
+    C->>R: 1. Query registry
+    R-->>C: 2. Return instances
+    Note over C: 3. Client chooses instance<br/>(round-robin, random, etc.)
+    C->>T: 4. Send request
 ```
 
 ### Implementation
@@ -270,30 +235,14 @@ Cons:
 
 Load balancer queries registry; clients just call load balancer.
 
-```
-┌─────────────┐
-│   Client    │
-│  Service    │
-│             │    1. Call load balancer
-│             │───────────────────────────┐
-└─────────────┘                           │
-                                          ▼
-                              ┌───────────────────┐
-                              │   Load Balancer   │
-                              │   (Nginx, HAProxy,│
-                              │    AWS ALB)       │◄──┐
-                              └─────────┬─────────┘   │
-                                        │             │
-         2. Query registry ─────────────┼─────────────┘
-         or configured by registry      │
-                                        │
-                    ┌───────────────────┼───────────────────┐
-                    │                   │                   │
-                    ▼                   ▼                   ▼
-              ┌─────────┐         ┌─────────┐         ┌─────────┐
-              │Instance1│         │Instance2│         │Instance3│
-              │10.0.1.5 │         │10.0.1.6 │         │10.0.1.7 │
-              └─────────┘         └─────────┘         └─────────┘
+```mermaid
+graph TD
+    C[Client Service] -->|1. Call load balancer| LB[Load Balancer<br/>Nginx, HAProxy, AWS ALB]
+    LB -->|2. Query registry<br/>or configured by registry| R[(Registry)]
+    R --> LB
+    LB --> I1[Instance1<br/>10.0.1.5]
+    LB --> I2[Instance2<br/>10.0.1.6]
+    LB --> I3[Instance3<br/>10.0.1.7]
 ```
 
 ### Kubernetes Service Discovery
@@ -556,33 +505,18 @@ class EtcdServiceRegistry:
 
 ### Envoy and xDS
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Control Plane                             │
-│                      (Istio, Consul Connect)                     │
-│                                                                 │
-│  xDS APIs:                                                      │
-│  - LDS (Listener Discovery)                                     │
-│  - RDS (Route Discovery)                                        │
-│  - CDS (Cluster Discovery)   ◄─── Service Registry              │
-│  - EDS (Endpoint Discovery)                                     │
-└───────────────────────────────────┬─────────────────────────────┘
-                                    │
-                                    │ gRPC streaming updates
-                                    │
-        ┌───────────────────────────┼───────────────────────────┐
-        │                           │                           │
-        ▼                           ▼                           ▼
-  ┌───────────┐              ┌───────────┐              ┌───────────┐
-  │  Envoy    │              │  Envoy    │              │  Envoy    │
-  │  Proxy    │              │  Proxy    │              │  Proxy    │
-  │ (Sidecar) │              │ (Sidecar) │              │ (Sidecar) │
-  └─────┬─────┘              └─────┬─────┘              └─────┬─────┘
-        │                          │                          │
-  ┌─────┴─────┐              ┌─────┴─────┐              ┌─────┴─────┘
-  │  Service  │              │  Service  │              │  Service  │
-  │     A     │              │     B     │              │     C     │
-  └───────────┘              └───────────┘              └───────────┘
+```mermaid
+graph TD
+    CP["Control Plane<br/>(Istio, Consul Connect)<br/><br/>xDS APIs:<br/>LDS, RDS, CDS, EDS"]
+    SR[(Service Registry)] --> CP
+
+    CP -->|gRPC streaming updates| E1[Envoy Proxy<br/>Sidecar]
+    CP -->|gRPC streaming updates| E2[Envoy Proxy<br/>Sidecar]
+    CP -->|gRPC streaming updates| E3[Envoy Proxy<br/>Sidecar]
+
+    E1 --- SA[Service A]
+    E2 --- SB[Service B]
+    E3 --- SC[Service C]
 ```
 
 ```yaml

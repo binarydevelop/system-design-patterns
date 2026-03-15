@@ -10,62 +10,50 @@ The sidecar pattern deploys helper components alongside application containers t
 
 ### Without Sidecars
 
+```mermaid
+graph TD
+    subgraph Application
+        BL[Business Logic]
+        BL --- LOG[Logging]
+        BL --- MET[Metrics]
+        BL --- TRC[Tracing]
+        BL --- CB[Circuit Breaker]
+        BL --- RT[Retry Logic]
+        BL --- MTLS[mTLS Client]
+        BL --- SD[Service Discovery]
+        BL --- HC[Health Checks]
+    end
 ```
-┌────────────────────────────────────────────────────────┐
-│                    Application                          │
-│                                                        │
-│  ┌──────────────────────────────────────────────────┐ │
-│  │              Business Logic                       │ │
-│  │                                                   │ │
-│  │  ┌─────────────┐ ┌─────────────┐ ┌────────────┐  │ │
-│  │  │   Logging   │ │   Metrics   │ │   Tracing  │  │ │
-│  │  └─────────────┘ └─────────────┘ └────────────┘  │ │
-│  │                                                   │ │
-│  │  ┌─────────────┐ ┌─────────────┐ ┌────────────┐  │ │
-│  │  │   Circuit   │ │   Retry     │ │   mTLS     │  │ │
-│  │  │   Breaker   │ │   Logic     │ │   Client   │  │ │
-│  │  └─────────────┘ └─────────────┘ └────────────┘  │ │
-│  │                                                   │ │
-│  │  ┌─────────────┐ ┌─────────────┐                 │ │
-│  │  │   Service   │ │   Health    │                 │ │
-│  │  │   Discovery │ │   Checks    │                 │ │
-│  │  └─────────────┘ └─────────────┘                 │ │
-│  └──────────────────────────────────────────────────┘ │
-│                                                        │
-│  Problems:                                             │
-│  • Same code in every service                          │
-│  • Different implementations per language              │
-│  • Business logic buried in infrastructure code        │
-│  • Hard to update consistently                         │
-└────────────────────────────────────────────────────────┘
+
+```
+Problems:
+• Same code in every service
+• Different implementations per language
+• Business logic buried in infrastructure code
+• Hard to update consistently
 ```
 
 ### With Sidecars
 
+```mermaid
+graph LR
+    subgraph Pod
+        subgraph Application
+            BL["Business Logic<br/>localhost:8080"]
+        end
+        subgraph Sidecar["Sidecar (Envoy)"]
+            S["Logging<br/>Metrics<br/>Tracing<br/>Circuit Breaker<br/>Retry<br/>mTLS<br/>Service Discovery<br/>Load Balancing"]
+        end
+        BL <--> S
+    end
 ```
-┌─────────────────────────────────────────────────────────┐
-│                         Pod                              │
-│                                                         │
-│  ┌──────────────────────┐  ┌──────────────────────┐    │
-│  │     Application      │  │       Sidecar        │    │
-│  │                      │  │       (Envoy)        │    │
-│  │  ┌────────────────┐  │  │                      │    │
-│  │  │                │  │  │  • Logging           │    │
-│  │  │   Business     │  │  │  • Metrics           │    │
-│  │  │    Logic       │──┼──│  • Tracing           │    │
-│  │  │                │  │  │  • Circuit Breaker   │    │
-│  │  │                │  │  │  • Retry             │    │
-│  │  └────────────────┘  │  │  • mTLS              │    │
-│  │                      │  │  • Service Discovery │    │
-│  │  localhost:8080      │  │  • Load Balancing    │    │
-│  └──────────────────────┘  └──────────────────────┘    │
-│                                                         │
-│  Benefits:                                              │
-│  • Application code is clean                            │
-│  • Language agnostic                                    │
-│  • Consistent infrastructure across services            │
-│  • Independent updates                                  │
-└─────────────────────────────────────────────────────────┘
+
+```
+Benefits:
+• Application code is clean
+• Language agnostic
+• Consistent infrastructure across services
+• Independent updates
 ```
 
 ---
@@ -74,38 +62,17 @@ The sidecar pattern deploys helper components alongside application containers t
 
 ### Traffic Interception
 
-```
-Inbound request:
-                                    Pod
-External ───────────────────────────────────────────────────►
-Request                             │
-         │                          │
-         ▼                          │
-   ┌─────────────┐                  │
-   │   iptables  │ Redirects to     │
-   │    rules    │ sidecar port     │
-   └──────┬──────┘                  │
-          │                         │
-          ▼                         │
-   ┌─────────────┐                  │
-   │   Sidecar   │                  │
-   │   (15001)   │                  │
-   │             │                  │
-   │  • Auth     │                  │
-   │  • Metrics  │                  │
-   │  • Logging  │                  │
-   └──────┬──────┘                  │
-          │                         │
-          ▼                         │
-   ┌─────────────┐                  │
-   │    App      │                  │
-   │   (8080)    │                  │
-   └─────────────┘                  │
-                                    │
-────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Inbound Request
+        EXT[External Request] --> IPT[iptables rules<br/>Redirects to sidecar port]
+        IPT --> SC["Sidecar :15001<br/>Auth, Metrics, Logging"]
+        SC --> APP["App :8080"]
+    end
 
-Outbound request:
-App (8080) ──► iptables ──► Sidecar (15001) ──► External Service
+    subgraph Outbound Request
+        APP2["App :8080"] --> IPT2[iptables] --> SC2["Sidecar :15001"] --> ES[External Service]
+    end
 ```
 
 ### Kubernetes Pod Configuration
@@ -345,38 +312,28 @@ spec:
 
 ### Istio
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Control Plane                             │
-│                                                                 │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │
-│  │    Pilot    │  │   Citadel   │  │         Galley          │ │
-│  │             │  │             │  │                         │ │
-│  │  Service    │  │ Certificate │  │    Configuration        │ │
-│  │  Discovery  │  │ Management  │  │    Management           │ │
-│  │  Traffic    │  │ Identity    │  │                         │ │
-│  │  Management │  │             │  │                         │ │
-│  └──────┬──────┘  └──────┬──────┘  └───────────┬─────────────┘ │
-│         │                │                      │               │
-└─────────┼────────────────┼──────────────────────┼───────────────┘
-          │                │                      │
-          │    xDS API     │     Certificates     │    Config
-          │                │                      │
-┌─────────┼────────────────┼──────────────────────┼───────────────┐
-│         │                │                      │    Data Plane │
-│         ▼                ▼                      ▼               │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                         Envoy Sidecar                    │   │
-│  │  ┌─────────┐ ┌──────────┐ ┌────────┐ ┌───────────────┐  │   │
-│  │  │ Service │ │  Traffic │ │  mTLS  │ │ Observability │  │   │
-│  │  │Discovery│ │ Routing  │ │        │ │               │  │   │
-│  │  └─────────┘ └──────────┘ └────────┘ └───────────────┘  │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                     ┌────────┴────────┐                        │
-│                     │   Application   │                        │
-│                     └─────────────────┘                        │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Control Plane
+        P["Pilot<br/>Service Discovery<br/>Traffic Management"]
+        C["Citadel<br/>Certificate Management<br/>Identity"]
+        G["Galley<br/>Configuration Management"]
+    end
+
+    subgraph Data Plane
+        subgraph Envoy Sidecar
+            SD2[Service Discovery]
+            TR[Traffic Routing]
+            MT[mTLS]
+            OB[Observability]
+        end
+        APP[Application]
+        Envoy Sidecar --- APP
+    end
+
+    P -->|xDS API| Envoy Sidecar
+    C -->|Certificates| Envoy Sidecar
+    G -->|Config| Envoy Sidecar
 ```
 
 ### Istio Traffic Management

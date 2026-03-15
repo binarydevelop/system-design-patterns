@@ -28,20 +28,9 @@ Goals of safe deployment:
 
 ### How It Works
 
-```
-Version 1                   Version 2
-┌─────────────────┐        ┌─────────────────┐
-│   ████████████  │        │                 │
-│   ████ v1 ████  │        │                 │
-│   ████████████  │  ───►  │   ████████████  │
-│                 │        │   ████ v2 ████  │
-│    (shutdown)   │        │   ████████████  │
-└─────────────────┘        └─────────────────┘
-       ↑                          ↑
-    All v1 pods               All v2 pods
-    terminated                 started
-         │                        │
-         └── DOWNTIME ────────────┘
+```mermaid
+graph LR
+    V1["Version 1<br/>All v1 pods<br/>(shutdown)"] -->|DOWNTIME| V2["Version 2<br/>All v2 pods<br/>(started)"]
 ```
 
 ```yaml
@@ -165,27 +154,23 @@ Use when:
 
 ### How It Works
 
+```mermaid
+graph TD
+    LB[Load Balancer] -->|routes to Blue| BLUE
+    LB -.->|switch to Green| GREEN
+
+    subgraph BLUE["BLUE (Active)"]
+        B1[v1] --- B2[v1] --- B3[v1]
+    end
+
+    subgraph GREEN["GREEN (Idle)"]
+        G1[v2] --- G2[v2] --- G3[v2]
+    end
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Load Balancer                               │
-│                           │                                      │
-│                           │ (routes to Blue)                    │
-│                           ▼                                      │
-│     ┌──────────────────────────┐    ┌──────────────────────────┐│
-│     │         BLUE             │    │         GREEN            ││
-│     │       (Active)           │    │       (Idle)             ││
-│     │                          │    │                          ││
-│     │   ┌────┐ ┌────┐ ┌────┐  │    │   ┌────┐ ┌────┐ ┌────┐  ││
-│     │   │ v1 │ │ v1 │ │ v1 │  │    │   │ v2 │ │ v2 │ │ v2 │  ││
-│     │   └────┘ └────┘ └────┘  │    │   └────┘ └────┘ └────┘  ││
-│     │                          │    │                          ││
-│     │   Serving production     │    │   Deploy v2 here         ││
-│     │   traffic                │    │   Test internally        ││
-│     └──────────────────────────┘    └──────────────────────────┘│
-│                                                                 │
-│  Switch: Move LB to point to Green                              │
-│  Rollback: Switch LB back to Blue (instant)                     │
-└─────────────────────────────────────────────────────────────────┘
+
+```
+Switch: Move LB to point to Green
+Rollback: Switch LB back to Blue (instant)
 ```
 
 ### Kubernetes Implementation
@@ -296,28 +281,24 @@ Use when:
 
 ### How It Works
 
+```mermaid
+graph TD
+    LB[Load Balancer] -->|95%| STABLE
+    LB -->|5%| CANARY
+
+    subgraph STABLE[Stable]
+        S1[v1] --- S2[v1]
+    end
+
+    subgraph CANARY["Canary<br/>Monitor metrics"]
+        C1[v2]
+    end
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Load Balancer                               │
-│                           │                                      │
-│              ┌────────────┴────────────┐                        │
-│              │                         │                        │
-│              ▼ 95%                     ▼ 5%                     │
-│     ┌──────────────────┐      ┌──────────────────┐              │
-│     │    Stable        │      │    Canary        │              │
-│     │                  │      │                  │              │
-│     │  ┌────┐ ┌────┐  │      │      ┌────┐     │              │
-│     │  │ v1 │ │ v1 │  │      │      │ v2 │     │              │
-│     │  └────┘ └────┘  │      │      └────┘     │              │
-│     │                  │      │                  │              │
-│     │  Most traffic    │      │  Small traffic   │              │
-│     └──────────────────┘      │  Monitor metrics │              │
-│                               └──────────────────┘              │
-│                                                                 │
-│  Progression:                                                   │
-│  5% → 10% → 25% → 50% → 100%                                   │
-│  (if metrics look good at each stage)                          │
-└─────────────────────────────────────────────────────────────────┘
+
+```
+Progression:
+5% → 10% → 25% → 50% → 100%
+(if metrics look good at each stage)
 ```
 
 ### Istio Traffic Splitting
@@ -462,31 +443,16 @@ Use when:
 
 ### How It Works
 
+```mermaid
+graph TD
+    LB[Load Balancer] --> RD["Routing Decision<br/><br/>User ID hash<br/>Feature flag<br/>Header value"]
+    RD --> VA["Version A (Control)<br/>Old checkout flow"]
+    RD --> VB["Version B (Variant)<br/>New checkout flow"]
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Load Balancer                               │
-│                           │                                      │
-│                           │                                      │
-│              ┌────────────┴────────────┐                        │
-│              │    Routing Decision     │                        │
-│              │                         │                        │
-│              │  User ID hash           │                        │
-│              │  Feature flag           │                        │
-│              │  Header value           │                        │
-│              └────────────┬────────────┘                        │
-│              │            │                                      │
-│              ▼            ▼                                      │
-│     ┌──────────────┐  ┌──────────────┐                          │
-│     │  Version A   │  │  Version B   │                          │
-│     │   (Control)  │  │  (Variant)   │                          │
-│     │              │  │              │                          │
-│     │  Old checkout│  │  New checkout│                          │
-│     │  flow        │  │  flow        │                          │
-│     └──────────────┘  └──────────────┘                          │
-│                                                                 │
-│  Purpose: Measure which version performs better                 │
-│  (conversion rate, engagement, etc.)                            │
-└─────────────────────────────────────────────────────────────────┘
+
+```
+Purpose: Measure which version performs better
+(conversion rate, engagement, etc.)
 ```
 
 ### Route by Header/Cookie
@@ -556,29 +522,12 @@ def track_experiment_exposure(user_id: str, experiment: str, variant: str):
 
 ### How It Works
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Load Balancer                               │
-│                           │                                      │
-│                           │                                      │
-│              ┌────────────┴────────────┐                        │
-│              │    Traffic Splitter     │                        │
-│              │     (Mirror Mode)       │                        │
-│              └──────┬────────┬─────────┘                        │
-│                     │        │                                   │
-│                     │        └───────── Mirror (async)          │
-│              ▼ Real │              ▼                            │
-│     ┌──────────────────┐    ┌──────────────────┐               │
-│     │   Production     │    │     Shadow       │               │
-│     │   (v1)           │    │   (v2)           │               │
-│     │                  │    │                  │               │
-│     │  Response sent   │    │  Response        │               │
-│     │  to user         │    │  discarded       │               │
-│     └──────────────────┘    └──────────────────┘               │
-│                                    │                            │
-│                              Compare results                    │
-│                              Log discrepancies                  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    LB[Load Balancer] --> TS["Traffic Splitter<br/>(Mirror Mode)"]
+    TS -->|Real traffic| PROD["Production (v1)<br/>Response sent to user"]
+    TS -.->|Mirror async| SHADOW["Shadow (v2)<br/>Response discarded"]
+    SHADOW -.-> CMP["Compare results<br/>Log discrepancies"]
 ```
 
 ### Istio Mirror Configuration
@@ -668,17 +617,15 @@ Use when:
 
 ## Deployment Strategy Comparison
 
-```
-┌─────────────────┬───────────┬───────────┬────────────┬──────────┐
-│ Strategy        │ Downtime  │ Rollback  │ Risk       │ Cost     │
-├─────────────────┼───────────┼───────────┼────────────┼──────────┤
-│ Recreate        │ Yes       │ Slow      │ High       │ Low      │
-│ Rolling Update  │ No        │ Medium    │ Medium     │ Low      │
-│ Blue-Green      │ No        │ Instant   │ Medium     │ High     │
-│ Canary          │ No        │ Fast      │ Low        │ Medium   │
-│ Shadow          │ No        │ N/A       │ None       │ High     │
-└─────────────────┴───────────┴───────────┴────────────┴──────────┘
+| Strategy | Downtime | Rollback | Risk | Cost |
+|---|---|---|---|---|
+| Recreate | Yes | Slow | High | Low |
+| Rolling Update | No | Medium | Medium | Low |
+| Blue-Green | No | Instant | Medium | High |
+| Canary | No | Fast | Low | Medium |
+| Shadow | No | N/A | None | High |
 
+```
 Choose based on:
 1. Risk tolerance
 2. Available resources

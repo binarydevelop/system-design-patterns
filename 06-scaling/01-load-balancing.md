@@ -27,21 +27,12 @@ All Traffic ───────►│   CPU: 100%     │
 
 With load balancing:
 
-```
-                         ┌─────────────────┐
-                    ┌───►│    Server 1     │
-                    │    │   CPU: 50%      │
-┌──────────────┐    │    └─────────────────┘
-│    Load      │────┤
-│   Balancer   │    │    ┌─────────────────┐
-└──────────────┘    ├───►│    Server 2     │
-        ▲           │    │   CPU: 50%      │
-        │           │    └─────────────────┘
-   All Traffic      │
-                    │    ┌─────────────────┐
-                    └───►│    Server 3     │
-                         │   CPU: 50%      │
-                         └─────────────────┘
+```mermaid
+graph LR
+    Traffic[All Traffic] --> LB[Load Balancer]
+    LB --> S1["Server 1<br/>CPU: 50%"]
+    LB --> S2["Server 2<br/>CPU: 50%"]
+    LB --> S3["Server 3<br/>CPU: 50%"]
 ```
 
 ---
@@ -50,45 +41,32 @@ With load balancing:
 
 ### Layer 4 (Transport Layer)
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Layer 4 Load Balancer                     │
-│                                                              │
-│  • Routes based on IP address and TCP/UDP port              │
-│  • Cannot inspect packet contents                            │
-│  • Very fast (no payload parsing)                            │
-│  • Maintains TCP connection to backend                       │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant Client
+    participant LB as L4 Load Balancer
+    participant Backend
 
-Client ──TCP SYN──► LB ──TCP SYN──► Backend
-       ◄──SYN-ACK──    ◄──SYN-ACK──
-       ──ACK──────►    ──ACK──────►
-       ──Data─────►    ──Data─────►
+    Note over LB: Routes by IP + TCP/UDP port<br/>No payload parsing (fast)<br/>Maintains TCP connection
+
+    Client->>LB: TCP SYN
+    LB->>Backend: TCP SYN
+    Backend-->>LB: SYN-ACK
+    LB-->>Client: SYN-ACK
+    Client->>LB: ACK
+    LB->>Backend: ACK
+    Client->>LB: Data
+    LB->>Backend: Data
 ```
 
 ### Layer 7 (Application Layer)
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Layer 7 Load Balancer                     │
-│                                                              │
-│  • Routes based on HTTP headers, URL, cookies               │
-│  • Can modify requests/responses                             │
-│  • SSL termination                                           │
-│  • Content-based routing                                     │
-└─────────────────────────────────────────────────────────────┘
-
-                    ┌──────────────┐
-                    │     L7 LB    │
-                    └──────┬───────┘
-                           │
-         ┌─────────────────┼─────────────────┐
-         │                 │                 │
-         ▼                 ▼                 ▼
-┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-│  /api/*     │   │  /static/*  │   │  /images/*  │
-│  API Server │   │  CDN Origin │   │  Image Svc  │
-└─────────────┘   └─────────────┘   └─────────────┘
+```mermaid
+graph TD
+    LB["L7 Load Balancer<br/>Routes by HTTP headers, URL, cookies<br/>SSL termination · Content-based routing"]
+    LB -->|"/api/*"| API["API Server"]
+    LB -->|"/static/*"| CDN["CDN Origin"]
+    LB -->|"/images/*"| IMG["Image Svc"]
 ```
 
 ---
@@ -338,27 +316,17 @@ backend app_servers
     server srv3 192.168.1.12:8080 check
 ```
 
-```
-Health Check Flow:
-                                    
-  ┌──────────────┐     GET /health    ┌─────────────┐
-  │     Load     │ ────────────────── │   Server    │
-  │   Balancer   │     200 OK         │             │
-  └──────────────┘ ◄────────────────  └─────────────┘
-         │
-         │ Every 10 seconds
-         │
-         ▼
-  ┌──────────────────────────────────┐
-  │  Health Status Table             │
-  │  ┌──────────┬──────────────────┐ │
-  │  │ Server   │ Status           │ │
-  │  ├──────────┼──────────────────┤ │
-  │  │ server1  │ ● HEALTHY        │ │
-  │  │ server2  │ ● HEALTHY        │ │
-  │  │ server3  │ ○ UNHEALTHY      │ │
-  │  └──────────┴──────────────────┘ │
-  └──────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant LB as Load Balancer
+    participant S as Server
+
+    loop Every 10 seconds
+        LB->>S: GET /health
+        S-->>LB: 200 OK
+    end
+
+    Note over LB: Health Status Table<br/>server1: HEALTHY<br/>server2: HEALTHY<br/>server3: UNHEALTHY
 ```
 
 ---
@@ -408,16 +376,23 @@ backend sticky_servers
     server srv3 192.168.1.12:8080 check cookie srv3
 ```
 
-```
-Session Persistence Flow:
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant LB as Load Balancer
+    participant S2 as Server2
 
-Request 1 (no cookie):
-  Client ──► LB ──► Server2 (assigned)
-         ◄── Set-Cookie: SERVERID=srv2
+    Note over C,S2: Request 1 (no cookie)
+    C->>LB: Request
+    LB->>S2: Forward (assigned)
+    S2-->>LB: Response
+    LB-->>C: Set-Cookie: SERVERID=srv2
 
-Request 2 (with cookie):
-  Client ──► LB ──► Server2 (same server)
-  Cookie: SERVERID=srv2
+    Note over C,S2: Request 2 (with cookie)
+    C->>LB: Cookie: SERVERID=srv2
+    LB->>S2: Forward (same server)
+    S2-->>LB: Response
+    LB-->>C: Response
 ```
 
 ---
@@ -426,84 +401,52 @@ Request 2 (with cookie):
 
 ### Active-Passive (Failover)
 
+```mermaid
+graph TD
+    Traffic[All Traffic] --> Active["Active LB<br/>(Primary)"]
+    Active ---|Heartbeat| Passive["Passive LB<br/>(Standby)"]
+
+    style Passive stroke-dasharray: 5 5
 ```
-                    ┌─────────────────┐
-                    │   Active LB     │◄─── All Traffic
-                    │   (Primary)     │
-                    └────────┬────────┘
-                             │
-                    Heartbeat│
-                             │
-                    ┌────────▼────────┐
-                    │  Passive LB     │
-                    │  (Standby)      │
-                    └─────────────────┘
 
 On failure:
-                    ┌─────────────────┐
-                    │   Active LB     │ ╳ FAILED
-                    │   (Primary)     │
-                    └─────────────────┘
-                             
-                    ┌─────────────────┐
-                    │  Passive LB     │◄─── All Traffic
-                    │  (Now Active)   │     (VIP moves)
-                    └─────────────────┘
+
+```mermaid
+graph TD
+    Active["Active LB<br/>(Primary) FAILED"] ~~~ Passive
+    Traffic[All Traffic] --> Passive["Passive LB<br/>(Now Active)<br/>VIP moves"]
+
+    style Active stroke:red,stroke-dasharray: 5 5
 ```
 
 ### Active-Active
 
-```
-                         DNS Round Robin
-                              │
-              ┌───────────────┴───────────────┐
-              │                               │
-              ▼                               ▼
-     ┌─────────────────┐             ┌─────────────────┐
-     │    LB 1         │             │    LB 2         │
-     │  (Active)       │             │  (Active)       │
-     └────────┬────────┘             └────────┬────────┘
-              │                               │
-              └───────────────┬───────────────┘
-                              │
-              ┌───────────────┼───────────────┐
-              │               │               │
-              ▼               ▼               ▼
-         ┌────────┐      ┌────────┐      ┌────────┐
-         │Server 1│      │Server 2│      │Server 3│
-         └────────┘      └────────┘      └────────┘
+```mermaid
+graph TD
+    DNS[DNS Round Robin] --> LB1["LB 1<br/>(Active)"]
+    DNS --> LB2["LB 2<br/>(Active)"]
+    LB1 --> S1[Server 1]
+    LB1 --> S2[Server 2]
+    LB1 --> S3[Server 3]
+    LB2 --> S1
+    LB2 --> S2
+    LB2 --> S3
 ```
 
 ---
 
 ## Global Server Load Balancing (GSLB)
 
-```
-                         User Request
-                              │
-                              ▼
-                    ┌─────────────────┐
-                    │   DNS Server    │
-                    │   (GSLB)        │
-                    └────────┬────────┘
-                             │
-            ┌────────────────┼────────────────┐
-            │                │                │
-            ▼                ▼                ▼
-    ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-    │  US-East     │ │  EU-West     │ │  Asia-Pac    │
-    │  Data Center │ │  Data Center │ │  Data Center │
-    │              │ │              │ │              │
-    │  ┌────────┐  │ │  ┌────────┐  │ │  ┌────────┐  │
-    │  │   LB   │  │ │  │   LB   │  │ │  │   LB   │  │
-    │  └────────┘  │ │  └────────┘  │ │  └────────┘  │
-    └──────────────┘ └──────────────┘ └──────────────┘
+```mermaid
+graph TD
+    User[User Request] --> DNS["DNS Server<br/>(GSLB)"]
+    DNS --> US["US-East Data Center<br/>LB"]
+    DNS --> EU["EU-West Data Center<br/>LB"]
+    DNS --> AP["Asia-Pac Data Center<br/>LB"]
 
-GSLB Routing Decisions:
-- Geographic proximity
-- Data center health
-- Current load
-- Network latency
+    Note["Routing: geographic proximity,<br/>data center health, current load,<br/>network latency"]
+
+    style Note fill:none,stroke-dasharray: 5 5
 ```
 
 ---

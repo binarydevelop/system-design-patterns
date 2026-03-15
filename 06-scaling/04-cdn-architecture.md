@@ -10,74 +10,56 @@ A Content Delivery Network (CDN) distributes content across geographically dispe
 
 Without CDN:
 
-```
-User in Tokyo                               Origin in Virginia
-    │                                              │
-    │◄────────── 200ms round trip ────────────────►│
-    │                                              │
-    │  Request: GET /image.png                     │
-    │  ────────────────────────────────────────►   │
-    │                                              │
-    │  Response: 2MB image                         │
-    │  ◄────────────────────────────────────────   │
-    │                                              │
-    │  Total: ~3 seconds for 2MB image             │
-    │                                              │
+```mermaid
+sequenceDiagram
+    participant U as User in Tokyo
+    participant O as Origin in Virginia
+
+    Note over U,O: 200ms round trip
+    U->>O: GET /image.png
+    O-->>U: 2MB image
+    Note over U,O: Total: ~3 seconds for 2MB image
 ```
 
 With CDN:
 
-```
-User in Tokyo         Edge in Tokyo         Origin in Virginia
-    │                      │                       │
-    │◄──── 10ms ─────────►│                       │
-    │                      │                       │
-    │  Request             │                       │
-    │  ──────────►         │                       │
-    │                      │                       │
-    │  Response (cached)   │                       │
-    │  ◄──────────         │                       │
-    │                      │                       │
-    │  Total: ~100ms for 2MB image                 │
+```mermaid
+sequenceDiagram
+    participant U as User in Tokyo
+    participant E as Edge in Tokyo
+    participant O as Origin in Virginia
+
+    Note over U,E: 10ms round trip
+    U->>E: Request
+    E-->>U: Response (cached)
+    Note over U,E: Total: ~100ms for 2MB image
 ```
 
 ---
 
 ## CDN Architecture Overview
 
+```mermaid
+graph TD
+    Users[Internet Users] --> Tokyo & London & NYC
+
+    subgraph Tokyo ["PoP — Tokyo"]
+        T_Edge[Edge Server] --> T_Cache[Cache]
+    end
+    subgraph London ["PoP — London"]
+        L_Edge[Edge Server] --> L_Cache[Cache]
+    end
+    subgraph NYC ["PoP — NYC"]
+        N_Edge[Edge Server] --> N_Cache[Cache]
+    end
+
+    Tokyo --> Shield["Origin Shield<br/>(Mid-tier)"]
+    London --> Shield
+    NYC --> Shield
+    Shield --> Origin["Origin Server<br/>(Your Server)"]
 ```
-                              Internet Users
-                                    │
-          ┌─────────────────────────┼─────────────────────────┐
-          │                         │                         │
-          ▼                         ▼                         ▼
-    ┌──────────┐              ┌──────────┐              ┌──────────┐
-    │   PoP    │              │   PoP    │              │   PoP    │
-    │  Tokyo   │              │  London  │              │  NYC     │
-    │          │              │          │              │          │
-    │ ┌──────┐ │              │ ┌──────┐ │              │ ┌──────┐ │
-    │ │Edge  │ │              │ │Edge  │ │              │ │Edge  │ │
-    │ │Server│ │              │ │Server│ │              │ │Server│ │
-    │ └──────┘ │              │ └──────┘ │              │ └──────┘ │
-    │ ┌──────┐ │              │ ┌──────┐ │              │ ┌──────┐ │
-    │ │Cache │ │              │ │Cache │ │              │ │Cache │ │
-    │ └──────┘ │              │ └──────┘ │              │ └──────┘ │
-    └────┬─────┘              └────┬─────┘              └────┬─────┘
-         │                         │                         │
-         └─────────────────────────┼─────────────────────────┘
-                                   │
-                          ┌────────┴────────┐
-                          │  Origin Shield  │
-                          │  (Mid-tier)     │
-                          └────────┬────────┘
-                                   │
-                          ┌────────┴────────┐
-                          │  Origin Server  │
-                          │  (Your Server)  │
-                          └─────────────────┘
 
 PoP = Point of Presence
-```
 
 ---
 
@@ -170,39 +152,14 @@ x-cache-status: BYPASS
 x-edge-location: Tokyo
 ```
 
-```
-Request Flow Diagram:
-
-┌─────────────────────────────────────────────────────────────┐
-│                         USER REQUEST                         │
-│                    GET /images/hero.jpg                      │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     DNS RESOLUTION                           │
-│                                                              │
-│   1. Query: cdn.example.com                                  │
-│   2. GeoDNS returns nearest PoP IP                          │
-│   3. Result: 203.0.113.45 (Tokyo PoP)                       │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                      EDGE SERVER                             │
-│                                                              │
-│   ┌───────────────────────────────────────────────────┐     │
-│   │               CACHE LOOKUP                         │     │
-│   │                    │                               │     │
-│   │          ┌─────────┴─────────┐                    │     │
-│   │          │                   │                    │     │
-│   │        HIT               MISS/STALE               │     │
-│   │          │                   │                    │     │
-│   │          ▼                   ▼                    │     │
-│   │    Return cached     Fetch from origin            │     │
-│   │                      or shield                    │     │
-│   └───────────────────────────────────────────────────┘     │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Req["USER REQUEST<br/>GET /images/hero.jpg"]
+    Req --> DNS["DNS RESOLUTION<br/>1. Query: cdn.example.com<br/>2. GeoDNS → nearest PoP IP<br/>3. Result: 203.0.113.45 (Tokyo PoP)"]
+    DNS --> Edge[EDGE SERVER]
+    Edge --> Lookup{CACHE LOOKUP}
+    Lookup -->|HIT| Cached[Return cached]
+    Lookup -->|MISS / STALE| Fetch[Fetch from origin<br/>or shield]
 ```
 
 ---
@@ -339,40 +296,27 @@ x-cache-status: MISS
 
 ## Origin Shield
 
-```
 Without Shield (Origin receives N requests per cache miss):
 
-┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐
-│ Tokyo │ │London │ │ NYC   │ │Sydney │ │ Paris │
-└───┬───┘ └───┬───┘ └───┬───┘ └───┬───┘ └───┬───┘
-    │         │         │         │         │
-    │         │         │         │         │
-    └─────────┴─────────┼─────────┴─────────┘
-                        │
-                        ▼
-                  ┌──────────┐
-                  │  Origin  │  ← 5 requests for same content!
-                  └──────────┘
-
+```mermaid
+graph TD
+    Tokyo --> Origin["Origin<br/>5 requests for same content!"]
+    London --> Origin
+    NYC --> Origin
+    Sydney --> Origin
+    Paris --> Origin
+```
 
 With Shield (Origin receives 1 request per cache miss):
 
-┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐
-│ Tokyo │ │London │ │ NYC   │ │Sydney │ │ Paris │
-└───┬───┘ └───┬───┘ └───┬───┘ └───┬───┘ └───┬───┘
-    │         │         │         │         │
-    └─────────┴─────────┼─────────┴─────────┘
-                        │
-                        ▼
-                  ┌──────────┐
-                  │  Shield  │  ← Coalesces requests
-                  │   PoP    │
-                  └────┬─────┘
-                       │
-                       ▼
-                  ┌──────────┐
-                  │  Origin  │  ← 1 request only
-                  └──────────┘
+```mermaid
+graph TD
+    Tokyo --> Shield["Shield PoP<br/>Coalesces requests"]
+    London --> Shield
+    NYC --> Shield
+    Sydney --> Shield
+    Paris --> Shield
+    Shield --> Origin["Origin<br/>1 request only"]
 ```
 
 ```nginx
@@ -636,26 +580,15 @@ x-cache-status: MISS
 
 ## Multi-CDN Architecture
 
-```
-                            ┌─────────────────┐
-                            │  DNS/Traffic    │
-                            │   Manager       │
-                            │  (Route53/NS1)  │
-                            └────────┬────────┘
-                                     │
-           ┌─────────────────────────┼─────────────────────────┐
-           │                         │                         │
-           ▼                         ▼                         ▼
-    ┌──────────────┐          ┌──────────────┐          ┌──────────────┐
-    │  CloudFlare  │          │   Fastly     │          │  Akamai      │
-    │    (60%)     │          │    (25%)     │          │   (15%)      │
-    └──────────────┘          └──────────────┘          └──────────────┘
-           │                         │                         │
-           └─────────────────────────┼─────────────────────────┘
-                                     │
-                              ┌──────┴───────┐
-                              │    Origin    │
-                              └──────────────┘
+```mermaid
+graph TD
+    DNS["DNS / Traffic Manager<br/>(Route53 / NS1)"]
+    DNS -->|60%| CF[CloudFlare]
+    DNS -->|25%| Fastly[Fastly]
+    DNS -->|15%| Akamai[Akamai]
+    CF --> Origin[Origin]
+    Fastly --> Origin
+    Akamai --> Origin
 ```
 
 ```nginx

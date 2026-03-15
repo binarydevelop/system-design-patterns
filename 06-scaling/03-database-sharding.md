@@ -10,29 +10,17 @@ Database sharding horizontally partitions data across multiple database instance
 
 Single database limitations:
 
-```
-┌────────────────────────────────────────────────────────────┐
-│                    Single Database                          │
-│                                                             │
-│  Storage: 16 TB (max)     ← Running out of space           │
-│  Writes: 50,000/sec       ← CPU maxed out                  │
-│  Connections: 5,000       ← Connection limit               │
-│  RAM: 512 GB              ← Can't cache more data          │
-│                                                             │
-└────────────────────────────────────────────────────────────┘
-                         │
-                         │  Sharding
-                         ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│   Shard 0    │  │   Shard 1    │  │   Shard 2    │  │   Shard 3    │
-│              │  │              │  │              │  │              │
-│  4 TB        │  │  4 TB        │  │  4 TB        │  │  4 TB        │
-│  12,500 w/s  │  │  12,500 w/s  │  │  12,500 w/s  │  │  12,500 w/s  │
-│  1,250 conn  │  │  1,250 conn  │  │  1,250 conn  │  │  1,250 conn  │
-│  128 GB      │  │  128 GB      │  │  128 GB      │  │  128 GB      │
-└──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘
+```mermaid
+graph TD
+    DB[("Single Database<br/>16 TB · 50k w/s · 5k conn · 512 GB RAM")] -->|Sharding| S0
+    DB --> S1
+    DB --> S2
+    DB --> S3
 
-Total: 16 TB storage, 50,000 writes/sec, 5,000 connections, 512 GB RAM
+    S0[("Shard 0<br/>4 TB · 12.5k w/s<br/>1,250 conn · 128 GB")]
+    S1[("Shard 1<br/>4 TB · 12.5k w/s<br/>1,250 conn · 128 GB")]
+    S2[("Shard 2<br/>4 TB · 12.5k w/s<br/>1,250 conn · 128 GB")]
+    S3[("Shard 3<br/>4 TB · 12.5k w/s<br/>1,250 conn · 128 GB")]
 ```
 
 ---
@@ -197,28 +185,15 @@ class DirectoryBasedRouter:
         self.directory.incr(f"shard_count:{to_shard[-1]}")
 ```
 
+```mermaid
+graph TD
+    Dir["Directory Service<br/>user:1234 → shard_2<br/>user:5678 → shard_0<br/>user:9012 → shard_1<br/>order:100 → shard_3"]
+    Q["Query: get_shard(user:1234)"] --> Dir
+    Dir --> R["Returns: shard_2"]
 ```
-Directory-Based Lookup:
-
-                    ┌─────────────────────────┐
-                    │    Directory Service    │
-                    │                         │
-                    │  user:1234 → shard_2    │
-                    │  user:5678 → shard_0    │
-                    │  user:9012 → shard_1    │
-                    │  order:100 → shard_3    │
-                    └────────────┬────────────┘
-                                 │
-         Query: get_shard(user:1234)
-                                 │
-                                 ▼
-                    ┌────────────────────────┐
-                    │   Returns: shard_2      │
-                    └────────────────────────┘
 
 Pros: Flexible, can move entities between shards
 Cons: Extra lookup latency, directory is SPOF
-```
 
 ### 4. Consistent Hashing
 
@@ -453,38 +428,15 @@ class CrossShardQueryExecutor:
         return all_rows[:n]
 ```
 
-```
-Scatter-Gather Pattern:
-
-                    ┌─────────────────┐
-                    │  Query Router   │
-                    │                 │
-                    │ SELECT * FROM   │
-                    │ orders WHERE    │
-                    │ total > 100     │
-                    └────────┬────────┘
-                             │
-              Scatter        │
-                             │
-     ┌───────────────────────┼───────────────────────┐
-     │                       │                       │
-     ▼                       ▼                       ▼
-┌─────────┐            ┌─────────┐            ┌─────────┐
-│ Shard 0 │            │ Shard 1 │            │ Shard 2 │
-│         │            │         │            │         │
-│ 500 rows│            │ 300 rows│            │ 450 rows│
-└────┬────┘            └────┬────┘            └────┬────┘
-     │                      │                      │
-     └──────────────────────┼──────────────────────┘
-                            │
-              Gather        │
-                            ▼
-                    ┌─────────────────┐
-                    │  Query Router   │
-                    │                 │
-                    │  Merge Results  │
-                    │  1,250 rows     │
-                    └─────────────────┘
+```mermaid
+graph TD
+    QR["Query Router<br/>SELECT * FROM orders<br/>WHERE total > 100"]
+    QR -->|Scatter| S0[("Shard 0<br/>500 rows")]
+    QR -->|Scatter| S1[("Shard 1<br/>300 rows")]
+    QR -->|Scatter| S2[("Shard 2<br/>450 rows")]
+    S0 -->|Gather| Merge["Query Router<br/>Merge Results<br/>1,250 rows"]
+    S1 -->|Gather| Merge
+    S2 -->|Gather| Merge
 ```
 
 ### Cross-Shard Transactions
@@ -549,44 +501,30 @@ class TwoPhaseCommitCoordinator:
             return False
 ```
 
-```
-Two-Phase Commit:
+```mermaid
+sequenceDiagram
+    participant C as Coordinator
+    participant S0 as Shard 0
+    participant S1 as Shard 1
+    participant S2 as Shard 2
 
-Phase 1: PREPARE
-                    ┌─────────────────┐
-                    │   Coordinator   │
-                    │    PREPARE?     │
-                    └────────┬────────┘
-                             │
-     ┌───────────────────────┼───────────────────────┐
-     │                       │                       │
-     ▼                       ▼                       ▼
-┌─────────┐            ┌─────────┐            ┌─────────┐
-│ Shard 0 │            │ Shard 1 │            │ Shard 2 │
-│  YES    │            │  YES    │            │  YES    │
-└────┬────┘            └────┬────┘            └────┬────┘
-     │                      │                      │
-     └──────────────────────┼──────────────────────┘
-                            │
-                            ▼
-                    ┌─────────────────┐
-                    │  All YES?       │
-                    │  → COMMIT       │
-                    └─────────────────┘
+    Note over C,S2: Phase 1: PREPARE
+    C->>S0: PREPARE?
+    C->>S1: PREPARE?
+    C->>S2: PREPARE?
+    S0-->>C: YES
+    S1-->>C: YES
+    S2-->>C: YES
 
-Phase 2: COMMIT
-                    ┌─────────────────┐
-                    │   Coordinator   │
-                    │     COMMIT      │
-                    └────────┬────────┘
-                             │
-     ┌───────────────────────┼───────────────────────┐
-     │                       │                       │
-     ▼                       ▼                       ▼
-┌─────────┐            ┌─────────┐            ┌─────────┐
-│ Shard 0 │            │ Shard 1 │            │ Shard 2 │
-│COMMITTED│            │COMMITTED│            │COMMITTED│
-└─────────┘            └─────────┘            └─────────┘
+    Note over C: All YES → COMMIT
+
+    Note over C,S2: Phase 2: COMMIT
+    C->>S0: COMMIT
+    C->>S1: COMMIT
+    C->>S2: COMMIT
+    S0-->>C: COMMITTED
+    S1-->>C: COMMITTED
+    S2-->>C: COMMITTED
 ```
 
 ---
@@ -816,36 +754,24 @@ class OrderService:
 }
 ```
 
-```
-Vitess Architecture:
+```mermaid
+graph TD
+    App["Application<br/>(MySQL Protocol)"]
+    App --> VTGate["VTGate<br/>Query Router & Planner<br/>Parses SQL · Target shards<br/>Scatter-gather · Connection pooling"]
 
-┌─────────────────────────────────────────────────────────────┐
-│                       Application                            │
-│                   (MySQL Protocol)                           │
-└─────────────────────────────┬───────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                        VTGate                                │
-│              (Query Router & Planner)                        │
-│                                                              │
-│  • Parses SQL                                                │
-│  • Determines target shards                                  │
-│  • Scatter-gather for cross-shard                           │
-│  • Connection pooling                                        │
-└─────────────────────────────┬───────────────────────────────┘
-                              │
-        ┌─────────────────────┼─────────────────────┐
-        │                     │                     │
-        ▼                     ▼                     ▼
-┌──────────────┐      ┌──────────────┐      ┌──────────────┐
-│   VTTablet   │      │   VTTablet   │      │   VTTablet   │
-│   (Shard 0)  │      │   (Shard 1)  │      │   (Shard 2)  │
-│              │      │              │      │              │
-│  ┌────────┐  │      │  ┌────────┐  │      │  ┌────────┐  │
-│  │ MySQL  │  │      │  │ MySQL  │  │      │  │ MySQL  │  │
-│  └────────┘  │      │  └────────┘  │      │  └────────┘  │
-└──────────────┘      └──────────────┘      └──────────────┘
+    VTGate --> VT0
+    VTGate --> VT1
+    VTGate --> VT2
+
+    subgraph Shard0 ["Shard 0"]
+        VT0[VTTablet] --> M0[("MySQL")]
+    end
+    subgraph Shard1 ["Shard 1"]
+        VT1[VTTablet] --> M1[("MySQL")]
+    end
+    subgraph Shard2 ["Shard 2"]
+        VT2[VTTablet] --> M2[("MySQL")]
+    end
 ```
 
 ---

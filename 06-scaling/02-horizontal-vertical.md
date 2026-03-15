@@ -101,20 +101,17 @@ u-24tb1.metal       448   24,576 GB   $218.40  ← Maximum!
 
 ## Horizontal Scaling (Scale Out)
 
-```
-Before:                        After:
-┌──────────────────┐          ┌─────────────────────────────┐
-│     Server       │          │       Load Balancer         │
-│                  │          └──────────────┬──────────────┘
-│  Handles 1000    │                         │
-│  requests/sec    │    ───►    ┌────────────┼────────────┐
-│                  │            │            │            │
-└──────────────────┘       ┌────┴───┐   ┌────┴───┐   ┌────┴───┐
-                           │Server 1│   │Server 2│   │Server 3│
-                           │ 1000/s │   │ 1000/s │   │ 1000/s │
-                           └────────┘   └────────┘   └────────┘
-                           
-                           Total: 3000 requests/sec
+```mermaid
+graph TD
+    subgraph Before
+        Single["Server<br/>1000 req/s"]
+    end
+
+    subgraph After ["After — 3000 req/s total"]
+        LB[Load Balancer] --> S1["Server 1<br/>1000/s"]
+        LB --> S2["Server 2<br/>1000/s"]
+        LB --> S3["Server 3<br/>1000/s"]
+    end
 ```
 
 ### Stateless Services Scale Horizontally
@@ -176,26 +173,14 @@ class ExternalSessionStore:
         return json.loads(data) if data else None
 ```
 
-```
-Externalized State Architecture:
-
-┌─────────────────────────────────────────────────┐
-│                Load Balancer                     │
-└─────────────────────┬───────────────────────────┘
-                      │
-        ┌─────────────┼─────────────┐
-        │             │             │
-   ┌────┴───┐    ┌────┴───┐    ┌────┴───┐
-   │Server 1│    │Server 2│    │Server 3│
-   │Stateless│   │Stateless│   │Stateless│
-   └────┬───┘    └────┬───┘    └────┬───┘
-        │             │             │
-        └─────────────┼─────────────┘
-                      │
-        ┌─────────────┴─────────────┐
-        │     Redis Cluster         │
-        │   (Shared State Store)    │
-        └───────────────────────────┘
+```mermaid
+graph TD
+    LB[Load Balancer] --> S1["Server 1<br/>Stateless"]
+    LB --> S2["Server 2<br/>Stateless"]
+    LB --> S3["Server 3<br/>Stateless"]
+    S1 --> Redis[("Redis Cluster<br/>Shared State Store")]
+    S2 --> Redis
+    S3 --> Redis
 ```
 
 ---
@@ -227,29 +212,15 @@ CREATE INDEX idx_created ON orders(created_at);
 
 ### Horizontal Scaling (Read Replicas)
 
-```
-Write Scaling: Still limited to primary
-
-                    ┌─────────────────┐
-     Writes ───────►│    Primary      │
-                    │   (Writable)    │
-                    └────────┬────────┘
-                             │
-              Replication    │
-              Stream         │
-                             │
-        ┌────────────────────┼────────────────────┐
-        │                    │                    │
-        ▼                    ▼                    ▼
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│   Replica 1  │     │   Replica 2  │     │   Replica 3  │
-│  (Read-only) │     │  (Read-only) │     │  (Read-only) │
-└──────────────┘     └──────────────┘     └──────────────┘
-        ▲                    ▲                    ▲
-        │                    │                    │
-        └────────────────────┴────────────────────┘
-                             │
-                          Reads
+```mermaid
+graph TD
+    W[Writes] --> Primary[("Primary<br/>(Writable)")]
+    Primary -->|Replication Stream| R1[("Replica 1<br/>(Read-only)")]
+    Primary -->|Replication Stream| R2[("Replica 2<br/>(Read-only)")]
+    Primary -->|Replication Stream| R3[("Replica 3<br/>(Read-only)")]
+    Reads[Reads] --> R1
+    Reads --> R2
+    Reads --> R3
 ```
 
 ```python
@@ -293,23 +264,13 @@ with router.get_read_session() as session:
 
 ### Horizontal Scaling (Sharding)
 
-```
-Full Horizontal Write Scaling:
-
-                    ┌─────────────────┐
-                    │  Shard Router   │
-                    └────────┬────────┘
-                             │
-          user_id % 4 = ?    │
-                             │
-     ┌───────────────┬───────┴───────┬───────────────┐
-     │               │               │               │
-     ▼               ▼               ▼               ▼
-┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐
-│ Shard 0 │    │ Shard 1 │    │ Shard 2 │    │ Shard 3 │
-│users    │    │users    │    │users    │    │users    │
-│0,4,8... │    │1,5,9... │    │2,6,10...│    │3,7,11...│
-└─────────┘    └─────────┘    └─────────┘    └─────────┘
+```mermaid
+graph TD
+    Router["Shard Router<br/>user_id % 4 = ?"]
+    Router --> S0[("Shard 0<br/>users 0,4,8...")]
+    Router --> S1[("Shard 1<br/>users 1,5,9...")]
+    Router --> S2[("Shard 2<br/>users 2,6,10...")]
+    Router --> S3[("Shard 3<br/>users 3,7,11...")]
 ```
 
 ---
@@ -401,48 +362,26 @@ def calculate_scaling_cost():
 
 Most production systems use both strategies:
 
-```
-Optimal Architecture:
+```mermaid
+graph TD
+    Internet[Internet] --> GLB["Global Load Balancer<br/>(Horizontal — DNS-based)"]
 
-┌─────────────────────────────────────────────────────────────┐
-│                     Internet                                 │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-         ┌────────────────────────────────────┐
-         │        Global Load Balancer         │
-         │     (Horizontal - DNS-based)        │
-         └─────────────────┬──────────────────┘
-                           │
-         ┌─────────────────┴─────────────────┐
-         │                                   │
-         ▼                                   ▼
-┌─────────────────┐                 ┌─────────────────┐
-│   Region: US    │                 │   Region: EU    │
-│                 │                 │                 │
-│  ┌───────────┐  │                 │  ┌───────────┐  │
-│  │    LB     │  │                 │  │    LB     │  │
-│  └─────┬─────┘  │                 │  └─────┬─────┘  │
-│        │        │                 │        │        │
-│   ┌────┴────┐   │                 │   ┌────┴────┐   │
-│   │ │ │ │ │ │   │                 │   │ │ │ │ │ │   │
-│   └─┬─┬─┬─┬─┘   │                 │   └─┬─┬─┬─┬─┘   │
-│     │ │ │ │     │                 │     │ │ │ │     │
-│   Web Servers   │                 │   Web Servers   │
-│   (Horizontal)  │                 │   (Horizontal)  │
-│                 │                 │                 │
-│  ┌───────────┐  │                 │  ┌───────────┐  │
-│  │  Cache    │  │                 │  │  Cache    │  │
-│  │ (Vertical)│  │                 │  │ (Vertical)│  │
-│  │ 256GB RAM │  │                 │  │ 256GB RAM │  │
-│  └───────────┘  │                 │  └───────────┘  │
-│                 │                 │                 │
-│  ┌───────────┐  │                 │  ┌───────────┐  │
-│  │ Database  │  │                 │  │ Database  │  │
-│  │  Primary  │◄─┼─ Replication ──┼──│  Replica  │  │
-│  │(Vertical) │  │                 │  │           │  │
-│  └───────────┘  │                 │  └───────────┘  │
-└─────────────────┘                 └─────────────────┘
+    GLB --> US_LB
+    GLB --> EU_LB
+
+    subgraph US ["Region: US"]
+        US_LB[LB] --> US_Web["Web Servers<br/>(Horizontal)"]
+        US_Web --> US_Cache["Cache (Vertical)<br/>256GB RAM"]
+        US_Web --> US_DB[("Database Primary<br/>(Vertical)")]
+    end
+
+    subgraph EU ["Region: EU"]
+        EU_LB[LB] --> EU_Web["Web Servers<br/>(Horizontal)"]
+        EU_Web --> EU_Cache["Cache (Vertical)<br/>256GB RAM"]
+        EU_Web --> EU_DB[("Database Replica")]
+    end
+
+    US_DB -->|Replication| EU_DB
 ```
 
 ```python
@@ -573,46 +512,16 @@ spec:
 
 ## Decision Framework
 
-```
-                    Start
-                      │
-                      ▼
-            ┌─────────────────┐
-            │ Is the service  │
-            │   stateless?    │
-            └────────┬────────┘
-                     │
-          ┌──────────┴──────────┐
-          │ Yes                 │ No
-          ▼                     ▼
-   ┌──────────────┐     ┌──────────────────┐
-   │   Scale      │     │ Can state be     │
-   │ Horizontally │     │ externalized?    │
-   └──────────────┘     └────────┬─────────┘
-                                 │
-                      ┌──────────┴──────────┐
-                      │ Yes                 │ No
-                      ▼                     ▼
-              ┌──────────────┐      ┌──────────────┐
-              │ Externalize  │      │    Scale     │
-              │ state, then  │      │  Vertically  │
-              │   scale out  │      │    first     │
-              └──────────────┘      └──────────────┘
-                                           │
-                                           ▼
-                                    ┌──────────────┐
-                                    │ Hit hardware │
-                                    │   limits?    │
-                                    └──────┬───────┘
-                                           │
-                                    ┌──────┴──────┐
-                                    │ Yes         │ No
-                                    ▼             ▼
-                             ┌────────────┐  ┌──────────┐
-                             │ Redesign   │  │ Continue │
-                             │ for        │  │ vertical │
-                             │ horizontal │  └──────────┘
-                             └────────────┘
+```mermaid
+graph TD
+    Start([Start]) --> Q1{Is the service<br/>stateless?}
+    Q1 -->|Yes| ScaleH[Scale Horizontally]
+    Q1 -->|No| Q2{Can state be<br/>externalized?}
+    Q2 -->|Yes| Ext[Externalize state,<br/>then scale out]
+    Q2 -->|No| ScaleV[Scale Vertically first]
+    ScaleV --> Q3{Hit hardware<br/>limits?}
+    Q3 -->|Yes| Redesign[Redesign for horizontal]
+    Q3 -->|No| Continue[Continue vertical]
 ```
 
 ---

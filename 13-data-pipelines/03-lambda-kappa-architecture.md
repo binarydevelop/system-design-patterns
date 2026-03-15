@@ -27,45 +27,20 @@ Answer: Lambda Architecture - run both in parallel
 
 ### Architecture Overview
 
-```
-                         ┌─────────────────────────────────────────┐
-                         │              Raw Data                    │
-                         │          (Data Lake/S3)                  │
-                         └───────────────────┬─────────────────────┘
-                                             │
-              ┌──────────────────────────────┼──────────────────────────────┐
-              │                              │                              │
-              ▼                              │                              ▼
-┌─────────────────────────────┐              │              ┌─────────────────────────────┐
-│       Batch Layer           │              │              │      Speed Layer            │
-│                             │              │              │                             │
-│  • MapReduce/Spark          │              │              │  • Kafka Streams/Flink      │
-│  • Complete recomputation   │              │              │  • Incremental updates      │
-│  • Runs every few hours     │              │              │  • Real-time processing     │
-│                             │              │              │                             │
-│  Output: Batch Views        │              │              │  Output: Real-time Views    │
-│  (accurate but stale)       │              │              │  (fresh but approximate)    │
-└───────────────┬─────────────┘              │              └───────────────┬─────────────┘
-                │                            │                              │
-                │                            │                              │
-                ▼                            │                              ▼
-┌─────────────────────────────┐              │              ┌─────────────────────────────┐
-│       Batch Views           │              │              │     Real-time Views         │
-│   (Serving Database)        │              │              │   (Key-Value Store)         │
-└───────────────┬─────────────┘              │              └───────────────┬─────────────┘
-                │                            │                              │
-                └──────────────────┬─────────┴──────────────────────────────┘
-                                   │
-                                   ▼
-                         ┌─────────────────────────────────────────┐
-                         │           Serving Layer                  │
-                         │                                          │
-                         │  Query = merge(batch_view, realtime_view)│
-                         │                                          │
-                         └─────────────────────────────────────────┘
-                                             │
-                                             ▼
-                                         Clients
+```mermaid
+graph TD
+    RD[("Raw Data<br/>(Data Lake/S3)")]
+
+    RD --> BL["Batch Layer<br/><br/>MapReduce/Spark<br/>Complete recomputation<br/>Runs every few hours"]
+    RD --> SL["Speed Layer<br/><br/>Kafka Streams/Flink<br/>Incremental updates<br/>Real-time processing"]
+
+    BL --> BV[("Batch Views<br/>(Serving Database)<br/>accurate but stale")]
+    SL --> RV[("Real-time Views<br/>(Key-Value Store)<br/>fresh but approximate")]
+
+    BV --> SRV["Serving Layer<br/>Query = merge(batch_view, realtime_view)"]
+    RV --> SRV
+
+    SRV --> C[Clients]
 ```
 
 ### Implementation Example
@@ -173,60 +148,33 @@ Instead of batch recompute, replay the stream from the beginning
 
 ### Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Event Log                                │
-│                    (Kafka with retention)                        │
-│                                                                 │
-│  ┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┐     │
-│  │ E1   │ E2   │ E3   │ E4   │ E5   │ E6   │ E7   │ E8   │ ... │
-│  └──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┘     │
-│     ▲                                                   ▲       │
-│     │ Replay from here                                  │       │
-│     │ (for reprocessing)                     Current    │       │
-└─────┼───────────────────────────────────────────────────┼───────┘
-      │                                                   │
-      │                                                   │
-┌─────┴───────────────────────────────────────────────────┴───────┐
-│                    Stream Processor                              │
-│                   (Flink/Kafka Streams)                          │
-│                                                                 │
-│  • Single codebase                                              │
-│  • Processes events in order                                    │
-│  • Stateful computation                                         │
-│  • Can replay from any offset                                   │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Serving Layer                               │
-│                   (Database/Cache)                               │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    EL[("Event Log<br/>(Kafka with retention)<br/>E1, E2, E3 ... E8 ...")]
+    SP["Stream Processor<br/>(Flink/Kafka Streams)<br/><br/>Single codebase<br/>Processes events in order<br/>Stateful computation<br/>Can replay from any offset"]
+    SV[("Serving Layer<br/>(Database/Cache)")]
+
+    EL -->|Replay from any offset| SP
+    EL -->|Current events| SP
+    SP --> SV
 ```
 
 ### Reprocessing Strategy
 
-```
-Scenario: Need to fix a bug in processing logic
+```mermaid
+graph LR
+    subgraph Step 1 - Deploy v2 alongside v1
+        P1["Processor v1<br/>(current)"] --> T1[("Table v1<br/>(current)")]
+        P2["Processor v2<br/>(new logic)"] --> T2[("Table v2<br/>(building)")]
+    end
 
-Step 1: Deploy new processor (v2) alongside old (v1)
-┌────────────────┐     ┌─────────────┐
-│  Processor v1  │────►│  Table v1   │ (current)
-│  (current)     │     │             │
-└────────────────┘     └─────────────┘
+    subgraph Step 2 - Replay
+        LOG[("Event Log")] -->|Replay from beginning| P2B["Processor v2"]
+    end
 
-┌────────────────┐     ┌─────────────┐
-│  Processor v2  │────►│  Table v2   │ (reprocessing)
-│  (new logic)   │     │  (building) │
-└────────────────┘     └─────────────┘
-
-Step 2: v2 replays from beginning of log
-        ───────────────────────────────►
-        E1  E2  E3  ...  E100  ...  E1000 (catch up)
-
-Step 3: Once caught up, switch traffic to v2
-        Traffic ──► Table v2 (new)
-        Delete Table v1 (old)
+    subgraph Step 3 - Switch
+        TRAFFIC[Traffic] --> T2B[("Table v2<br/>(new)")]
+    end
 ```
 
 ### Implementation Example
@@ -310,23 +258,19 @@ Cons:
 
 ### Decision Matrix
 
-```
-┌─────────────────────────────────────┬──────────┬──────────┐
-│ Consideration                       │  Lambda  │  Kappa   │
-├─────────────────────────────────────┼──────────┼──────────┤
-│ Team has batch AND stream expertise │    ✓     │          │
-│ Team primarily knows streaming      │          │    ✓     │
-│ Complex aggregations (ML features)  │    ✓     │          │
-│ Simple aggregations (counts, sums)  │          │    ✓     │
-│ Need 100% accuracy                  │    ✓     │          │
-│ Eventual consistency acceptable     │          │    ✓     │
-│ Operational simplicity priority     │          │    ✓     │
-│ Can retain all data in log          │          │    ✓     │
-│ Data volume makes retention costly  │    ✓     │          │
-│ Frequent reprocessing needed        │    ✓     │          │
-│ Reprocessing is rare                │          │    ✓     │
-└─────────────────────────────────────┴──────────┴──────────┘
-```
+| Consideration | Lambda | Kappa |
+|---|---|---|
+| Team has batch AND stream expertise | Yes | |
+| Team primarily knows streaming | | Yes |
+| Complex aggregations (ML features) | Yes | |
+| Simple aggregations (counts, sums) | | Yes |
+| Need 100% accuracy | Yes | |
+| Eventual consistency acceptable | | Yes |
+| Operational simplicity priority | | Yes |
+| Can retain all data in log | | Yes |
+| Data volume makes retention costly | Yes | |
+| Frequent reprocessing needed | Yes | |
+| Reprocessing is rare | | Yes |
 
 ### Use Case Examples
 
