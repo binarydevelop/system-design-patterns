@@ -59,17 +59,19 @@ Problem: Adding/removing node reshuffles most keys
 
 ### Consistent Hashing
 
-```
-Hash ring:
-     0°
-     │
-  ┌──┼──┐
-  │     │ Node A (45°)
-270°   90°
-  │     │ Node B (180°)
-  └──┼──┘ Node C (270°)
-    180°
+```mermaid
+graph TD
+    Ring(("Hash Ring"))
+    A["Node A (45°)"]
+    B["Node B (180°)"]
+    C["Node C (270°)"]
 
+    Ring --- A
+    Ring --- B
+    Ring --- C
+```
+
+```
 Key hash = 100° → next node clockwise = Node B
 
 Add Node D at 135°:
@@ -100,19 +102,15 @@ With vnodes (e.g., 150 per node):
 
 ### Primary-Replica
 
-```
-Write → Primary → Replicas (async or sync)
-Read  → Primary or any Replica
-
-┌─────────┐
-│ Primary │◄───writes
-└────┬────┘
-     │ replication
-┌────┴────┬─────────┐
-▼         ▼         ▼
-[Replica] [Replica] [Replica]
-    ▲         ▲         ▲
-    └─────────┴─────────┴─── reads
+```mermaid
+graph TD
+    W["Writes"] --> Primary[("Primary")]
+    Primary -.->|replication| R1["Replica 1"]
+    Primary -.->|replication| R2["Replica 2"]
+    Primary -.->|replication| R3["Replica 3"]
+    Reads["Reads"] --> R1
+    Reads --> R2
+    Reads --> R3
 ```
 
 ### Replication Trade-offs
@@ -137,21 +135,22 @@ Common: 1 sync replica + N async replicas
 
 ### Architecture
 
+```mermaid
+graph TD
+    subgraph Slots 0-5460
+        M1[("Master 1")] -.-> R1a["Replica 1a"]
+    end
+    subgraph Slots 5461-10922
+        M2[("Master 2")] -.-> R2a["Replica 2a"]
+    end
+    subgraph Slots 10923-16383
+        M3[("Master 3")] -.-> R3a["Replica 3a"]
+    end
+```
+
 ```
 16384 hash slots distributed across masters
-
-Master 1: slots 0-5460
-Master 2: slots 5461-10922
-Master 3: slots 10923-16383
-
 Each master has replicas for failover
-
-┌────────────────────────────────────────────┐
-│ Slot 0-5460    │ Slot 5461-10922 │ Slot 10923-16383 │
-│ [Master 1]     │ [Master 2]      │ [Master 3]       │
-│     ↓          │     ↓           │     ↓            │
-│ [Replica 1a]   │ [Replica 2a]    │ [Replica 3a]     │
-└────────────────────────────────────────────┘
 ```
 
 ### Slot Assignment

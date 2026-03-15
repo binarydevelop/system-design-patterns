@@ -15,15 +15,17 @@ Every computer has a quartz crystal oscillator. They're cheap but imprecise:
 - 100 ppm = 8.6 seconds/day
 - After a week: ~1 minute off
 
-```
-True time:    |────────────────────────────────|
-              0                               1 day
-
-Server A:     |─────────────────────────────────|
-              0                               1 day + 17 sec
-
-Server B:     |───────────────────────────────|
-              0                               1 day - 8 sec
+```mermaid
+graph LR
+    subgraph True Time
+        T0["0"] --- T1["1 day"]
+    end
+    subgraph Server A
+        A0["0"] --- A1["1 day + 17 sec"]
+    end
+    subgraph Server B
+        B0["0"] --- B1["1 day - 8 sec"]
+    end
 ```
 
 ### NTP Synchronization
@@ -58,20 +60,14 @@ UTC occasionally adds leap seconds. Clocks might:
 
 NTP uses a layered trust model called strata:
 
-```
-Stratum 0 │ Reference clocks: atomic clocks, GPS receivers
-           │ Not directly on the network — hardware devices
-           ▼
-Stratum 1 │ Servers directly attached to Stratum 0 hardware
-           │ e.g., time.nist.gov, GPS-disciplined servers
-           ▼
-Stratum 2 │ NTP servers syncing from Stratum 1
-           │ Most corporate/cloud NTP servers live here
-           ▼
-Stratum 3 │ End-client machines syncing from Stratum 2
-           │ Your application servers
-           ▼
-Stratum 16 │ Unsynchronized (invalid)
+```mermaid
+graph TD
+    S0["Stratum 0<br/>Reference clocks: atomic clocks, GPS receivers<br/>Not directly on the network — hardware devices"]
+    S1["Stratum 1<br/>Servers directly attached to Stratum 0 hardware<br/>e.g., time.nist.gov, GPS-disciplined servers"]
+    S2["Stratum 2<br/>NTP servers syncing from Stratum 1<br/>Most corporate/cloud NTP servers live here"]
+    S3["Stratum 3<br/>End-client machines syncing from Stratum 2<br/>Your application servers"]
+    S16["Stratum 16<br/>Unsynchronized — invalid"]
+    S0 --> S1 --> S2 --> S3 --> S16
 ```
 
 Each hop adds uncertainty. A Stratum 2 server has ~1-10ms accuracy; Stratum 3 clients typically 1-50ms depending on network path.
@@ -267,19 +263,17 @@ A logical clock that provides a partial ordering of events.
 
 ### Example
 
-```
-Process A          Process B          Process C
-    │                  │                  │
-    1 (internal)       │                  │
-    │                  │                  │
-    2 ─────────────────►3                 │
-    │              (received 2,          │
-    │               max(0,2)+1=3)        │
-    │                  │                  │
-    │                  4 ─────────────────►5
-    │                  │                  │
-    3                  │                  │
-    │                  │                  │
+```mermaid
+sequenceDiagram
+    participant A as Process A
+    participant B as Process B
+    participant C as Process C
+    Note over A: 1 (internal)
+    A->>B: send (2)
+    Note over B: 3 (max(0,2)+1)
+    B->>C: send (4)
+    Note over C: 5 (max(0,4)+1)
+    Note over A: 3 (internal)
 ```
 
 ### Lamport Clock Properties
@@ -331,16 +325,17 @@ A vector of counters, one per process. Tracks causality precisely.
 
 ### Example
 
-```
-Process A              Process B              Process C
-[A:1, B:0, C:0]            │                      │
-    │                      │                      │
-[A:2, B:0, C:0]──────►[A:2, B:1, C:0]             │
-    │                      │                      │
-    │              [A:2, B:2, C:0]─────────►[A:2, B:2, C:1]
-    │                      │                      │
-[A:3, B:0, C:0]            │                      │
-    │                      │                      │
+```mermaid
+sequenceDiagram
+    participant A as Process A
+    participant B as Process B
+    participant C as Process C
+    Note over A: [A:1, B:0, C:0]
+    A->>B: [A:2, B:0, C:0]
+    Note over B: [A:2, B:1, C:0]
+    B->>C: [A:2, B:2, C:0]
+    Note over C: [A:2, B:2, C:1]
+    Note over A: [A:3, B:0, C:0]
 ```
 
 ### Comparing Vector Clocks
@@ -488,11 +483,12 @@ Example:
 - Uncertainty typically 1-7ms
 - After GPS outage, uncertainty grows
 
-```
-Uncertainty sources:
-  ├── GPS receiver jitter: ~1ms
-  ├── Network delay to GPS: ~1ms
-  └── Oscillator drift since sync: grows over time
+```mermaid
+graph TD
+    U["Uncertainty sources"]
+    U --> G["GPS receiver jitter: ~1ms"]
+    U --> N["Network delay to GPS: ~1ms"]
+    U --> O["Oscillator drift since sync: grows over time"]
 ```
 
 ### Commit Wait
@@ -625,15 +621,21 @@ Go 1.9 was a watershed: `time.Now()` stores both wall and monotonic readings. Su
 
 Distributed locks have a fundamental time-dependent failure mode:
 
-```
-Timeline:
-  T=0   Client A acquires lock (lease=30s), gets token=33
-  T=15  Client A enters long GC pause (or network partition)
-  T=31  Lock expires — Client A doesn't know yet
-  T=32  Client B acquires lock, gets token=34
-  T=33  Client B writes to storage: "value=B" with token=34
-  T=35  Client A wakes up from GC, still thinks it holds the lock
-  T=36  Client A writes to storage: "value=A" with token=33  ← STALE WRITE
+```mermaid
+sequenceDiagram
+    participant A as Client A
+    participant Lock as Lock Service
+    participant S as Storage
+    participant B as Client B
+    A->>Lock: acquire lock
+    Lock->>A: token=33 (lease=30s)
+    Note over A: T=15 GC pause / partition
+    Note over Lock: T=31 lock expires
+    B->>Lock: acquire lock
+    Lock->>B: token=34
+    B->>S: write "value=B" token=34
+    Note over A: T=35 wakes up, thinks it holds lock
+    A->>S: write "value=A" token=33 — STALE WRITE
 ```
 
 Without protection, Client A's stale write silently overwrites Client B's valid write. The lock provided no safety — only the illusion of safety.
@@ -642,18 +644,17 @@ Without protection, Client A's stale write silently overwrites Client B's valid 
 
 Every time a lock is granted, the lock service issues a monotonically increasing **fencing token**. The storage layer enforces token ordering:
 
-```
-Lock Service:
-  grant_lock() → { lock_handle, fencing_token: 34 }
-
-Storage Server:
-  max_seen_token = 0
-
-  write(key, value, token):
-    if token < max_seen_token:
-      reject("stale token")       ← Client A's write rejected here
-    max_seen_token = token
-    do_write(key, value)
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant L as Lock Service
+    participant S as Storage Server
+    C->>L: grant_lock()
+    L->>C: lock_handle, fencing_token: 34
+    C->>S: write(key, value, token=34)
+    Note over S: token(34) >= max_seen(0) — accept
+    Note over S: max_seen_token = 34
+    Note over S: Stale client with token < 34<br/>will be rejected
 ```
 
 ### Implementation with ZooKeeper

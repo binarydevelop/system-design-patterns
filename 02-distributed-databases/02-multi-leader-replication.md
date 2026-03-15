@@ -10,22 +10,19 @@ Multi-leader (master-master) replication allows writes at multiple nodes, each r
 
 ### Architecture
 
+```mermaid
+graph TD
+    subgraph Cluster
+        LA["Leader A<br/>(US)"] <-->|replication| LB["Leader B<br/>(Europe)"]
+        LB <-->|replication| LC["Leader C<br/>(Asia)"]
+        LA <-->|replication| LC
+        LA --> FA["Followers"]
+        LB --> FB["Followers"]
+        LC --> FC["Followers"]
+    end
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                                                             │
-│   ┌────────────┐         ┌────────────┐         ┌────────────┐
-│   │  Leader A  │◄───────►│  Leader B  │◄───────►│  Leader C  │
-│   │   (US)     │         │  (Europe)  │         │   (Asia)   │
-│   └─────┬──────┘         └─────┬──────┘         └─────┬──────┘
-│         │                      │                      │
-│         ▼                      ▼                      ▼
-│   ┌──────────┐           ┌──────────┐           ┌──────────┐
-│   │ Followers│           │ Followers│           │ Followers│
-│   └──────────┘           └──────────┘           └──────────┘
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-                         Clients write to nearest leader
-```
+
+Clients write to nearest leader.
 
 ### Write Flow
 
@@ -41,38 +38,35 @@ Write succeeds without waiting for cross-datacenter round-trip
 ### Replication Topologies
 
 **Circular:**
+```mermaid
+graph LR
+    A --> B --> C --> D --> A
 ```
-    A ───► B
-    ▲      │
-    │      ▼
-    D ◄─── C
-    
-Each node replicates to next; failures break the ring
-```
+
+Each node replicates to next; failures break the ring.
 
 **Star (Hub and Spoke):**
-```
-        A
-       /│\
-      / │ \
-     ▼  ▼  ▼
-    B   C   D
-    
-Central hub coordinates; hub failure is critical
+```mermaid
+graph TD
+    A --> B
+    A --> C
+    A --> D
 ```
 
+Central hub coordinates; hub failure is critical.
+
 **All-to-All:**
+```mermaid
+graph TD
+    A <--> B
+    A <--> C
+    A <--> D
+    B <--> C
+    B <--> D
+    C <--> D
 ```
-    A ◄───► B
-    ▲ \   / ▲
-    │  \ /  │
-    │   X   │
-    │  / \  │
-    ▼ /   \ ▼
-    C ◄───► D
-    
-Most resilient; conflicts more complex
-```
+
+Most resilient; conflicts more complex.
 
 ---
 
@@ -124,17 +118,15 @@ Each device is essentially a leader
 
 ### When Conflicts Occur
 
-```
-Timeline:
-  
-  Leader A                    Leader B
-     │                           │
-  write(x, 1)                 write(x, 2)
-     │                           │
-     └───────────────────────────┘
-                   │
-            Both succeed locally
-            Replication reveals conflict
+```mermaid
+sequenceDiagram
+    participant A as Leader A
+    participant B as Leader B
+    Note over A: write(x, 1)
+    Note over B: write(x, 2)
+    A-->>B: replicate x=1
+    B-->>A: replicate x=2
+    Note over A,B: Both succeed locally<br/>Replication reveals conflict
 ```
 
 ### Types of Conflicts

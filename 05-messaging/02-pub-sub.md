@@ -10,24 +10,16 @@ Pub/Sub decouples message producers from consumers through topics. Publishers se
 
 ### Architecture
 
+```mermaid
+graph TD
+    Topic["Topic<br/>user.events"]
+    Topic --> SubA["Sub A<br/>Email Service"]
+    Topic --> SubB["Sub B<br/>Analytics Service"]
+    Topic --> SubC["Sub C<br/>Audit Service"]
 ```
-             ┌─────────────────┐
-             │      Topic      │
-             │   "user.events" │
-             └────────┬────────┘
-                      │
-    ┌─────────────────┼─────────────────┐
-    │                 │                 │
-    ▼                 ▼                 ▼
-┌────────┐       ┌────────┐       ┌────────┐
-│ Sub A  │       │ Sub B  │       │ Sub C  │
-│ Email  │       │Analytics│       │ Audit  │
-│Service │       │Service │       │Service │
-└────────┘       └────────┘       └────────┘
 
-Publisher doesn't know about subscribers
-Each subscriber gets a copy of every message
-```
+Publisher doesn't know about subscribers.
+Each subscriber gets a copy of every message.
 
 ### vs Point-to-Point
 
@@ -164,27 +156,28 @@ Recommendation: Start with fewer topics, split when needed
 
 ### Simple Fan-Out
 
-```
-One message → N copies
+One message → N copies.
 
-Publisher ──► [Topic] ──┬──► Sub 1 (email)
-                        ├──► Sub 2 (push)
-                        └──► Sub 3 (analytics)
-
-Each gets same message
-Process independently
+```mermaid
+graph LR
+    Publisher --> Topic
+    Topic --> S1["Sub 1 (email)"]
+    Topic --> S2["Sub 2 (push)"]
+    Topic --> S3["Sub 3 (analytics)"]
 ```
+
+Each gets same message. Process independently.
 
 ### Fan-Out with Filtering
 
-```
-Not all subscribers want all messages
+Not all subscribers want all messages.
 
-Publisher ──► [Topic: user.events]
-                   │
-    Filter: type=signup ──► Email Service
-    Filter: type=purchase ──► Analytics
-    Filter: country=US ──► US Team
+```mermaid
+graph TD
+    Publisher --> Topic["Topic: user.events"]
+    Topic -->|"filter: type=signup"| Email["Email Service"]
+    Topic -->|"filter: type=purchase"| Analytics
+    Topic -->|"filter: country=US"| USTeam["US Team"]
 ```
 
 ### Implementation
@@ -252,49 +245,52 @@ Rarely needed
 
 ### Apache Kafka
 
+```mermaid
+graph LR
+    Producer --> Topic
+    Topic --> P0["Partition 0"]
+    Topic --> P1["Partition 1"]
+    Topic --> P2["Partition 2"]
+    P0 --> CG["Consumer Group A<br/>(each partition to one consumer)"]
+    P1 --> CG
+    P2 --> CG
 ```
-Topics → Partitions → Consumer Groups
-
-Producer ──► Topic ──► Partition 0 ──► Consumer Group A
-                   ──► Partition 1     (each partition to one consumer)
-                   ──► Partition 2
 
 Features:
-  - Log-based (replay possible)
-  - Consumer groups for scaling
-  - Ordered within partition
-  - High throughput
-```
+- Log-based (replay possible)
+- Consumer groups for scaling
+- Ordered within partition
+- High throughput
 
 ### Google Cloud Pub/Sub
 
+```mermaid
+graph LR
+    Publisher --> Topic
+    Topic --> SA["Subscription A"] --> S1["Subscriber 1"]
+    Topic --> SB["Subscription B"] --> S2["Subscriber 2"]
 ```
-Topic → Subscriptions
-
-Publisher ──► Topic ──► Subscription A ──► Subscriber 1
-                    ──► Subscription B ──► Subscriber 2
 
 Features:
-  - Managed service
-  - Push and pull
-  - Message filtering
-  - At-least-once (exactly-once preview)
-```
+- Managed service
+- Push and pull
+- Message filtering
+- At-least-once (exactly-once preview)
 
 ### Amazon SNS + SQS
 
+```mermaid
+graph LR
+    Publisher --> SNS["SNS Topic"]
+    SNS --> QA["SQS Queue A"] --> CA["Consumer A"]
+    SNS --> QB["SQS Queue B"] --> CB["Consumer B"]
+    SNS --> Lambda["Lambda (direct)"]
 ```
-SNS Topic → SQS Queues
-
-Publisher ──► SNS Topic ──► SQS Queue A ──► Consumer A
-                       ──► SQS Queue B ──► Consumer B
-                       ──► Lambda (direct)
 
 Features:
-  - SNS for fan-out
-  - SQS for durability and processing
-  - Multiple protocols (HTTP, email, SMS)
-```
+- SNS for fan-out
+- SQS for durability and processing
+- Multiple protocols (HTTP, email, SMS)
 
 ### Redis Pub/Sub
 
@@ -330,13 +326,13 @@ Eventually: OOM or dropped messages
 ### Solutions
 
 **Per-Subscriber Queues:**
+```mermaid
+graph LR
+    Topic --> QA["Queue A (fast subscriber)"]
+    Topic --> QB["Queue B (slow subscriber)"]
 ```
-Topic ──► Queue A (for fast subscriber)
-     ──► Queue B (for slow subscriber)
 
-Each queue buffers independently
-Slow subscriber doesn't affect fast one
-```
+Each queue buffers independently. Slow subscriber doesn't affect fast one.
 
 **Backpressure Signals:**
 ```
@@ -466,10 +462,12 @@ Subscribers:
 
 ### Log Aggregation
 
-```
-All services ──► Log topic ──► Aggregator ──► Elasticsearch
-                          ──► Metrics ──► Prometheus
-                          ──► Archive ──► S3
+```mermaid
+graph LR
+    Services["All services"] --> LogTopic["Log topic"]
+    LogTopic --> Aggregator --> Elasticsearch
+    LogTopic --> Metrics --> Prometheus
+    LogTopic --> Archive --> S3
 ```
 
 ---
@@ -684,17 +682,16 @@ Use Request-Response when:
 
 ### Hybrid: Command + Event
 
+```mermaid
+graph TD
+    Client -->|req| OrderService["Order Service"]
+    OrderService -->|resp| Client
+    OrderService -.->|OrderCreated event| Inventory
+    OrderService -.->|OrderCreated event| Email
+    OrderService -.->|OrderCreated event| Analytics
 ```
-Client ──req──► Order Service ──resp──► Client
-                     │
-                (also publishes OrderCreated event)
-                     │
-              ┌──────┼──────┐
-              ▼      ▼      ▼
-          Inventory Email Analytics
 
 Request-response for synchronous path. Pub/sub for async side effects.
-```
 
 ### Anti-Pattern: RPC Over Messaging
 

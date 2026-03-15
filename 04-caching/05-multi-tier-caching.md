@@ -24,41 +24,17 @@ Database disk   10-100 ms   PB          Per DB
 
 ### Visual Representation
 
-```
-        Client
-           │
-           ▼
-    ┌──────────────┐
-    │ Browser Cache│ ← L1: Fastest, per-user
-    └──────┬───────┘
-           │
-           ▼
-    ┌──────────────┐
-    │     CDN      │ ← L2: Edge locations
-    └──────┬───────┘
-           │
-           ▼
-    ┌──────────────┐
-    │ Reverse Proxy│ ← L3: Nginx/Varnish
-    │    Cache     │
-    └──────┬───────┘
-           │
-           ▼
-    ┌──────────────┐
-    │  App Server  │
-    │ Memory Cache │ ← L4: In-process
-    └──────┬───────┘
-           │
-           ▼
-    ┌──────────────┐
-    │ Redis/       │ ← L5: Distributed
-    │ Memcached    │
-    └──────┬───────┘
-           │
-           ▼
-    ┌──────────────┐
-    │   Database   │ ← Source of truth
-    └──────────────┘
+```mermaid
+graph TD
+    Client([Client])
+    L1[("Browser Cache<br/>L1: Fastest, per-user")]
+    L2[("CDN<br/>L2: Edge locations")]
+    L3[("Reverse Proxy Cache<br/>L3: Nginx/Varnish")]
+    L4[("App Server<br/>Memory Cache<br/>L4: In-process")]
+    L5[("Redis / Memcached<br/>L5: Distributed")]
+    DB[("Database<br/>Source of truth")]
+
+    Client --> L1 --> L2 --> L3 --> L4 --> L5 --> DB
 ```
 
 ---
@@ -112,20 +88,21 @@ Benefits:
 
 ### Edge Caching
 
+```mermaid
+graph TD
+    Origin[("Origin")]
+    Tokyo["Edge<br/>Tokyo"]
+    NYC["Edge<br/>NYC"]
+    London["Edge<br/>London"]
+
+    Origin --> Tokyo
+    Origin --> NYC
+    Origin --> London
+```
+
 ```
 User in Tokyo → CDN Edge Tokyo → Cache Hit
 User in NYC   → CDN Edge NYC   → Cache Miss → Origin → Cache
-
-CDN architecture:
-  ┌────────────────────────────────────────┐
-  │              Origin                     │
-  └───────────────────┬────────────────────┘
-                      │
-    ┌─────────────────┼─────────────────┐
-    │                 │                 │
-    ▼                 ▼                 ▼
-  [Edge]           [Edge]           [Edge]
-  Tokyo            NYC              London
 ```
 
 ### Cache Key Configuration

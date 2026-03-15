@@ -47,20 +47,15 @@ Cache hit: 1-10 ms (in-memory)
 
 ### How It Works
 
+```mermaid
+graph LR
+    Client["Client"] -->|1. Check cache| Cache[("Cache")]
+    Cache -->|2. Miss| DB[("Database")]
+    DB -->|3. Fetch from DB| Cache
+    Cache -->|4. Store in cache<br/>5. Return| Client
 ```
-Read path:
-┌────────┐     ┌───────┐     ┌──────────┐
-│ Client │────►│ Cache │     │ Database │
-└────────┘     └───┬───┘     └────┬─────┘
-                   │              │
-    1. Check cache │              │
-    2. Miss? ──────┼──────────────►
-    3. Fetch from DB              │
-                   │◄─────────────┤
-    4. Store in cache             │
-                   │              │
-    5. Return     ◄┘              │
 
+```
 Application manages cache explicitly
 ```
 
@@ -104,12 +99,13 @@ Cons:
 
 ### How It Works
 
+```mermaid
+graph LR
+    Client["Client"] --> Cache[("Cache<br/>(handles fetch)")]
+    Cache -->|load on miss| DB[("Database")]
 ```
-┌────────┐     ┌─────────────────┐     ┌──────────┐
-│ Client │────►│      Cache      │────►│ Database │
-└────────┘     │ (handles fetch) │     └──────────┘
-               └─────────────────┘
 
+```
 Cache transparently loads from DB on miss
 Application only talks to cache
 ```
@@ -154,12 +150,13 @@ Cons:
 
 ### How It Works
 
+```mermaid
+graph LR
+    Client["Client"] -->|1. Write| Cache[("Cache")]
+    Cache -->|2. Sync write| DB[("Database")]
 ```
-Write path:
-┌────────┐     ┌───────┐     ┌──────────┐
-│ Client │────►│ Cache │────►│ Database │
-└────────┘     └───────┘     └──────────┘
 
+```
 1. Write to cache
 2. Cache synchronously writes to DB
 3. Return success after both complete
@@ -202,11 +199,13 @@ Cons:
 
 ### How It Works
 
+```mermaid
+graph LR
+    Client["Client"] -->|1. Write| Cache[("Cache")]
+    Cache -.->|2. Async batch persist| DB[("Database")]
 ```
-┌────────┐     ┌───────┐            ┌──────────┐
-│ Client │────►│ Cache │───async───►│ Database │
-└────────┘     └───────┘            └──────────┘
 
+```
 1. Write to cache immediately
 2. Return success
 3. Asynchronously persist to DB (batched)
@@ -257,16 +256,14 @@ Cons:
 
 ### How It Works
 
+```mermaid
+graph LR
+    Client["Client"] -->|Write directly| DB[("Database")]
+    Client -.->|Read (cache-aside)| Cache[("Cache")]
+    Cache -.->|Miss| DB
 ```
-Write path:
-┌────────┐     ┌───────┐
-│ Client │  ─┐ │ Cache │
-└────────┘   │ └───────┘
-             │
-             └─────────►┌──────────┐
-                        │ Database │
-                        └──────────┘
 
+```
 Writes go directly to DB, skip cache
 Cache populated only on read
 ```
