@@ -10,20 +10,16 @@ CQRS separates read and write operations into different models. Commands modify 
 
 ### Traditional Architecture
 
+```mermaid
+graph TD
+    subgraph Single Model
+        DO["Domain Objects<br/>(used for reads AND writes)"]
+        DB[("Database<br/>(same tables for both)")]
+        DO --> DB
+    end
 ```
-┌─────────────────────────────────────────┐
-│              Single Model               │
-│  ┌─────────────────────────────────┐   │
-│  │       Domain Objects            │   │
-│  │  (used for reads AND writes)    │   │
-│  └─────────────────────────────────┘   │
-│                  │                      │
-│  ┌───────────────┴───────────────┐     │
-│  │          Database             │     │
-│  │   (same tables for both)      │     │
-│  └───────────────────────────────┘     │
-└─────────────────────────────────────────┘
 
+```
 Problems:
   - Read and write patterns differ
   - Single model compromises both
@@ -52,29 +48,21 @@ Reads:
 
 ### Basic Structure
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                      Application                        │
-├────────────────────────┬────────────────────────────────┤
-│     Command Side       │         Query Side             │
-│                        │                                │
-│   ┌──────────────┐     │     ┌──────────────┐          │
-│   │   Commands   │     │     │   Queries    │          │
-│   └──────┬───────┘     │     └──────┬───────┘          │
-│          ▼             │            ▼                   │
-│   ┌──────────────┐     │     ┌──────────────┐          │
-│   │   Handlers   │     │     │   Handlers   │          │
-│   └──────┬───────┘     │     └──────┬───────┘          │
-│          ▼             │            ▼                   │
-│   ┌──────────────┐     │     ┌──────────────┐          │
-│   │ Write Model  │     │     │ Read Model   │          │
-│   │  (Domain)    │────────►  │ (Projections)│          │
-│   └──────┬───────┘     │     └──────┬───────┘          │
-│          ▼             │            ▼                   │
-│   ┌──────────────┐     │     ┌──────────────┐          │
-│   │  Write DB    │     │     │   Read DB    │          │
-│   └──────────────┘     │     └──────────────┘          │
-└────────────────────────┴────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Application
+        subgraph Command Side
+            C[Commands] --> CH[Command Handlers]
+            CH --> WM["Write Model<br/>(Domain)"]
+            WM --> WDB[("Write DB")]
+        end
+        subgraph Query Side
+            Q[Queries] --> QH[Query Handlers]
+            QH --> RM["Read Model<br/>(Projections)"]
+            RM --> RDB[("Read DB")]
+        end
+        WM -.-> RM
+    end
 ```
 
 ### Command Side
@@ -125,25 +113,12 @@ class GetOrderSummaryHandler:
 
 ### Event-Based Sync
 
-```
-Write Side           Events           Read Side
-    │                   │                 │
-    │  Save order       │                 │
-    ▼                   │                 │
-[Write DB]             │                 │
-    │                   │                 │
-    │  OrderCreated ───►│                 │
-    │                   │                 │
-    │                   ▼                 │
-    │              [Event Bus]           │
-    │                   │                 │
-    │                   │  ───────────────►
-    │                   │                 │
-    │                   │                 ▼
-    │                   │            [Projector]
-    │                   │                 │
-    │                   │                 ▼
-    │                   │           [Read DB]
+```mermaid
+graph LR
+    WS[Write Side] -->|Save order| WDB[("Write DB")]
+    WDB -->|OrderCreated| EB[Event Bus]
+    EB -.-> P[Projector]
+    P --> RDB[("Read DB")]
 ```
 
 ### Projector Implementation
@@ -191,17 +166,12 @@ Read model (denormalized):
 
 ### Multiple Read Models
 
-```
-Same events → Multiple optimized views
-
-OrderCreated, ItemAdded, OrderShipped events
-  ↓
-┌─────────────────────────────────────────────┐
-│ OrderSummaryProjection (for order page)     │
-│ CustomerOrdersProjection (for customer page)│
-│ ShippingDashboard (for logistics)           │
-│ AnalyticsProjection (for reports)           │
-└─────────────────────────────────────────────┘
+```mermaid
+graph TD
+    E["OrderCreated, ItemAdded,<br/>OrderShipped events"] --> OSP[OrderSummaryProjection<br/>for order page]
+    E --> COP[CustomerOrdersProjection<br/>for customer page]
+    E --> SD[ShippingDashboard<br/>for logistics]
+    E --> AP[AnalyticsProjection<br/>for reports]
 ```
 
 ### Read Store Options
@@ -248,11 +218,12 @@ Event Sourcing:
 CQRS:
   Write: Append events
   Read: Project events to read models
+```
 
-┌─────────────┐     ┌──────────────┐     ┌────────────┐
-│  Commands   │────►│ Event Store  │────►│ Projections│
-│             │     │ (write side) │     │(read side) │
-└─────────────┘     └──────────────┘     └────────────┘
+```mermaid
+graph LR
+    CMD[Commands] --> ES[("Event Store<br/>(write side)")]
+    ES --> PROJ["Projections<br/>(read side)"]
 ```
 
 ### Implementation

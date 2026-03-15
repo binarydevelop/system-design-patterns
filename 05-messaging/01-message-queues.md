@@ -10,10 +10,12 @@ Message queues decouple producers and consumers, enabling asynchronous communica
 
 ### Synchronous Problems
 
+```mermaid
+graph LR
+    A[Service A] -->|HTTP| B[Service B]
 ```
-Direct HTTP call:
-  Service A ──HTTP──► Service B
-  
+
+```
 Problems:
   - A waits for B (latency)
   - If B is down, A fails
@@ -23,10 +25,12 @@ Problems:
 
 ### Queue Benefits
 
+```mermaid
+graph LR
+    A[Service A] -.-> Q[("Queue")] -.-> B[Service B]
 ```
-With message queue:
-  Service A ──► [Queue] ──► Service B
 
+```
 Benefits:
   - A doesn't wait (async)
   - If B is down, messages wait in queue
@@ -40,12 +44,12 @@ Benefits:
 
 ### Components
 
+```mermaid
+graph LR
+    P[Producer] --> Q[("Queue<br/>(Broker)")] --> C[Consumer]
 ```
-┌──────────┐     ┌───────────┐     ┌──────────┐
-│ Producer │────►│   Queue   │────►│ Consumer │
-│          │     │  (Broker) │     │          │
-└──────────┘     └───────────┘     └──────────┘
 
+```
 Producer: Creates and sends messages
 Queue/Broker: Stores messages durably
 Consumer: Receives and processes messages
@@ -87,38 +91,41 @@ Consumer: Receives and processes messages
 
 ### Point-to-Point
 
+```mermaid
+graph LR
+    P[Producer] -.-> Q[("Queue")] -.-> A[Consumer A]
+    Q -.-> B[Consumer B<br/>different message]
 ```
-One message, one consumer
 
-Producer ──► [Queue] ──► Consumer A
-                    └──► Consumer B  (different message)
-                    
+```
 Each message delivered to exactly one consumer
 Used for: Task distribution, work queues
 ```
 
 ### Publish-Subscribe
 
+```mermaid
+graph LR
+    P[Producer] -.-> T[("Topic")] -.-> A[Consumer A<br/>copy]
+    T -.-> B[Consumer B<br/>copy]
+    T -.-> C[Consumer C<br/>copy]
 ```
-One message, many consumers
 
-Producer ──► [Topic] ──┬──► Consumer A (copy)
-                       ├──► Consumer B (copy)
-                       └──► Consumer C (copy)
-                       
+```
 Each message delivered to all subscribers
 Used for: Event broadcasting, notifications
 ```
 
 ### Competing Consumers
 
+```mermaid
+graph LR
+    P[Producer] -.-> Q[("Queue")] -.-> C1[Consumer 1]
+    Q -.-> C2[Consumer 2]
+    Q -.-> C3[Consumer 3]
 ```
-Multiple consumers share work from one queue
 
-             ┌──► Consumer 1
-Producer ──► [Queue] ──┼──► Consumer 2
-             └──► Consumer 3
-
+```
 Each message goes to one consumer
 Consumers process in parallel
 Used for: Load distribution, scaling
@@ -432,16 +439,12 @@ def process_with_retry(message, max_retries=3):
 
 ### Dead Letter Queue
 
-```
-Main Queue ──► Consumer ──► Success
-                  │
-                  └──► Failure (after retries)
-                         │
-                         ▼
-                  Dead Letter Queue
-                         │
-                         ▼
-               Manual review / alerting
+```mermaid
+graph TD
+    MQ[("Main Queue")] -.-> C[Consumer] --> S[Success]
+    C --> F[Failure<br/>after retries]
+    F --> DLQ[("Dead Letter Queue")]
+    DLQ --> R[Manual review / alerting]
 ```
 
 ---

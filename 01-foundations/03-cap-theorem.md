@@ -39,14 +39,20 @@ The system continues to operate despite arbitrary message loss or delay between 
 
 A partition means some subset of nodes cannot communicate with another subset. The system must still deliver its consistency and/or availability guarantees (whichever it chooses) despite this communication failure.
 
-```
-     ┌─────────────────────────────────────┐
-     │          Network Partition           │
-     │                                     │
-   ┌─┴─┐   ┌───┐              ┌───┐   ┌─┴─┐
-   │ A │───│ B │──────X───────│ C │───│ D │
-   └───┘   └───┘  Partition   └───┘   └───┘
-     Partition Left             Partition Right
+```mermaid
+graph LR
+    subgraph Left["Partition Left"]
+        A[A]
+        B[B]
+    end
+    subgraph Right["Partition Right"]
+        C[C]
+        D[D]
+    end
+
+    A --- B
+    C --- D
+    B -.-x|"Partition"| C
 ```
 
 Key nuance: partition tolerance is not a feature you "enable." It describes whether the system's guarantees hold when the network misbehaves. Since you cannot prevent partitions, P is a requirement, not a choice.
@@ -134,14 +140,11 @@ Not all partitions are equal. The textbook "network cable cut" is the simplest c
 
 **Partial partition**: node A can reach B, B can reach C, but A cannot reach C. Creates asymmetric views of cluster membership. Particularly dangerous because quorum calculations may disagree across nodes.
 
-```
-   ┌───┐         ┌───┐         ┌───┐
-   │ A │────────│ B │────────│ C │
-   └───┘         └───┘         └───┘
-     │                           │
-     └──────────X───────────────┘
-          A cannot reach C
-          B can reach both
+```mermaid
+graph LR
+    A[A] --- B[B]
+    B --- C[C]
+    A -.-x|"A cannot reach C<br/>B can reach both"| C
 ```
 
 **Asymmetric partition**: node A can send to B, but B's replies to A are lost. A thinks B is alive (sends succeed). B thinks A is alive (receives succeed). But B's responses never arrive at A. Heartbeat protocols that rely on bidirectional communication detect this; one-way health checks may not.
@@ -255,30 +258,25 @@ Strong reads cost 2x the RCUs of eventual reads. At DynamoDB scale (millions of 
 
 ### PACELC Decision Matrix
 
+```mermaid
+quadrantChart
+    title PACELC Decision Matrix
+    x-axis "PA (Available during Partition)" --> "PC (Consistent during Partition)"
+    y-axis "EC (Consistent when healthy)" --> "EL (Low latency when healthy)"
+    Cassandra: [0.25, 0.75]
+    DynamoDB: [0.25, 0.65]
+    Redis: [0.25, 0.85]
+    MongoDB w:maj: [0.25, 0.35]
+    Spanner: [0.75, 0.35]
+    CockroachDB: [0.75, 0.25]
+    etcd: [0.75, 0.15]
+    ZooKeeper: [0.75, 0.10]
 ```
-                     During Partition
-                   ┌──────────┬──────────┐
-                   │    PA    │    PC    │
-            ┌──────┼──────────┼──────────┤
-   Normal   │  EL  │ Cassandra│ (rare —  │
- Operation  │      │ DynamoDB │ fast+CP  │
-            │      │ Redis    │ during P │
-            ├──────┼──────────┼──────────┤
-            │  EC  │ MongoDB  │ Spanner  │
-            │      │ (w:maj)  │ CockroachDB │
-            │      │          │ etcd     │
-            │      │          │ ZooKeeper│
-            └──────┴──────────┴──────────┘
 
-PA/EL = Maximum performance, weakest guarantees
-        Best for: caching layers, session stores, social feeds
-PC/EC = Maximum safety, highest latency
-        Best for: financial ledgers, coordination services, source of truth
-PA/EC = Available during partition, consistent when healthy (common middle ground)
-        Best for: most application databases (MongoDB, DynamoDB strong reads)
-PC/EL = Rare; hard to be fast normally but consistent during partition
-        Theoretically possible but practically contradictory
-```
+- **PA/EL** = Maximum performance, weakest guarantees. Best for: caching layers, session stores, social feeds.
+- **PC/EC** = Maximum safety, highest latency. Best for: financial ledgers, coordination services, source of truth.
+- **PA/EC** = Available during partition, consistent when healthy (common middle ground). Best for: most application databases (MongoDB, DynamoDB strong reads).
+- **PC/EL** = Rare; hard to be fast normally but consistent during partition. Theoretically possible but practically contradictory.
 
 ### How to Evaluate PACELC for Your System
 
@@ -422,30 +420,50 @@ Partition heals:
 
 ### Decision Tree
 
-```
-Start: "A network partition occurs. What happens to user requests?"
-  │
-  ├─ Q1: Can users tolerate stale data?
-  │   ├─ Yes → How stale?
-  │   │   ├─ Seconds: Eventual consistency (AP) — Cassandra ONE, DynamoDB eventual
-  │   │   ├─ Sub-second: Bounded staleness — CockroachDB follower reads, Spanner stale reads
-  │   │   └─ Zero: Linearizability required (CP) — etcd, ZooKeeper, Spanner
-  │   └─ No → CP required
-  │       ├─ Q2: Can users tolerate errors/timeouts during partition?
-  │       │   ├─ Yes → CP is appropriate — etcd, ZooKeeper, CockroachDB
-  │       │   └─ No → Impossible (CAP). Re-examine requirements.
-  │       │       └─ Often the real answer: users CAN tolerate brief staleness.
-  │
-  ├─ Q3: What is your conflict resolution strategy? (if AP)
-  │   ├─ Last-writer-wins (LWW): Simple. Acceptable for overwrites. Dangerous for counters/sets.
-  │   ├─ Application-level merge: Complex. Required for shopping carts, collaborative editing.
-  │   ├─ CRDTs: Automatic merge for specific data types. Good for counters, sets, registers.
-  │   └─ No strategy: → STOP. This is the "silent data corruption" anti-pattern.
-  │
-  └─ Q4: What is your failover timeout budget?
-      ├─ < 1 second: Multi-primary (AP) or pre-warmed standby
-      ├─ 1–30 seconds: Raft/Paxos automatic failover (CP)
-      └─ > 30 seconds: Manual failover acceptable (simplest, but risky)
+```mermaid
+graph TD
+    Start["A network partition occurs.<br/>What happens to user requests?"]
+    Q1{"Q1: Can users<br/>tolerate stale data?"}
+    HowStale{"How stale?"}
+    Seconds["Seconds → Eventual consistency AP<br/>Cassandra ONE, DynamoDB eventual"]
+    SubSec["Sub-second → Bounded staleness<br/>CockroachDB follower reads, Spanner stale reads"]
+    Zero["Zero → Linearizability required CP<br/>etcd, ZooKeeper, Spanner"]
+    CPReq["CP required"]
+    Q2{"Q2: Can users tolerate<br/>errors/timeouts during partition?"}
+    CPAppropriate["CP is appropriate<br/>etcd, ZooKeeper, CockroachDB"]
+    Impossible["Impossible - CAP.<br/>Re-examine requirements."]
+    RealAnswer["Often the real answer:<br/>users CAN tolerate brief staleness"]
+    Q3{"Q3: What is your conflict<br/>resolution strategy? - if AP"}
+    LWW["LWW: Simple. Acceptable for<br/>overwrites. Dangerous for counters/sets."]
+    AppMerge["Application-level merge: Complex.<br/>Required for shopping carts, collaborative editing."]
+    CRDTs["CRDTs: Automatic merge for<br/>specific data types."]
+    NoStrategy["No strategy → STOP.<br/>Silent data corruption anti-pattern."]
+    Q4{"Q4: What is your<br/>failover timeout budget?"}
+    LT1["< 1 second:<br/>Multi-primary AP or pre-warmed standby"]
+    Mid["1–30 seconds:<br/>Raft/Paxos automatic failover CP"]
+    GT30["> 30 seconds:<br/>Manual failover - simplest, but risky"]
+
+    Start --> Q1
+    Q1 -->|Yes| HowStale
+    HowStale --> Seconds
+    HowStale --> SubSec
+    HowStale --> Zero
+    Q1 -->|No| CPReq
+    CPReq --> Q2
+    Q2 -->|Yes| CPAppropriate
+    Q2 -->|No| Impossible
+    Impossible --> RealAnswer
+
+    Start --> Q3
+    Q3 --> LWW
+    Q3 --> AppMerge
+    Q3 --> CRDTs
+    Q3 --> NoStrategy
+
+    Start --> Q4
+    Q4 --> LT1
+    Q4 --> Mid
+    Q4 --> GT30
 ```
 
 ### Data Classification Guide
