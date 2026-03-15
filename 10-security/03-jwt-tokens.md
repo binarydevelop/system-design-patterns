@@ -111,33 +111,46 @@ Advantage:
 
 ## Creating JWTs
 
-### Python Example (PyJWT)
+### Shell-Level Construction
 
-```python
-import jwt
-import datetime
+Build a JWT by hand to understand the structure:
 
-# Symmetric (HS256)
-def create_jwt_symmetric(user_id, secret):
-    payload = {
-        'sub': user_id,
-        'iat': datetime.datetime.utcnow(),
-        'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=1),
-        'iss': 'my-auth-server',
-        'aud': 'my-api'
-    }
-    return jwt.encode(payload, secret, algorithm='HS256')
+```bash
+# 1. Create the header
+HEADER=$(echo -n '{"alg":"HS256","typ":"JWT"}' | base64 | tr '+/' '-_' | tr -d '=')
 
-# Asymmetric (RS256)
-def create_jwt_asymmetric(user_id, private_key):
-    payload = {
-        'sub': user_id,
-        'iat': datetime.datetime.utcnow(),
-        'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=1),
-        'iss': 'my-auth-server',
-        'aud': 'my-api'
-    }
-    return jwt.encode(payload, private_key, algorithm='RS256')
+# 2. Create the payload
+NOW=$(date +%s)
+EXP=$((NOW + 3600))
+PAYLOAD=$(echo -n "{\"sub\":\"user_123\",\"iat\":$NOW,\"exp\":$EXP,\"iss\":\"my-auth-server\",\"aud\":\"my-api\",\"role\":\"admin\"}" \
+  | base64 | tr '+/' '-_' | tr -d '=')
+
+# 3. Create the signature (HS256 = HMAC-SHA256)
+SIGNATURE=$(echo -n "$HEADER.$PAYLOAD" \
+  | openssl dgst -sha256 -hmac "your-256-bit-secret" -binary \
+  | base64 | tr '+/' '-_' | tr -d '=')
+
+# 4. Assemble the JWT
+JWT="$HEADER.$PAYLOAD.$SIGNATURE"
+echo "$JWT"
+```
+
+For **RS256** (asymmetric), sign with a private key instead:
+
+```bash
+# Generate an RSA key pair (one-time setup)
+openssl genrsa -out private.pem 2048
+openssl rsa -in private.pem -pubout -out public.pem
+
+# Header for RS256
+HEADER=$(echo -n '{"alg":"RS256","typ":"JWT"}' | base64 | tr '+/' '-_' | tr -d '=')
+
+# Sign with the private key
+SIGNATURE=$(echo -n "$HEADER.$PAYLOAD" \
+  | openssl dgst -sha256 -sign private.pem -binary \
+  | base64 | tr '+/' '-_' | tr -d '=')
+
+JWT="$HEADER.$PAYLOAD.$SIGNATURE"
 ```
 
 ### Node.js Example (jsonwebtoken)
@@ -147,7 +160,7 @@ const jwt = require('jsonwebtoken');
 
 // Create token
 const token = jwt.sign(
-    { 
+    {
         sub: 'user_123',
         role: 'admin'
     },
@@ -167,48 +180,48 @@ const token = jwt.sign(
 
 ### Validation Checklist
 
-```python
-def validate_jwt(token, public_key_or_secret):
-    try:
-        # 1. Decode and verify signature
-        decoded = jwt.decode(
-            token,
-            public_key_or_secret,
-            algorithms=['RS256'],  # Explicitly specify allowed algorithms!
-            audience='my-api',
-            issuer='my-auth-server',
-            options={
-                'require': ['exp', 'iat', 'sub']  # Required claims
-            }
-        )
-        
-        # 2. Additional business logic validation
-        if decoded.get('role') not in ['admin', 'user']:
-            raise ValueError("Invalid role")
-        
-        return decoded
-        
-    except jwt.ExpiredSignatureError:
-        raise AuthError("Token has expired")
-    except jwt.InvalidAudienceError:
-        raise AuthError("Invalid audience")
-    except jwt.InvalidIssuerError:
-        raise AuthError("Invalid issuer")
-    except jwt.InvalidSignatureError:
-        raise AuthError("Invalid signature")
+```bash
+# 1. Decode header and payload (does NOT verify signature)
+HEADER=$(echo "$JWT" | cut -d. -f1 | base64 -d 2>/dev/null)
+CLAIMS=$(echo "$JWT" | cut -d. -f2 | base64 -d 2>/dev/null)
+
+echo "$HEADER" | jq
+echo "$CLAIMS" | jq
+
+# 2. Verify algorithm is expected (reject 'none' or unexpected algorithms)
+ALG=$(echo "$HEADER" | jq -r '.alg')
+[ "$ALG" = "RS256" ] || { echo "Unexpected algorithm: $ALG"; exit 1; }
+
+# 3. Verify standard claims
+echo "$CLAIMS" | jq -e '.iss == "my-auth-server"'       # Issuer
+echo "$CLAIMS" | jq -e '.aud == "my-api"'                # Audience
+echo "$CLAIMS" | jq -e ".exp > $(date +%s)"              # Not expired
+echo "$CLAIMS" | jq -e 'has("sub", "iat")'               # Required claims present
+
+# 4. Verify signature (RS256) — fetch JWKS, then verify with openssl
+curl -s https://auth.example.com/.well-known/jwks.json | jq '.keys[0]'
+# Extract the public key matching the "kid" from the header, then:
+echo -n "$(echo "$JWT" | cut -d. -f1-2)" \
+  | openssl dgst -sha256 -verify public.pem \
+    -signature <(echo "$JWT" | cut -d. -f3 | tr '_-' '/+' | base64 -d 2>/dev/null)
+
+# 5. Additional business logic
+ROLE=$(echo "$CLAIMS" | jq -r '.role')
+[[ "$ROLE" == "admin" || "$ROLE" == "user" ]] || { echo "Invalid role"; exit 1; }
 ```
 
 ### Critical: Always Specify Algorithm
 
-```python
-# VULNERABLE - attacker can use 'none' algorithm
-decoded = jwt.decode(token, secret)
+```
+VULNERABLE: Libraries that read "alg" from the token header and trust it.
+  - Attacker sets alg=none → unsigned token accepted
+  - Attacker sets alg=HS256 when server expects RS256 →
+    uses public key as HMAC secret to forge tokens
 
-# VULNERABLE - attacker can switch RS256 to HS256
-decoded = jwt.decode(token, public_key, algorithms=['RS256', 'HS256'])
-
-# SECURE - explicitly allow only expected algorithm
-decoded = jwt.decode(token, public_key, algorithms=['RS256'])
+SECURE: Always enforce expected algorithm on the verification side.
+  - Check the header "alg" matches exactly what you expect
+  - Never allow 'none'
+  - Never allow both symmetric and asymmetric algorithms
 ```
 
 ---
@@ -246,14 +259,15 @@ Prevention:
 
 ### 3. Weak Secrets
 
-```python
+```bash
 # BAD - easily brute-forced
-secret = "secret"
-secret = "password123"
+SECRET="secret"
+SECRET="password123"
 
-# GOOD - cryptographically random
-import secrets
-secret = secrets.token_hex(32)  # 256 bits
+# GOOD - cryptographically random (256 bits)
+SECRET=$(openssl rand -hex 32)
+echo "$SECRET"
+# e.g. a3f1b7c9d4e8f2...64 hex chars (32 bytes = 256 bits)
 ```
 
 **Brute Force Reality:**
@@ -284,15 +298,17 @@ let accessToken = null; // In-memory only
 
 ### 5. No Expiration or Too Long
 
-```python
+```bash
+NOW=$(date +%s)
+
 # BAD - No expiration
-payload = {'sub': 'user123'}
+PAYLOAD='{"sub":"user123"}'
 
 # BAD - 30-day access token
-payload = {'sub': 'user123', 'exp': now + timedelta(days=30)}
+PAYLOAD="{\"sub\":\"user123\",\"exp\":$((NOW + 2592000))}"
 
-# GOOD - Short-lived access token
-payload = {'sub': 'user123', 'exp': now + timedelta(minutes=15)}
+# GOOD - Short-lived access token (15 minutes)
+PAYLOAD="{\"sub\":\"user123\",\"exp\":$((NOW + 900))}"
 ```
 
 ---
@@ -316,48 +332,43 @@ Flow:
 
 ### Strategy 2: Token Blacklist
 
-```python
-# Redis-based blacklist
-def revoke_token(jti):
-    # Store with TTL matching token expiration
-    token_exp = get_token_expiration(jti)
-    ttl = token_exp - time.time()
-    redis.setex(f"blacklist:{jti}", int(ttl), "revoked")
+```bash
+# Redis-based blacklist — revoke a token by its jti claim
+JTI=$(echo "$JWT" | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.jti')
+EXP=$(echo "$JWT" | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.exp')
+TTL=$((EXP - $(date +%s)))
 
-def is_token_revoked(jti):
-    return redis.exists(f"blacklist:{jti}")
+# Add to blacklist with TTL matching token expiration
+redis-cli SETEX "blacklist:$JTI" "$TTL" "revoked"
 
-def validate_token(token):
-    decoded = jwt.decode(token, ...)
-    if is_token_revoked(decoded['jti']):
-        raise AuthError("Token has been revoked")
-    return decoded
+# On every request, check if the token is blacklisted
+redis-cli EXISTS "blacklist:$JTI"
+# Returns 1 → token revoked, reject with 401
+# Returns 0 → token not revoked, proceed
 ```
 
 **Trade-off:** Adds database lookup to every request, partially negating stateless benefit.
 
 ### Strategy 3: Token Versioning
 
-```python
-# Store token version per user in DB/cache
-# When user logs out or changes password, increment version
+```bash
+# Store token version per user in DB/cache.
+# When user logs out or changes password, increment the version.
 
-def create_token(user):
-    return jwt.encode({
-        'sub': user.id,
-        'token_version': user.token_version,  # Include current version
-        'exp': ...
-    }, secret)
+# Token creation — include current version in the payload:
+# {"sub":"user_123","token_version":3,"exp":...}
 
-def validate_token(token):
-    decoded = jwt.decode(token, ...)
-    user = get_user(decoded['sub'])
-    
-    # Check if token version matches
-    if decoded['token_version'] != user.token_version:
-        raise AuthError("Token has been invalidated")
-    
-    return decoded
+# Token validation — decode and compare version against DB:
+TOKEN_VER=$(echo "$JWT" | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.token_version')
+USER_ID=$(echo "$JWT" | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.sub')
+
+# Fetch current version from DB/cache (e.g., Redis)
+CURRENT_VER=$(redis-cli GET "user:$USER_ID:token_version")
+
+# If they don't match, the token has been invalidated
+[ "$TOKEN_VER" = "$CURRENT_VER" ] \
+  && echo "Token version valid" \
+  || echo "Token invalidated — return 401"
 ```
 
 ### Strategy 4: Hybrid Approach
@@ -408,24 +419,24 @@ Mobile/slow networks: Significant latency impact
 
 ### Size Reduction Strategies
 
-```python
-# BAD - Embedding all user data
-payload = {
-    'sub': 'user123',
-    'name': 'John Doe',
-    'email': 'john@example.com',
-    'address': {...},
-    'permissions': ['read:users', 'write:users', ...],  # 50 permissions
-    'roles': ['admin', 'manager', ...],
+```json
+// BAD — embedding all user data inflates the token
+{
+    "sub": "user123",
+    "name": "John Doe",
+    "email": "john@example.com",
+    "address": { "...": "..." },
+    "permissions": ["read:users", "write:users", "...50 more..."],
+    "roles": ["admin", "manager"]
 }
 
-# GOOD - Minimal claims, fetch details when needed
-payload = {
-    'sub': 'user123',
-    'role': 'admin',  # Single role, not list
-    'exp': ...
+// GOOD — minimal claims, fetch details when needed
+{
+    "sub": "user123",
+    "role": "admin",
+    "exp": 1704067200
 }
-# Fetch full permissions from cache/DB when needed
+// Fetch full permissions from cache/DB when needed
 ```
 
 ---
@@ -448,14 +459,19 @@ payload = {
 - **Validation:** Client validates
 - **Format:** Always JWT
 
-```python
-# Access token - for API calls
-headers = {'Authorization': f'Bearer {access_token}'}
-response = requests.get('https://api.example.com/data', headers=headers)
+```bash
+# Access token — for API calls to the resource server
+curl -H "Authorization: Bearer $ACCESS_TOKEN" \
+  https://api.example.com/data
 
-# ID token - for getting user info in client
-id_token_claims = jwt.decode(id_token, ...)
-user_email = id_token_claims['email']
+# ID token — decode locally to get user info in the client
+echo "$ID_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq
+# {
+#   "sub": "user_12345",
+#   "email": "john@example.com",
+#   "name": "John Doe",
+#   ...
+# }
 ```
 
 **Important:** Never send ID token to resource servers. It's not for authorization.
@@ -466,59 +482,79 @@ user_email = id_token_claims['email']
 
 ### Middleware Pattern
 
-```python
-# Flask example
-from functools import wraps
+```bash
+# Validate JWT before accessing a protected endpoint
+TOKEN="$1"  # Passed as argument or extracted from request
 
-def require_auth(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = request.headers.get('Authorization', '').replace('Bearer ', '')
-        
-        if not token:
-            return jsonify({'error': 'Missing token'}), 401
-        
-        try:
-            decoded = jwt.decode(
-                token,
-                public_key,
-                algorithms=['RS256'],
-                audience='my-api'
-            )
-            request.user = decoded
-        except jwt.InvalidTokenError as e:
-            return jsonify({'error': str(e)}), 401
-        
-        return f(*args, **kwargs)
-    return decorated
+# 1. Check token is present
+[ -z "$TOKEN" ] && { echo '{"error":"Missing token"}'; exit 1; }
 
-@app.route('/protected')
-@require_auth
-def protected():
-    return jsonify({'user': request.user['sub']})
+# 2. Decode and verify claims
+CLAIMS=$(echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null)
+ALG=$(echo "$TOKEN" | cut -d. -f1 | base64 -d 2>/dev/null | jq -r '.alg')
+
+[ "$ALG" = "RS256" ] || { echo '{"error":"Invalid algorithm"}'; exit 1; }
+echo "$CLAIMS" | jq -e ".exp > $(date +%s)" > /dev/null 2>&1 \
+  || { echo '{"error":"Token expired"}'; exit 1; }
+echo "$CLAIMS" | jq -e '.aud == "my-api"' > /dev/null 2>&1 \
+  || { echo '{"error":"Invalid audience"}'; exit 1; }
+
+# 3. Call the protected resource
+curl -s -H "Authorization: Bearer $TOKEN" https://api.example.com/protected
+# {"user": "user_123"}
 ```
 
 ### Scope-Based Authorization
 
-```python
-def require_scope(required_scope):
-    def decorator(f):
-        @wraps(f)
-        @require_auth  # First authenticate
-        def decorated(*args, **kwargs):
-            user_scopes = request.user.get('scope', '').split()
-            
-            if required_scope not in user_scopes:
-                return jsonify({'error': 'Insufficient scope'}), 403
-            
-            return f(*args, **kwargs)
-        return decorated
-    return decorator
+```bash
+# Verify the token has the required scope before allowing access
+REQUIRED_SCOPE="admin:read"
 
-@app.route('/admin')
-@require_scope('admin:read')
-def admin_endpoint():
-    return jsonify({'admin': True})
+CLAIMS=$(echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null)
+SCOPES=$(echo "$CLAIMS" | jq -r '.scope')
+
+echo "$SCOPES" | tr ' ' '\n' | grep -qx "$REQUIRED_SCOPE" \
+  && curl -s -H "Authorization: Bearer $TOKEN" https://api.example.com/admin \
+  || echo '{"error":"Insufficient scope"}  # 403 Forbidden'
+```
+
+### Node.js Example (Express Middleware)
+
+```javascript
+const jwt = require('jsonwebtoken');
+
+function requireAuth(req, res, next) {
+    const token = (req.headers.authorization || '').replace('Bearer ', '');
+    if (!token) return res.status(401).json({ error: 'Missing token' });
+
+    try {
+        req.user = jwt.verify(token, publicKey, {
+            algorithms: ['RS256'],
+            audience: 'my-api'
+        });
+        next();
+    } catch (err) {
+        res.status(401).json({ error: err.message });
+    }
+}
+
+function requireScope(scope) {
+    return [requireAuth, (req, res, next) => {
+        const scopes = (req.user.scope || '').split(' ');
+        if (!scopes.includes(scope)) {
+            return res.status(403).json({ error: 'Insufficient scope' });
+        }
+        next();
+    }];
+}
+
+app.get('/protected', requireAuth, (req, res) => {
+    res.json({ user: req.user.sub });
+});
+
+app.get('/admin', ...requireScope('admin:read'), (req, res) => {
+    res.json({ admin: true });
+});
 ```
 
 ---
@@ -527,33 +563,36 @@ def admin_endpoint():
 
 ### Generating Test Tokens
 
-```python
-import jwt
-from datetime import datetime, timedelta
+```bash
+# Helper: create a test JWT (HS256) with optional claim overrides
+create_test_token() {
+  local NOW=$(date +%s)
+  local EXP=${1:-$((NOW + 3600))}
+  local AUD=${2:-"test-audience"}
 
-def create_test_token(claims_override=None):
-    claims = {
-        'sub': 'test_user',
-        'iat': datetime.utcnow(),
-        'exp': datetime.utcnow() + timedelta(hours=1),
-        'iss': 'test-issuer',
-        'aud': 'test-audience'
-    }
-    claims.update(claims_override or {})
-    return jwt.encode(claims, 'test-secret', algorithm='HS256')
+  local HEADER=$(echo -n '{"alg":"HS256","typ":"JWT"}' | base64 | tr '+/' '-_' | tr -d '=')
+  local PAYLOAD=$(echo -n "{\"sub\":\"test_user\",\"iat\":$NOW,\"exp\":$EXP,\"iss\":\"test-issuer\",\"aud\":\"$AUD\"}" \
+    | base64 | tr '+/' '-_' | tr -d '=')
+  local SIG=$(echo -n "$HEADER.$PAYLOAD" \
+    | openssl dgst -sha256 -hmac "test-secret" -binary \
+    | base64 | tr '+/' '-_' | tr -d '=')
 
-# Test cases
-def test_expired_token():
-    token = create_test_token({
-        'exp': datetime.utcnow() - timedelta(hours=1)
-    })
-    response = client.get('/protected', headers={'Authorization': f'Bearer {token}'})
-    assert response.status_code == 401
+  echo "$HEADER.$PAYLOAD.$SIG"
+}
 
-def test_wrong_audience():
-    token = create_test_token({'aud': 'wrong-audience'})
-    response = client.get('/protected', headers={'Authorization': f'Bearer {token}'})
-    assert response.status_code == 401
+# Test: expired token should return 401
+EXPIRED_TOKEN=$(create_test_token $(($(date +%s) - 3600)))
+curl -s -o /dev/null -w "%{http_code}" \
+  -H "Authorization: Bearer $EXPIRED_TOKEN" \
+  https://api.example.com/protected
+# Expected: 401
+
+# Test: wrong audience should return 401
+WRONG_AUD_TOKEN=$(create_test_token $(($(date +%s) + 3600)) "wrong-audience")
+curl -s -o /dev/null -w "%{http_code}" \
+  -H "Authorization: Bearer $WRONG_AUD_TOKEN" \
+  https://api.example.com/protected
+# Expected: 401
 ```
 
 ### JWT Debugging

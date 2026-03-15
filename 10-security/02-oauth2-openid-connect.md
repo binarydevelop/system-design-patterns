@@ -355,48 +355,65 @@ token=eyJhbGciOiJSUzI1NiIs...
 
 **Option 2: Local Validation (JWTs)**
 
-```python
-import jwt
-from jwt import PyJWKClient
+```bash
+# 1. Fetch public keys from JWKS endpoint
+curl -s https://auth.example.com/.well-known/jwks.json | jq
 
-def validate_access_token(token):
-    # Fetch public keys from JWKS endpoint
-    jwks_client = PyJWKClient("https://auth.example.com/.well-known/jwks.json")
-    signing_key = jwks_client.get_signing_key_from_jwt(token)
-    
-    # Verify signature and claims
-    decoded = jwt.decode(
-        token,
-        signing_key.key,
-        algorithms=["RS256"],
-        audience="my_api",
-        issuer="https://auth.example.com"
-    )
-    
-    return decoded
+# Response:
+# {
+#   "keys": [
+#     {
+#       "kty": "RSA",
+#       "kid": "key-id-1",
+#       "use": "sig",
+#       "alg": "RS256",
+#       "n": "0vx7agoebGc...",
+#       "e": "AQAB"
+#     }
+#   ]
+# }
+
+# 2. Decode token header to find which key was used
+echo "$ACCESS_TOKEN" | cut -d. -f1 | base64 -d 2>/dev/null | jq
+# {"alg":"RS256","kid":"key-id-1","typ":"JWT"}
+
+# 3. Decode payload to inspect claims (does NOT verify signature)
+echo "$ACCESS_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq
+# {
+#   "sub": "user_12345",
+#   "aud": "my_api",
+#   "iss": "https://auth.example.com",
+#   "exp": 1704067200,
+#   "scope": "photos.read"
+# }
+
+# Signature verification requires a library — match "kid" from the header
+# to the JWKS key, then verify RS256 signature with that public key.
 ```
 
 ### ID Token Validation Checklist
 
-```python
-def validate_id_token(id_token, expected_nonce):
-    decoded = jwt.decode(id_token, options={"verify_signature": True})
-    
-    # 1. Verify issuer matches your auth server
-    assert decoded['iss'] == "https://auth.example.com"
-    
-    # 2. Verify audience is your client_id
-    assert decoded['aud'] == "photo_print_app"
-    
-    # 3. Verify token is not expired
-    assert decoded['exp'] > time.time()
-    
-    # 4. Verify nonce matches (prevents replay)
-    assert decoded['nonce'] == expected_nonce
-    
-    # 5. Verify signature (done by jwt.decode with verify_signature=True)
-    
-    return decoded
+```bash
+# Decode the ID token payload (does NOT verify signature)
+CLAIMS=$(echo "$ID_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null)
+echo "$CLAIMS" | jq
+
+# Validation steps to perform:
+# 1. Verify issuer matches your auth server
+echo "$CLAIMS" | jq -e '.iss == "https://auth.example.com"'
+
+# 2. Verify audience is your client_id
+echo "$CLAIMS" | jq -e '.aud == "photo_print_app"'
+
+# 3. Verify token is not expired
+echo "$CLAIMS" | jq -e ".exp > $(date +%s)"
+
+# 4. Verify nonce matches (prevents replay)
+echo "$CLAIMS" | jq -e ".nonce == \"$EXPECTED_NONCE\""
+
+# 5. Verify signature — fetch JWKS and verify RS256 signature
+#    using the public key matching the "kid" in the token header.
+#    This step requires a crypto library (openssl, jose-cli, etc.).
 ```
 
 ---
@@ -458,34 +475,33 @@ Access Token:
 
 ### 1. Missing State Parameter (CSRF)
 
-```python
+```bash
 # BAD: No state parameter
-redirect_url = f"{auth_url}?client_id={client_id}&redirect_uri={redirect_uri}"
+# GET https://auth.example.com/authorize?client_id=my_app&redirect_uri=https://myapp.com/callback
 
-# GOOD: Include state
-state = secrets.token_urlsafe(32)
-session['oauth_state'] = state
-redirect_url = f"{auth_url}?client_id={client_id}&redirect_uri={redirect_uri}&state={state}"
+# GOOD: Generate a random state and include it
+STATE=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
+# Store $STATE in the user's session, then redirect:
+# GET https://auth.example.com/authorize?client_id=my_app&redirect_uri=https://myapp.com/callback&state=$STATE
 
-# On callback
-if request.args['state'] != session['oauth_state']:
-    raise SecurityError("Invalid state parameter")
+# On callback, verify the returned state matches the stored value.
+# If it does not match, reject the request (CSRF attempt).
 ```
 
 ### 2. Open Redirect Vulnerability
 
-```python
-# BAD: Accept any redirect_uri
-redirect_uri = request.args['redirect_uri']
+```
+BAD: Accept any redirect_uri from the request
 
-# GOOD: Validate against whitelist
-ALLOWED_REDIRECTS = [
-    "https://myapp.com/callback",
-    "https://staging.myapp.com/callback"
-]
+GOOD: Authorization server must validate redirect_uri against a
+      pre-registered whitelist before issuing a redirect.
 
-if redirect_uri not in ALLOWED_REDIRECTS:
-    raise SecurityError("Invalid redirect_uri")
+Allowed redirect URIs (registered at client creation):
+  - https://myapp.com/callback
+  - https://staging.myapp.com/callback
+
+Any request with a redirect_uri NOT in this list must be rejected
+with an error — never redirect the user to an unregistered URI.
 ```
 
 ### 3. Token Leakage via Referrer
@@ -500,19 +516,18 @@ if redirect_uri not in ALLOWED_REDIRECTS:
 
 ### 4. Insufficient Scope Validation
 
-```python
+```bash
 # BAD: Trust token without checking scope
-def delete_photo(request):
-    token = validate_token(request)
-    # Missing scope check!
-    delete_from_db(request.photo_id)
+# Server handles DELETE /photos/42 without verifying scope — dangerous.
 
-# GOOD: Verify required scope
-def delete_photo(request):
-    token = validate_token(request)
-    if 'photos.delete' not in token['scope'].split():
-        raise ForbiddenError("Insufficient scope")
-    delete_from_db(request.photo_id)
+# GOOD: Verify required scope before acting
+# Decode the access token and check the scope claim:
+SCOPE=$(echo "$ACCESS_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.scope')
+
+# Verify 'photos.delete' is present in the space-delimited scope string
+echo "$SCOPE" | tr ' ' '\n' | grep -qx 'photos.delete' \
+  && echo "Scope OK" \
+  || echo "Insufficient scope — return 403 Forbidden"
 ```
 
 ---
