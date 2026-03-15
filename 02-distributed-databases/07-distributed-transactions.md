@@ -494,6 +494,234 @@ Failures leave system in recoverable state
 
 ---
 
+## 2PC Failure Scenarios
+
+### Failure Scenarios
+
+```
+Scenario 1: Coordinator crash after PREPARE, before COMMIT
+  - Participants voted YES, holding row locks, wrote PREPARED to WAL
+  - Coordinator is DOWN — decision log empty or incomplete
+  - Participants are "in-doubt": can't commit (others may have voted NO),
+    can't abort (coordinator may have decided COMMIT)
+  - Locked rows unavailable until coordinator recovers and replays log
+
+Scenario 2: Participant crash after PREPARE
+  - Coordinator waits for vote with timeout → timeout expires → ABORT
+  - Sends ABORT to other participants → they release locks
+  - On recovery: crashed participant checks WAL. No PREPARED? Implicit abort.
+    Has PREPARED? Asks coordinator for decision.
+
+Scenario 3: Network partition during COMMIT phase
+  - A receives COMMIT → commits. B's packet dropped → B still PREPARED.
+  - Coordinator retries COMMIT to B on reconnection.
+  - B holds locks until decision arrives. If coordinator also crashes →
+    manual intervention required.
+
+The blocking problem:
+  Single coordinator failure halts ALL participants. No participant can
+  decide unilaterally after voting YES. This is why 2PC is avoided across
+  service boundaries. Within a single DB cluster (cross-shard), it's
+  tolerable because coordinator and participants share fate.
+```
+
+### XA In-Doubt Recovery (MySQL Example)
+
+```sql
+-- After crash, check for in-doubt XA transactions:
+mysql> XA RECOVER;
+-- Returns formatID, gtrid_length, bqual_length, data for stuck txns
+
+-- Manually resolve:
+mysql> XA COMMIT 'xid1';   -- or XA ROLLBACK 'xid1';
+
+-- Monitor: XA RECOVER returning rows means locks are held.
+-- In-doubt transactions block other InnoDB writes on those rows.
+```
+
+---
+
+## Saga Pattern Deep Dive
+
+### Choreography vs Orchestration Tradeoffs
+
+```
+Choreography (event-driven):
+  + No single point of failure, loosely coupled
+  + Easy to add steps (subscribe to existing events)
+  - Hard to see full flow (logic spread across services)
+  - Circular dependency risk, difficult to debug
+  - Hard to answer: "what state is this saga in?"
+
+Orchestration (central coordinator):
+  + Full flow visible in one place, easy to test
+  + Clear ownership of saga state
+  - Coordinator is coupling point, must be HA
+  - Risk of becoming a "god service"
+
+Rule of thumb: Choreography for ≤3 steps. Orchestration for >3 steps.
+```
+
+### Compensation Design Rules
+
+```
+1. MUST be idempotent: cancel_payment(id=123) called 3x → same as 1x
+2. MUST be retryable: network timeout → retry without side effects
+3. MUST handle already-completed states:
+   cancel_payment where never charged → no-op success
+   cancel_payment where already refunded → no-op success
+4. SHOULD be commutative: if T3 and C2 run concurrently, final state correct
+```
+
+### Semantic Rollback: When You Can't Undo
+
+```
+Some actions can't be reversed: email sent, item shipped, external API called.
+
+Compensating strategies:
+  - Correction email, return shipment order, API cancel endpoint
+  - Write off cost if below threshold
+
+These are "semantic" compensations — business logic, not data rollback.
+Design sagas so irreversible steps come LAST.
+```
+
+### Saga Execution Coordinator (SEC)
+
+```
+Persistent state machine per saga instance:
+  saga_id: "trip-001", state: COMPENSATING
+  steps: [ flight: COMPLETED+compensated, hotel: COMPLETED, car: FAILED ]
+
+On crash recovery:
+  1. Load in-progress sagas from durable storage
+  2. COMPENSATING → resume from last incomplete compensation step
+  3. EXECUTING → retry current step or begin compensation
+
+Storage: relational DB or embedded KV store — must survive restart.
+```
+
+### The Isolation Problem
+
+```
+Sagas do NOT provide transaction isolation.
+
+Example: Saga 1 debits A (1000 → 900), hasn't credited B yet.
+  Saga 2 reads A.balance = 900 (intermediate state).
+  Saga 1 compensates → A back to 1000. Saga 2 made decisions on stale data.
+
+Mitigations:
+  - Semantic locks: mark records as "in-saga" so others wait or skip
+  - Commutative operations: correct results regardless of execution order
+  - Versioned values: optimistic concurrency with version checks
+  - Reread: verify assumptions before final step
+```
+
+---
+
+## Calvin and Deterministic Transactions
+
+### The Core Insight
+
+```
+Traditional: execute first → coordinate commit (2PC)
+Calvin:      coordinate order first → execute deterministically (no 2PC)
+
+If all replicas agree on transaction order AND execution is deterministic →
+  same final state, no 2PC needed, aborts are also deterministic.
+```
+
+### How Calvin Works
+
+```
+1. Sequencing: all transactions go through a total-order sequencer
+   (Raft/Paxos). Output: ordered log of transaction intents.
+
+2. Scheduling: each replica reads the ordered log, analyzes read/write
+   sets, runs non-conflicting transactions concurrently.
+
+3. Execution: each replica executes in the agreed order. Deterministic
+   execution → same inputs, same outputs → no commit coordination.
+
+Result: strong consistency without 2PC overhead per transaction.
+```
+
+### Real-World Usage
+
+```
+FaunaDB (now Fauna): Calvin-inspired, pre-declares read/write sets via
+  FQL, achieves serializable isolation across regions.
+
+SLOG (2019, Thomson & Abadi): extends Calvin — local transactions skip
+  global sequencing, only cross-region txns need global order.
+```
+
+### Tradeoffs
+
+```
+Works well: OLTP with predictable access patterns, transactions that
+  can declare read/write sets upfront, short-lived workloads.
+
+Does NOT work: interactive/ad-hoc transactions, transactions where
+  reads determine writes, long-running analytical queries.
+
+Key limitation: transactions must be "pre-declared." The system needs
+  to know which keys will be read/written BEFORE execution begins.
+  Rules out SQL like: UPDATE t SET x = x+1 WHERE y > 10 (read set
+  depends on current data).
+```
+
+---
+
+## Production Decision Framework
+
+### When to Use What
+
+```
+2PC/XA: single DB cluster (cross-shard), financial atomicity,
+  co-located nodes, both participants are databases you control
+
+Sagas: cross-service operations, long-running processes (minutes to days),
+  compensation is well-defined, eventual consistency acceptable
+
+Calvin: building new storage engines, OLTP with predictable access
+  patterns, need cross-region ACID without per-transaction 2PC
+
+Avoid both — redesign: co-locate related data on same shard/service,
+  redraw aggregate boundaries, use idempotent ops + eventual consistency
+```
+
+### Comparison Matrix
+
+| Property     | 2PC          | 3PC            | Sagas        | Calvin      |
+|--------------|--------------|----------------|--------------|-------------|
+| Consistency  | Strong       | Strong         | Eventual     | Strong      |
+| Isolation    | Full         | Full           | None         | Full        |
+| Latency      | 2 RTT        | 3 RTT          | 1 RTT/step   | 1 RTT seq   |
+| Availability | Blocks on    | Unblocked on   | High         | High        |
+|              | coord fail   | coord fail     |              |             |
+| Partition    | Blocks       | Inconsistent   | Compensate   | Blocks seq  |
+| Complexity   | Medium       | High           | High         | High        |
+| Best for     | DB same DC   | Critical (rare)| Services     | New OLTP    |
+
+RTT = round-trip time between participants
+
+### Decision Flowchart
+
+```
+Need atomicity across services?
+  No  → eventual consistency + idempotency
+  Yes → Can you redesign to avoid it?
+    Yes → co-locate data, redraw boundaries
+    No  → All participants in same DB cluster?
+      Yes → 2PC (built into your DB)
+      No  → Can you define compensating actions?
+        Yes → Sagas
+        No  → design problem — reconsider service boundaries
+```
+
+---
+
 ## Key Takeaways
 
 1. **2PC guarantees atomicity** - But blocks on failure

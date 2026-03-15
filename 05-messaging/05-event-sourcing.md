@@ -13,31 +13,22 @@ Event sourcing stores all changes to application state as a sequence of events. 
 ```
 Database stores current state:
 
-Users table:
-  id: 123
-  balance: 500
-  updated_at: 2024-01-15
+Users table:  id: 123, balance: 500, updated_at: 2024-01-15
 
 Problem: History is lost
-  What was the balance yesterday?
-  How did we get to 500?
-  Unknown
+  What was the balance yesterday? How did we get to 500? Unknown.
 ```
 
 ### Event Sourcing
 
 ```
 Database stores events:
-
-Events table:
   AccountCreated(id=123, balance=1000)
   MoneyWithdrawn(id=123, amount=200)
   MoneyDeposited(id=123, amount=300)
   MoneyWithdrawn(id=123, amount=600)
 
-Current state: Replay events
-  1000 - 200 + 300 - 600 = 500 ✓
-
+Current state: Replay → 1000 - 200 + 300 - 600 = 500 ✓
 Complete history preserved
 ```
 
@@ -83,29 +74,20 @@ Append-only log of events
 ### Aggregate
 
 ```
-Domain entity that groups related events
-Events always belong to an aggregate
+Domain entity that groups related events. Events always belong to an aggregate.
 
-Account aggregate:
-  Events: Created, Deposited, Withdrawn, Closed
-  
-Order aggregate:
-  Events: Placed, Confirmed, Shipped, Delivered
+Account aggregate:  Created, Deposited, Withdrawn, Closed
+Order aggregate:    Placed, Confirmed, Shipped, Delivered
 ```
 
 ### Command
 
 ```
-Represents intent to change state
-Validated, then generates events
+Represents intent to change state. Validated, then generates events.
 
 Command: Withdraw(account_id=123, amount=100)
-  
-Validation:
-  - Account exists? ✓
-  - Sufficient balance? ✓
-  
-Result: MoneyWithdrawn event generated
+  Validation: Account exists? ✓  Sufficient balance? ✓
+  Result: MoneyWithdrawn event generated
 ```
 
 ---
@@ -490,24 +472,239 @@ def migrate_to_new_projection():
 
 ## When to Use Event Sourcing
 
-### Good Fit
-
 ```
 ✓ Strong audit requirements (finance, healthcare)
 ✓ Complex domain with business rules
 ✓ Need for temporal queries
-✓ Event-driven architecture
+✓ Event-driven architecture already in place
 ✓ CQRS implementation
 ```
 
-### Poor Fit
+---
+
+## Snapshotting Strategies
+
+### Why Snapshot
 
 ```
-✗ Simple CRUD applications
-✗ No audit requirements
-✗ Team unfamiliar with pattern
-✗ Very high-throughput writes (rebuilding is slow)
-✗ Need for ad-hoc queries across data
+Aggregate with 1,000,000 events → replay all on every load? Unacceptable.
+
+Snapshot = serialized aggregate state at a known version.
+Load snapshot → replay only events after that version.
+
+Without snapshot:  replay 1..1,000,000  (~seconds to minutes)
+With snapshot at v999,000:  deserialize + replay 1,000  (~ms)
+```
+
+### When to Snapshot
+
+```
+Every N events    — snapshot after every 100 events. Simple, predictable.
+Time-based        — snapshot if last one older than T. Better for bursty writes.
+On read (lazy)    — if events_since_snapshot > threshold → snapshot after load.
+                    No background job, but first slow read pays the cost.
+
+Tradeoff: too frequent → storage cost / write amplification
+          too rare    → slow recovery / high replay latency
+```
+
+### Snapshot Storage
+
+```
+Separate store, keyed by (aggregate_id, version):
+
+  snapshots: aggregate_id | version | state (JSONB) | schema_version
+             account-123  | 1000    | {balance:...} | 3
+             account-123  | 2000    | {balance:...} | 4
+
+Include schema_version — snapshot from code v3 may not deserialize with v5.
+Migrate on read if schema_version < current.
+```
+
+### Snapshot Manager
+
+```python
+class SnapshotManager:
+    def __init__(self, event_store, snapshot_store, interval=100):
+        self.event_store = event_store
+        self.snapshot_store = snapshot_store
+        self.interval = interval
+
+    def load(self, aggregate_id, factory):
+        snapshot = self.snapshot_store.get_latest(aggregate_id)
+        if snapshot:
+            aggregate = deserialize(snapshot.state, snapshot.schema_version)
+            from_version = snapshot.version + 1
+        else:
+            aggregate, from_version = factory(), 0
+
+        events = self.event_store.get_events(aggregate_id, from_version=from_version)
+        for event in events:
+            aggregate.apply(event)
+
+        if len(events) >= self.interval:  # lazy snapshot on read
+            self.snapshot_store.save(
+                aggregate_id=aggregate_id, version=aggregate.version,
+                state=serialize(aggregate), schema_version=CURRENT_SCHEMA_VERSION)
+        return aggregate
+```
+
+---
+
+## Schema Evolution
+
+### The Problem
+
+```
+Events are immutable — you cannot modify stored events.
+But your domain model evolves: new fields, renamed fields, split events.
+
+Day 1:  OrderPlaced { order_id, total }
+Day 90: OrderPlaced { order_id, total, currency, customer_tier }
+
+Old events still have the day-1 shape. Application code expects day-90 shape.
+```
+
+### Upcasting
+
+```python
+# Transform old event shapes to current shape ON READ.
+# Event store keeps original bytes untouched.
+UPCASTERS = {
+    ("OrderPlaced", 1): lambda data: {
+        **data, "currency": "USD", "customer_tier": "standard",
+    },
+}
+
+def upcast(event_type, version, data):
+    key = (event_type, version)
+    while key in UPCASTERS:
+        data = UPCASTERS[key](data)
+        version += 1
+        key = (event_type, version)
+    return data
+```
+
+### Versioned Event Types
+
+```
+Explicit version in type name:
+  OrderPlaced_v1 { order_id, total }
+  OrderPlaced_v2 { order_id, total, currency, customer_tier }
+
+Consumer handles both via match/switch.
+Works but proliferates types — prefer upcasting for most cases.
+```
+
+### Schema Strategy Comparison
+
+```
+Weak schema (JSON, tolerant reader):
+  + Easy to add fields, no registry needed
+  - No compile-time safety, silent failures on typos
+
+Strong schema (Avro / Protobuf):
+  + Forward/backward compatibility enforced, compile-time types
+  - Requires schema registry, more operational overhead
+```
+
+### Anti-pattern: Mutating Stored Events
+
+```
+NEVER rewrite events in the store.
+Breaks: audit trail, deterministic replay, causality with downstream consumers.
+
+To correct a fact, append a compensating event:
+  OrderPlaced → OrderCorrected { reason, corrected_fields }
+```
+
+---
+
+## Event Store Technology Choices
+
+### PostgreSQL
+
+```
+Already shown above in "Event Store Implementation" section.
+Simple, proven, JSONB for flexible event data.
+Unique constraint on (aggregate_id, version) = optimistic concurrency.
+Application retries on constraint violation: reload, re-validate, re-append.
+```
+
+### EventStoreDB
+
+```
+Purpose-built event store (open source, gRPC API).
+Native stream-per-aggregate, built-in projections, persistent subscriptions.
+Optimistic concurrency on stream version. Catch-up subscriptions for rebuilds.
+Choose when ES is central to architecture and team can operate a dedicated store.
+```
+
+### Kafka as Event Log
+
+```
+Append-only distributed log — tempting as an event store, but:
+  - No per-aggregate ordering (topic partitions ≠ aggregates)
+  - No optimistic concurrency per aggregate
+  - Reading single aggregate = scan partition or maintain external index
+  - Retention policies can delete events (violates immutability)
+
+Better role: publish events FROM event store to Kafka for downstream consumers.
+Event store = source of truth, Kafka = distribution layer.
+```
+
+### DynamoDB
+
+```
+Partition key = aggregate_id, sort key = version.
+Conditional write (attribute_not_exists) = optimistic concurrency.
+Serverless, scales horizontally, DynamoDB Streams for CDC.
+Limitations: 400 KB item limit, no built-in projections (DIY via Streams + Lambda).
+```
+
+### Comparison
+
+```
+                    PostgreSQL   EventStoreDB   Kafka      DynamoDB
+Optimistic conc.    ✓ (unique)   ✓ (native)     ✗          ✓ (cond. write)
+Built-in proj.      ✗ (DIY)      ✓              ✗          ✗ (DIY)
+Per-aggregate read  ✓            ✓              ✗          ✓
+Ops complexity      Low          Medium         High       Low
+Best for            Starting out ES-centric     Distribution Serverless
+```
+
+---
+
+## When NOT to Use Event Sourcing
+
+```
+Simple CRUD without audit needs
+  User preferences, feature flags, CMS content.
+  No one asks "what was the value 3 months ago?" — plain UPDATE wins.
+
+Domain has no meaningful events
+  Config management, static reference data, lookup tables.
+  Rare changes + uninteresting history = ceremony with no payoff.
+
+Team experience gap
+  ES demands: eventual consistency, projection rebuilds, idempotent handlers,
+  schema evolution, upcasting. Steep learning curve → bugs in production.
+  Build event-driven skills incrementally before adopting full ES.
+
+Unacceptable read staleness
+  If business requires reads to reflect writes instantly, the async projection
+  lag in ES + CQRS is a constant pain point. Workarounds (synchronous
+  projections, read-your-writes) erode the decoupling benefits.
+
+Unpredictable schema churn
+  Event shapes shifting weekly → upcaster chains grow, test matrix explodes.
+  Stabilize the domain model first, adopt ES later.
+
+Anti-pattern: "Event Source Everything"
+  Apply selectively to bounded contexts that benefit:
+    Payment processing → strong audit, temporal queries → YES
+    User profile CRUD  → simple reads/writes, no history → NO
+  Mixing ES and non-ES contexts in the same system is normal and healthy.
 ```
 
 ---

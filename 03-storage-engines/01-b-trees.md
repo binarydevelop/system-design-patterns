@@ -506,6 +506,280 @@ Key metrics:
 
 ---
 
+## B-Tree vs B+Tree
+
+### Structural Differences
+
+```
+B-Tree:
+  - Keys AND values stored in both internal and leaf nodes
+  - Any node can satisfy a lookup — no need to reach a leaf
+  - Fewer total nodes (values packed into internal nodes)
+  - Range scans require in-order tree traversal (expensive)
+
+B+Tree:
+  - Values stored ONLY in leaf nodes
+  - Internal nodes are pure routing nodes — contain keys and child pointers only
+  - Leaf nodes are linked via sibling pointers for sequential access
+  - Range scan = find start leaf, then follow links
+
+     ┌─────────────┐
+     │  30  |  60   │              ← Internal: routing only
+     └──┬────┬────┬─┘
+        ↓    ↓    ↓
+   ┌──────┐ ┌──────┐ ┌──────┐
+   │10|20 │→│30|40 │→│60|80 │    ← Leaves: keys + values + sibling links
+   └──────┘ └──────┘ └──────┘
+```
+
+### Why Databases Use B+Tree
+
+```
+1. Smaller internal nodes → higher fan-out → fewer levels
+   B-Tree internal node: key + value + pointer ≈ large
+   B+Tree internal node: key + pointer ≈ small
+
+2. Fan-out example (8 KB page, 100-byte keys, 8-byte pointers):
+   Keys per internal node: ~80
+   Level 0:          1 node  →          80 keys
+   Level 1:         80 nodes →       6,400 keys
+   Level 2:      6,400 nodes →     512,000 keys
+   Level 3:    512,000 nodes →  40,960,000 keys
+   → 4 levels covers 40M+ keys
+
+3. Range scans follow leaf links — no tree re-traversal
+4. Consistent depth — every lookup touches the same number of pages
+
+Databases using B+Tree variants:
+  PostgreSQL:   nbtree (B+Tree with high-key optimization)
+  MySQL InnoDB: clustered B+Tree (data in leaf pages)
+  SQLite:       B+Tree for tables, B-Tree for indexes
+```
+
+---
+
+## Page Splits and Merges
+
+### Splits
+
+```
+When a leaf page is full and a new key must be inserted:
+  1. Allocate a new page
+  2. Move upper half of keys to new page
+  3. Insert new routing key into parent
+  4. If parent is also full → split parent (cascade upward)
+  5. If root splits → new root created, tree grows one level
+
+Before split (page full, 4 keys max):
+  Parent: [... 50 ...]
+               ↓
+  Leaf:   [10, 20, 30, 40]
+
+Insert 25:
+  Parent: [... 30 | 50 ...]        ← 30 promoted
+            ↓        ↓
+  Leaf1: [10, 20, 25]  Leaf2: [30, 40]
+```
+
+### Merges
+
+```
+When adjacent pages are both less than half full:
+  1. Merge two leaf pages into one
+  2. Remove routing key from parent
+  3. If parent becomes underfull → merge parent (cascade upward)
+  4. If root has only one child → root removed, tree shrinks
+```
+
+### Fragmentation and Maintenance
+
+```
+Splits create half-full pages → up to 50% wasted space
+Sequential inserts are better — append to rightmost leaf
+
+PostgreSQL specifics:
+  - VACUUM reclaims dead tuples but does NOT defragment B-tree indexes
+  - REINDEX rebuilds the index from scratch — reclaims space
+  - pg_stat_user_indexes.idx_scan = 0 → unused index, consider dropping
+
+Fill factor (PostgreSQL):
+  - Default fillfactor for indexes: 90
+  - Leaves 10% headroom per page to delay splits
+  - For append-only tables (e.g., time-series): fillfactor = 100 is fine
+  - For random updates: fillfactor = 70-80 reduces split frequency
+  CREATE INDEX idx_orders ON orders(created_at) WITH (fillfactor = 90);
+
+HOT updates (Heap-Only Tuples):
+  - PostgreSQL optimization for UPDATE that does NOT change indexed columns
+  - New tuple version stays on the same heap page
+  - No new index entry needed → avoids index bloat entirely
+  - Check: pg_stat_user_tables.n_tup_hot_upd vs n_tup_upd
+```
+
+---
+
+## PostgreSQL Index Internals
+
+### Inspecting B-Tree Pages
+
+```sql
+-- Enable pageinspect extension
+CREATE EXTENSION IF NOT EXISTS pageinspect;
+
+-- View B-tree metapage (root location, tree height)
+SELECT * FROM bt_metap('idx_orders');
+--  magic  | version | root | level | fastroot | fastlevel
+-- --------+---------+------+-------+----------+-----------
+--  340322 |       4 |    3 |     1 |        3 |         1
+
+-- View items on a specific B-tree page
+SELECT * FROM bt_page_items('idx_orders', 1) LIMIT 5;
+--  itemoffset |  ctid   | itemlen | data
+-- ------------+---------+---------+------
+--           1 | (0,1)   |      16 | ...
+```
+
+### Index Bloat Detection
+
+```sql
+-- pgstattuple extension for bloat analysis
+CREATE EXTENSION IF NOT EXISTS pgstattuple;
+
+SELECT * FROM pgstatindex('idx_orders');
+--  version | tree_level | index_size | root_block_no | internal_pages |
+--  leaf_pages | empty_pages | deleted_pages | avg_leaf_density | leaf_fragmentation
+--
+-- Key metrics:
+--   avg_leaf_density < 50% → significant bloat, consider REINDEX
+--   leaf_fragmentation > 30% → pages out of order on disk
+```
+
+### Index-Only Scans
+
+```sql
+-- When all required columns are in the index, PostgreSQL skips heap access
+CREATE INDEX idx_orders_status_total ON orders(status, total);
+
+-- This query can be an index-only scan:
+EXPLAIN SELECT status, total FROM orders WHERE status = 'shipped';
+-- Index Only Scan using idx_orders_status_total
+
+-- Visibility map must be up-to-date (run VACUUM) for index-only scans
+-- Monitor: pg_stat_user_indexes.idx_blks_hit (buffer hits vs disk reads)
+```
+
+### Covering and Partial Indexes
+
+```sql
+-- Covering index: INCLUDE adds non-key columns for index-only scans
+-- Included columns are NOT used for ordering or filtering — just payload
+CREATE INDEX idx_orders_covering ON orders(customer_id) INCLUDE (status, total);
+
+-- Partial index: index only rows matching a condition — smaller and faster
+CREATE INDEX idx_active_orders ON orders(created_at) WHERE status = 'active';
+-- Only rows with status='active' are indexed
+-- Queries must include WHERE status = 'active' to use this index
+```
+
+### Multi-Column Index Ordering
+
+```
+Leftmost prefix rule for composite index (a, b, c):
+
+  ✓ WHERE a = 1                      → uses index
+  ✓ WHERE a = 1 AND b = 2            → uses index
+  ✓ WHERE a = 1 AND b = 2 AND c = 3  → uses index
+  ✗ WHERE b = 2                      → cannot use index
+  ✗ WHERE b = 2 AND c = 3            → cannot use index
+  ✓ WHERE a = 1 AND c = 3            → uses index for a, filter c
+
+The index is sorted by (a, then b within a, then c within b).
+Skipping a leftmost column breaks the sort order.
+```
+
+### When to Use BRIN Instead of B-Tree
+
+```
+BRIN (Block Range INdex): stores min/max per block range (e.g., 128 pages)
+
+Use BRIN when:
+  - Table is physically sorted by the indexed column (e.g., auto-increment ID)
+  - Table is very large (100M+ rows)
+  - Exact lookups are rare; range scans are common
+  - Time-series data with append-only inserts
+
+BRIN advantages:
+  - Tiny index size: ~1000x smaller than B-tree for large tables
+  - Near-zero insert overhead
+
+CREATE INDEX idx_events_ts ON events USING brin(created_at) WITH (pages_per_range = 128);
+```
+
+---
+
+## B-Tree Performance Characteristics
+
+### Operation Costs
+
+```
+Point lookup:
+  O(log_B N) page reads, where B = branching factor (fan-out)
+  Example: B = 80, N = 40M keys → log_80(40M) ≈ 4 levels
+  4 random I/Os per lookup (root page usually cached → 3 in practice)
+
+Range scan:
+  O(log_B N + K/B) page reads, where K = result set size
+  Find start: same as point lookup
+  Then follow leaf links: sequential I/O, reading K/B leaf pages
+
+Insert:
+  O(log_B N) amortized — one page write + WAL entry
+  Worst case: page split cascades to root → 2× the page writes
+  Amortized split cost is low — each page absorbs ~B inserts before splitting
+
+Delete:
+  O(log_B N) amortized — mark dead, eventual merge
+  Most systems defer merges (PostgreSQL marks tuples dead, VACUUM cleans up)
+```
+
+### Sequential vs Random I/O Trade-off
+
+```
+B-tree writes are random I/O:
+  - Update-in-place means writing to arbitrary page locations
+  - Each insert touches a different leaf page (for random key order)
+
+LSM-tree writes are sequential I/O:
+  - All writes go to an append-only memtable → flush to sorted files
+  - This is the fundamental B-tree vs LSM trade-off
+  (see 02-lsm-trees.md for full LSM coverage)
+
+Impact on hardware:
+  HDD:  Random I/O ≈ 10ms seek → B-tree writes are expensive
+  SSD:  Random I/O ≈ 0.05-0.1ms → penalty is 100x smaller
+  NVMe: Random I/O ≈ 0.01ms → B-tree and LSM gap narrows significantly
+```
+
+### Write Amplification Comparison
+
+```
+B-tree write amplification:
+  - 1 WAL write + 1 page write = ~2× per logical write
+  - Page splits add occasional extra writes
+  - Overall: 2-5× typical
+
+LSM write amplification:
+  - Compaction rewrites data across multiple levels
+  - Overall: 10-30× typical (varies by compaction strategy)
+  (see 02-lsm-trees.md for compaction details)
+
+B-tree wins on write amplification, LSM wins on write throughput.
+For read-heavy OLTP (point lookups, short ranges): B-tree is usually better.
+For write-heavy ingestion (logs, metrics, events): LSM may be better.
+```
+
+---
+
 ## Key Takeaways
 
 1. **B+-trees dominate databases** - Leaf nodes contain data, linked for scans
