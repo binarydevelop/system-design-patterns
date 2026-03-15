@@ -516,6 +516,203 @@ def check_pubsub_health():
 
 ---
 
+## Pub/Sub at Scale
+
+### The Fan-Out Problem
+
+```
+1 msg × 10K subscribers = 10K deliveries
+1K msg/sec × 10K subscribers = 10M deliveries/sec
+
+Single broker cannot handle this. Fan-out cost grows linearly with subscribers.
+```
+
+### Hierarchical Pub/Sub
+
+```
+Publisher → [Root Broker] → [US] [EU] [APAC] → Local subscribers
+
+Cross-region traffic reduced to 1 copy per region.
+Regional brokers fan out locally. Failure isolation per region.
+```
+
+### Topic Sharding
+
+```
+Topic "user.events" partitioned: subscribers split across broker instances.
+  Shard 0 (subs 0-2499) → Broker A    Shard 2 (subs 5000-7499) → Broker C
+  Shard 1 (subs 2500-4999) → Broker B  Shard 3 (subs 7500-9999) → Broker D
+
+Coordinator distributes to shards. Each broker fans out to its subset only.
+```
+
+### Cloud Provider Approaches
+
+```
+Google Cloud Pub/Sub:
+  - Push (broker POSTs to HTTPS) or Pull (subscriber polls)
+  - Exactly-once via message dedup (window ~10 min)
+  - Seek: replay by rewinding subscription to a timestamp
+
+AWS SNS fan-out:
+  - SNS → SQS queues, Lambda, HTTP/S endpoints, email, SMS
+  - SNS + SQS for durability (SNS alone is fire-and-forget)
+```
+
+### Throughput Reference
+
+```
+Kafka:    100 partitions → 1M+ msg/sec (scales linearly with partitions)
+RabbitMQ: Fanout exchange → 50K-100K msg/sec (degrades with subscriber count)
+Redis:    In-memory pub/sub → 500K+ msg/sec (no durability, fire and forget)
+```
+
+---
+
+## Topic Design Patterns
+
+### Fine-Grained vs Coarse-Grained Topics
+
+```
+Fine-grained (one topic per event type):
+  orders.created, orders.updated, orders.cancelled, orders.refunded
+  ✓ Subscribe to exactly what you need, simpler consumer logic
+  ✗ Topic proliferation, publisher must pick correct topic
+
+Coarse-grained (one topic per domain):
+  orders → { "event_type": "created", ... }
+  ✓ Fewer topics, single subscription for all order events
+  ✗ Consumers receive unwanted events, filtering pushed to subscriber
+```
+
+### Event Envelope Pattern
+
+```json
+{
+  "event_id": "evt_a1b2c3d4",
+  "event_type": "order.created",
+  "timestamp": "2026-03-15T10:30:00Z",
+  "correlation_id": "req_x9y8z7",
+  "source": "order-service",
+  "schema_version": 2,
+  "payload": { "order_id": "ord_123", "customer_id": "cust_456", "total": 99.99 }
+}
+```
+
+```
+Standard wrapper enables:
+  - Routing without deserializing payload
+  - Distributed tracing via correlation_id
+  - Deduplication via event_id
+```
+
+### Wildcard Subscriptions
+
+```
+RabbitMQ topic exchange:
+  order.*.created  → matches order.us.created, order.eu.created
+  order.#          → matches order.us.created, order.eu.shipped.delayed
+  (* = exactly one word, # = zero or more words)
+
+Kafka: No native wildcard on topics. Consumer subscribes by regex on
+  topic names only: consumer.subscribe(Pattern.compile("orders\\..*"))
+```
+
+---
+
+## Pub/Sub Failure Handling
+
+### Slow Subscriber Impact
+
+```
+Does a slow subscriber block others?
+
+Kafka:   No. Independent consumer offsets per group.
+         Slow consumer falls behind; fast consumers unaffected.
+
+RabbitMQ: Each subscriber has its own queue (slow queue grows independently).
+         Classic queues: broker may backpressure publisher if queue is full.
+         Quorum queues: better isolation, but memory pressure when large.
+```
+
+### Poison Messages
+
+```
+Message that crashes subscriber on every attempt → infinite redelivery loop.
+
+Solution: Bounded retries with backoff, then route to DLQ.
+
+  if retry_count >= max_retries:
+      publish_to_dlq(message)   # See 08-dead-letter-queues.md
+  else:
+      redelivery_with_backoff(message)
+
+Detection: log message ID on each failure, alert on repeated ID, include error in DLQ metadata.
+```
+
+### Subscriber Crash During Processing
+
+```
+1. Broker delivers message → 2. Subscriber processes → 3. Crash before ack
+4. Broker redelivers → 5. Message processed twice
+
+At-least-once delivery makes this unavoidable.
+Subscriber MUST be idempotent. See 04-delivery-guarantees.md.
+
+Idempotency: dedup table (skip seen IDs), upsert instead of insert,
+  or use event_id as idempotency key for external API calls.
+```
+
+---
+
+## Pub/Sub vs Request-Response
+
+### When to Use Each
+
+```
+Use Pub/Sub when:
+  ✓ Event notification ("something happened") — N downstream consumers
+  ✓ Decoupled services — publisher doesn't know who listens
+  ✓ Temporal decoupling — consumer processes when ready
+
+Use Request-Response when:
+  ✓ Need immediate answer — "price of item X?" → $29.99
+  ✓ Synchronous workflow — each step needs prior result
+  ✓ Single consumer — only one handler for the request
+  ✓ Caller must know if operation failed
+```
+
+### Hybrid: Command + Event
+
+```
+Client ──req──► Order Service ──resp──► Client
+                     │
+                (also publishes OrderCreated event)
+                     │
+              ┌──────┼──────┐
+              ▼      ▼      ▼
+          Inventory Email Analytics
+
+Request-response for synchronous path. Pub/sub for async side effects.
+```
+
+### Anti-Pattern: RPC Over Messaging
+
+```
+DON'T: Client → [request.topic] → Service → [reply.topic + correlation_id] → Client
+
+Problems:
+  - Correlation ID management complexity
+  - Reply topic per client or shared reply topic with filtering
+  - Timeout handling is awkward (when to stop waiting?)
+  - Debugging harder than direct call tracing
+
+If you need request-response, use gRPC or HTTP.
+Pub/sub is for fire-and-forget or fire-and-observe.
+```
+
+---
+
 ## Key Takeaways
 
 1. **Pub/Sub decouples producers from consumers** - Neither knows the other
