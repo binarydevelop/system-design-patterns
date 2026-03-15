@@ -487,6 +487,270 @@ def process_message(message):
 
 ---
 
+## DLQ Processing Strategies
+
+### Manual Review
+
+```
+Who:     Human operator via dashboard or CLI
+When:    Low-volume DLQs, compliance-sensitive data, unknown failure types
+How:     Operator inspects message body + failure reason → decides replay or discard
+
+Workflow:
+  1. Alert fires on DLQ depth
+  2. Operator opens DLQ dashboard
+  3. Reads failure reason + stack trace
+  4. Determines root cause
+  5. Fixes consumer or upstream data
+  6. Replays or archives the message
+
+Tradeoff: Slow, doesn't scale. But safest for critical financial or PII data.
+```
+
+### Automated Retry
+
+```
+A scheduler periodically reads DLQ and re-publishes messages to the original queue.
+
+Schedule: Every 15 min, pick up to 50 messages, republish with exponential backoff.
+
+Backoff formula:
+  delay = min(base_delay * 2^retry_count, max_delay)
+  Example: 1s → 2s → 4s → 8s → ... → cap at 5 min
+
+Risk: Infinite retry loop.
+  If the message is permanently invalid (bad schema, missing required field),
+  it will bounce between main queue and DLQ forever.
+
+Mitigation:
+  - Set a max lifetime (e.g., 24h from first failure). After that → archive.
+  - Distinguish retryable vs non-retryable errors before republishing.
+```
+
+### Conditional Replay
+
+```
+Inspect each DLQ message, apply a transformation or data correction, then replay.
+
+Example:
+  Original message has { "price": -5 }  → validation failure
+  Fix: set price to 0 or fetch correct price from source system
+  Replay corrected message to main queue
+
+Use when:
+  - Upstream producer sent bad data but the intent is recoverable
+  - Schema evolved and old messages need field backfill
+  - External reference data was temporarily wrong (e.g., currency rate)
+
+Caution: Transformations must be idempotent. Replayed message may be processed
+         alongside newer messages — ensure no duplicate side effects.
+```
+
+### DLQ Consumer Service
+
+```
+A dedicated microservice consumes the DLQ as its primary input.
+
+Responsibilities:
+  - Classify failure type (validation, timeout, auth, unknown)
+  - Apply programmatic fixes per failure type
+  - Re-publish fixed messages to original queue
+  - Escalate unfixable messages (create ticket, send Slack alert)
+  - Track repair metrics (auto-fixed %, escalation %)
+
+Architecture:
+  Main Queue ──► Consumer ──► DLQ ──► DLQ Consumer Service
+                                          │
+                              ┌────────────┼────────────┐
+                              ▼            ▼            ▼
+                         Auto-fix     Create Ticket   Archive
+                         & Replay
+```
+
+---
+
+## DLQ Schema and Metadata
+
+### Why Metadata Matters
+
+```
+Without failure context, a DLQ is a black hole.
+
+You see a message in the DLQ. Questions you need answered:
+  - Which queue did it come from?
+  - Why did it fail?
+  - How many times was it retried?
+  - When did it first fail? When did it last fail?
+  - What does the stack trace say?
+
+Without this metadata, triage is guesswork. Engineers waste hours
+reproducing failures that a stack trace would have explained in seconds.
+```
+
+### Essential Metadata Schema
+
+```json
+{
+  "dlq_envelope": {
+    "message_id": "msg-a1b2c3d4",
+    "original_topic": "orders.placed",
+    "original_queue": "order-processing",
+    "original_partition": 3,
+    "original_offset": 884201,
+    "failure_reason": "ValidationError: field 'quantity' must be > 0",
+    "failure_category": "VALIDATION",
+    "stack_trace": "Traceback (most recent call last):\n  File \"consumer.py\", line 42 ...",
+    "retry_count": 3,
+    "first_failure_at": "2025-11-10T08:15:22Z",
+    "last_failure_at": "2025-11-10T08:17:44Z",
+    "consumer_instance": "order-consumer-pod-7b4d9",
+    "consumer_version": "2.4.1"
+  },
+  "original_headers": {
+    "correlation_id": "corr-x9y8z7",
+    "content_type": "application/json"
+  },
+  "original_body": {
+    "order_id": "ORD-12345",
+    "quantity": -1,
+    "product_id": "SKU-999"
+  }
+}
+```
+
+### Metadata Guidelines
+
+```
+- Always capture failure_reason: the exception message, not just the class name.
+- Always capture stack_trace: truncate to last 20 frames if needed for storage.
+- Track first vs last failure timestamps: shows how long the message has been bouncing.
+- Include consumer_version: critical for debugging issues introduced by a specific deploy.
+- Keep original headers intact: correlation IDs enable end-to-end tracing.
+```
+
+---
+
+## DLQ Anti-Patterns
+
+### Ignoring the DLQ
+
+```
+Symptom:  DLQ has 50,000 messages. Nobody noticed.
+Cause:    No monitoring, no alerts, no ownership.
+Fix:      Alert on DLQ depth > 0 (warning), > 100 (critical).
+          Assign a team to own DLQ triage as part of on-call rotation.
+```
+
+### Replaying Without Fixing
+
+```
+Symptom:  Message fails → goes to DLQ → replayed → fails again → DLQ → replay → ...
+Cause:    Blind replay script with no root cause analysis.
+Fix:      Never replay without understanding the failure reason.
+          Gate replay behind a check: has the consumer bug been fixed?
+          Has the invalid data been corrected?
+          Track replay count — if a message has been replayed 3+ times, escalate.
+```
+
+### No TTL on DLQ Messages
+
+```
+Symptom:  DLQ contains messages from 2 years ago. Nobody knows what they are.
+Cause:    No retention policy, no cleanup job.
+Fix:      Set retention between 7-30 days depending on compliance needs.
+          Archive to cold storage (S3, GCS) before deletion if audit trail is required.
+          Messages older than retention are not actionable — delete or archive them.
+```
+
+### Using DLQ as a Feature
+
+```
+Symptom:  Producer intentionally sends messages to a queue knowing they'll fail,
+          so they end up in the DLQ for "later processing."
+Cause:    Misunderstanding DLQ purpose. Treating it as a delay queue.
+Fix:      Use a dedicated delay queue or scheduled queue instead.
+          DLQs are for unexpected failures, not intentional routing.
+          Delay mechanisms: RabbitMQ message TTL + dead-letter routing to a processing
+          queue, SQS delay queues, Kafka topic with timestamp-based consumer pause.
+```
+
+---
+
+## DLQ in Real Systems
+
+### AWS SQS
+
+```
+Configuration:
+  Main queue has a RedrivePolicy:
+    { "maxReceiveCount": 5, "deadLetterTargetArn": "arn:aws:sqs:...:orders-dlq" }
+
+Behavior:
+  - After 5 failed receive+process cycles (no deletion), message moves to DLQ.
+  - SQS tracks receive count automatically — no application code needed.
+  - Use RedriveAllowPolicy on DLQ to restrict which queues can target it.
+  - Redrive to source: SQS console supports moving messages back to original queue.
+
+Gotcha: maxReceiveCount includes visibility timeout expiries. If your consumer
+        is slow and the visibility timeout expires, that counts as a receive.
+```
+
+### Apache Kafka
+
+```
+Kafka has no native DLQ mechanism. You implement it yourself.
+
+Common pattern:
+  - Failed messages are produced to a separate topic: orders.dlq
+  - Consumer catches exception → writes to DLQ topic with failure headers
+  - A DLQ consumer service reads orders.dlq for triage
+
+Spring Kafka integration:
+  - DeadLetterPublishingRecoverer: auto-publishes to <topic>.DLT after retries
+  - DefaultErrorHandler with BackOff: configurable retry + DLT routing
+  - Retains original headers + adds exception headers automatically
+
+Naming convention: <original-topic>.dlq or <original-topic>.DLT (dead letter topic)
+```
+
+### RabbitMQ
+
+```
+Native DLQ support via exchange routing:
+
+Queue arguments:
+  x-dead-letter-exchange: "dlx-exchange"
+  x-dead-letter-routing-key: "orders.dlq"
+
+Messages are dead-lettered when:
+  - Consumer nacks (basic.reject / basic.nack) with requeue=false
+  - Message TTL expires
+  - Queue max-length exceeded
+
+The dead-letter exchange routes the message to the DLQ based on the routing key.
+Original death metadata is added to x-death header array (queue, reason, count, time).
+```
+
+### GCP Pub/Sub
+
+```
+Configuration:
+  Subscription has a deadLetterPolicy:
+    { "deadLetterTopic": "projects/.../topics/orders-dlq",
+      "maxDeliveryAttempts": 5 }
+
+Behavior:
+  - After 5 failed delivery attempts (nack or ack deadline expiry), message
+    is forwarded to the dead letter topic.
+  - Pub/Sub adds CloudPubSubDeadLetterSourceDeliveryCount attribute automatically.
+  - The DLQ topic needs a separate subscription for consumers to read from it.
+
+Gotcha: The service account needs pubsub.publisher role on the DLQ topic
+        and pubsub.subscriber role on the source subscription.
+```
+
+---
+
 ## Key Takeaways
 
 1. **DLQs prevent message loss** - Failed messages preserved
