@@ -57,18 +57,6 @@ send_email()       ✗ Sends email each time
 charge_card()      ✗ Charges each time
 ```
 
-### HTTP Methods
-
-| Method | Idempotent? | Notes |
-|--------|-------------|-------|
-| GET | Yes | Read-only |
-| HEAD | Yes | Read-only |
-| PUT | Yes | Replace entire resource |
-| DELETE | Yes | Delete is idempotent |
-| OPTIONS | Yes | Read-only |
-| POST | **No** | Creates new resource |
-| PATCH | **No** | May not be idempotent |
-
 ---
 
 ## Implementing Idempotency
@@ -182,156 +170,22 @@ func pay_order(order_id, amount):
 
 ---
 
-## Idempotency Key Design
-
-### Key Generation
-
-```
-// UUID - universally unique
-key = uuid.v4()  // "550e8400-e29b-41d4-a716-446655440000"
-
-// ULID - sortable, timestamp-based
-key = ulid.new()  // "01ARZ3NDEKTSV4RRFFQ69G5FAV"
-
-// Composite - include context
-key = f"{user_id}:{action}:{timestamp}:{nonce}"
-```
-
-### Key Scope
-
-```
-Narrow scope (per-action):
-  key = "create-order-{uuid}"
-  
-Broad scope (per-request):
-  key = "request-{uuid}"  // Covers entire request
-  
-Semantic scope (per-intent):
-  key = "user:123:pay-invoice:456"  // One payment per invoice
-```
-
-### Key Storage Considerations
-
-```
-Questions:
-  - How long to store? (TTL)
-  - What to store? (Key only? Full response?)
-  - Where to store? (DB, cache, both?)
-  - Consistency with operation? (Same transaction?)
-
-Typical answers:
-  - TTL: 24 hours to 7 days
-  - Store: Key + response code + response body
-  - Where: Database (durable) with cache layer
-  - Transaction: Same transaction as operation
-```
-
----
-
-## Handling Concurrent Requests
-
-### The Race Condition
-
-```
-Time →
-Request A (key=X):  [────lock────][process][store]
-Request B (key=X):       [──lock──][process][store]
-                              ↑
-                    Both got through!
-```
-
-### Solution: Lock Before Check
-
-```
-func process_with_idempotency(key, request):
-  // Acquire lock on key
-  lock = acquire_lock(key, timeout=30s)
-  
-  try:
-    // Check if already processed
-    existing = lookup(key)
-    if existing:
-      return existing.response
-    
-    // Process the request
-    response = do_work(request)
-    
-    // Store result
-    store(key, response)
-    return response
-  finally:
-    release_lock(lock)
-```
-
-### Database-Level Locking
-
-```sql
--- Use advisory lock
-SELECT pg_advisory_lock(hashtext('idempotency:' || key));
-
--- Or use unique constraint
-INSERT INTO idempotency_keys (key, status)
-VALUES ('abc123', 'processing')
-ON CONFLICT (key) DO NOTHING
-RETURNING *;
-
--- If no rows returned, another request is processing
-```
-
----
-
 ## Idempotency at Different Layers
 
-### API Layer
-
 ```
-Client:
-  Include Idempotency-Key header
-  Retry with same key on failure
-
-Server:
-  Check key before processing
-  Store response with key
-  Return cached response on duplicate
+API Layer:         Idempotency-Key header, response caching (see HTTP Idempotency Patterns)
+Message Queue:     Producer assigns message ID, consumer dedup table, built-in dedup (SQS FIFO, Kafka)
+Database Layer:    UPSERT, optimistic locking, ON CONFLICT (see Database-Level Idempotency)
+Application Layer: State machines — only valid transitions execute, duplicates are no-ops
 ```
-
-### Message Queue Layer
-
-```
-Producer:
-  Include unique message ID
-  
-Consumer:
-  Track processed message IDs
-  Skip duplicates
-  
-Queue (built-in):
-  Some queues deduplicate (SQS FIFO, Kafka exactly-once)
-```
-
-### Database Layer
-
-```
--- Use UPSERT for idempotent writes
-INSERT INTO events (id, data)
-VALUES ('event-123', '{"type": "click"}')
-ON CONFLICT (id) DO NOTHING;
-
--- Use optimistic locking
-UPDATE accounts
-SET balance = balance - 100, version = version + 1
-WHERE id = 'acc-123' AND version = 5;
-```
-
-### Application Layer
 
 ```
 // State machine prevents duplicate transitions
 func complete_order(order_id):
   order = get_order(order_id)
-  
+
   match order.status:
-    'pending' -> 
+    'pending' ->
       process()
       order.status = 'completed'
     'completed' ->
@@ -506,6 +360,348 @@ Test scenarios:
 - Crash during processing
 - Crash after processing, before response
 - Network timeout (response lost)
+```
+
+---
+
+## Idempotency Key Design
+
+### Client-Generated vs Server-Generated Keys
+
+```
+Client-generated (recommended):
+  Client creates UUID before sending request.
+  On retry, client resends the same UUID.
+  Server uses UUID to detect duplicates.
+
+  ✓ Key survives response loss — client still has it
+  ✓ Stripe, PayPal, Square all use this approach
+
+Server-generated (problematic):
+  Server creates key, returns it in response.
+  If response is lost, client has no key to retry with.
+
+  ✗ Defeats the purpose if the response never arrives
+  ✗ Only works when the client can query for existing records
+```
+
+### Key Format Options
+
+```
+UUID v4 (random):
+  "550e8400-e29b-41d4-a716-446655440000"
+  ✓ No coordination needed
+  ✗ Poor database index locality (random distribution)
+
+UUID v7 (time-ordered, RFC 9562):
+  "018f3e5c-7a1b-7000-8000-000000000001"
+  ✓ Monotonically increasing — B-tree friendly
+  ✓ Encodes creation timestamp
+  ✓ Preferred for high-write idempotency tables
+
+Composite key (domain-aware):
+  key = sha256(f"{user_id}:{action}:{reference_id}")
+  ✓ Deterministic — same intent always produces same key
+  ✓ Natural deduplication without client tracking
+  ✗ Requires careful design to avoid collisions
+```
+
+### Key Storage Strategy
+
+```
+Same database as business data (transactional):
+  BEGIN;
+    INSERT INTO idempotency_keys (key, response) VALUES (...);
+    INSERT INTO payments (id, amount) VALUES (...);
+  COMMIT;
+  ✓ Atomic — key and operation always consistent
+  ✓ No split-brain between key store and data store
+
+Redis (fast, ephemeral):
+  SET idem:abc123 response_json EX 86400
+  ✓ Sub-millisecond lookups
+  ✗ Key can be lost on Redis restart (unless persistence is on)
+  ✗ Not transactional with your main database
+
+Dedicated dedup table:
+  Separate table or service for idempotency keys.
+  ✓ Clean separation of concerns
+  ✗ Adds latency and a consistency boundary
+```
+
+### Key Expiration
+
+```
+How long to keep processed keys:
+  Stripe:        24 hours
+  AWS SQS FIFO:  5 minutes
+  Most REST APIs: 1–7 days
+
+Formula:
+  retention = max_retry_window × safety_factor
+
+  Example: clients retry for up to 1 hour, safety_factor = 24
+  retention = 1h × 24 = 24 hours
+
+Trade-off:
+  Short TTL → less storage, risk of duplicate processing on late retries
+  Long TTL  → more storage, stronger guarantee against duplicates
+```
+
+### Concurrent Duplicate Requests
+
+```
+Problem: Two requests with same key arrive at the same instant.
+Both pass the "key not found" check before either inserts.
+
+Solution 1 — Database unique constraint:
+  INSERT INTO idempotency_keys (key, status)
+  VALUES ('abc123', 'processing');
+  -- Second insert fails with unique violation → return 409 or wait
+
+Solution 2 — Distributed lock on the key:
+  lock = redis.set("lock:abc123", owner, NX, EX=30)
+  if not lock:
+    wait_or_return_conflict()
+```
+
+---
+
+## HTTP Idempotency Patterns
+
+### Natural Idempotency by HTTP Method
+
+```
+GET    → Read-only, always idempotent by definition
+PUT    → Full resource replacement — same payload = same result
+DELETE → Deleting an already-deleted resource is a no-op (return 204 or 404)
+POST   → Creates a new resource each time — NOT idempotent without explicit design
+PATCH  → Depends on payload semantics — NOT guaranteed idempotent
+```
+
+### The Idempotency-Key Header (Stripe Pattern)
+
+```http
+POST /v1/payments HTTP/1.1
+Idempotency-Key: 7c4a8d09-ca95-4c28-a1ad-8c3e2f5b3e72
+Content-Type: application/json
+
+{"amount": 5000, "currency": "usd"}
+```
+
+```
+Server processing flow:
+  1. Receive request with Idempotency-Key header
+  2. Look up key in idempotency store
+  3. If found and status = "completed" → return cached response
+  4. If found and status = "processing" → return 409 Conflict (or wait)
+  5. If not found → insert key with status "processing", execute operation
+  6. On completion → update key with status "completed" and store full response
+```
+
+### Response Caching for Idempotent Replays
+
+```sql
+-- Store the complete response alongside the key
+UPDATE idempotency_keys
+SET status = 'completed',
+    response_code = 201,
+    response_body = '{"id": "pay_abc", "amount": 5000}',
+    completed_at = NOW()
+WHERE key = '7c4a8d09-ca95-4c28-a1ad-8c3e2f5b3e72';
+
+-- On retry, return the exact same response — status code and body
+-- The client sees no difference between the original and the replay
+```
+
+### Conditional Requests with ETag
+
+```http
+-- Client fetches resource with ETag
+GET /users/123 HTTP/1.1
+→ 200 OK
+→ ETag: "v5"
+→ {"name": "Alice", "email": "alice@example.com"}
+
+-- Client updates with If-Match to prevent lost updates
+PUT /users/123 HTTP/1.1
+If-Match: "v5"
+{"name": "Alice", "email": "alice@new.com"}
+
+→ 200 OK (if version still v5)
+→ 412 Precondition Failed (if another write changed it)
+```
+
+### Making PATCH Safe
+
+```
+PATCH is not naturally idempotent:
+  PATCH /counter {"op": "increment"} → each call changes state
+
+Make PATCH idempotent with versioning:
+  PATCH /users/123
+  If-Match: "v5"
+  {"email": "new@example.com"}
+
+  First call:  v5 matches → apply update, bump to v6
+  Retry call:  v5 ≠ v6 → 412 Precondition Failed (client knows it already applied)
+```
+
+---
+
+## Database-Level Idempotency
+
+### UPSERT / INSERT ON CONFLICT
+
+```sql
+-- Idempotent write in a single statement
+INSERT INTO events (id, type, payload, created_at)
+VALUES ('evt-001', 'order.created', '{"order_id": 42}', NOW())
+ON CONFLICT (id) DO NOTHING;
+
+-- Rows affected = 1 on first call, 0 on retry — no error, no duplicate
+
+-- UPSERT variant: update if exists (useful for "last write wins")
+INSERT INTO user_preferences (user_id, theme, updated_at)
+VALUES (123, 'dark', NOW())
+ON CONFLICT (user_id) DO UPDATE
+SET theme = EXCLUDED.theme, updated_at = EXCLUDED.updated_at;
+```
+
+### Exactly-Once Processing with Outbox
+
+```sql
+-- Process message and record it in the same transaction
+BEGIN;
+  -- Business logic
+  UPDATE accounts SET balance = balance - 100 WHERE id = 'acc-123';
+
+  -- Mark message as processed (dedup record)
+  INSERT INTO processed_messages (message_id, processed_at)
+  VALUES ('msg-789', NOW())
+  ON CONFLICT (message_id) DO NOTHING;
+
+  -- Queue outgoing event via outbox (see 05-messaging/07-outbox-pattern.md)
+  INSERT INTO outbox (id, event_type, payload)
+  VALUES ('out-456', 'balance.updated', '{"account": "acc-123"}');
+COMMIT;
+
+-- If message_id already exists, the ON CONFLICT makes the INSERT a no-op
+-- The entire transaction is atomic — no partial processing
+```
+
+### Idempotent Schema Design: SET vs INCREMENT
+
+```
+Non-idempotent (INCREMENT semantics):
+  UPDATE accounts SET balance = balance - 100 WHERE id = 'acc-123';
+  -- Each execution subtracts another $100
+
+Idempotent (SET semantics — final state):
+  UPDATE accounts SET balance = 400 WHERE id = 'acc-123' AND version = 5;
+  -- Repeated execution has no additional effect once version advances
+
+Rule of thumb:
+  ✓ SET balance = new_value        (idempotent)
+  ✗ SET balance = balance - amount (not idempotent)
+
+  Compute the final state in application code, then SET it.
+  Pair with optimistic locking (version check) to prevent lost updates.
+```
+
+### Tombstone Pattern for Idempotent Deletes
+
+```sql
+-- Soft-delete with timestamp — delete operation is always idempotent
+UPDATE users
+SET deleted_at = NOW()
+WHERE id = 123 AND deleted_at IS NULL;
+
+-- Re-deleting a deleted record: 0 rows affected, no error
+-- Application treats deleted_at IS NOT NULL as "does not exist"
+
+-- Advantage over hard DELETE:
+--   Hard DELETE is idempotent too (deleting nothing is fine)
+--   But tombstone preserves audit trail and enables undo
+```
+
+---
+
+## Distributed Idempotency Challenges
+
+### Cross-Service Idempotency
+
+```
+Scenario: Order service → Payment service → Notification service
+
+  1. Payment service processes charge      ✓
+  2. Notification service sends email      ✓
+  3. Order service crashes before committing
+  4. Retry: payment succeeds (dedup), notification sends AGAIN ✗
+
+Problem: Each service saw a "new" request from its perspective.
+
+Solution: Each service maintains its own idempotency/dedup table.
+  Payment service:  dedup on payment_idempotency_key
+  Notification svc: dedup on notification_id (derived from order_id + event_type)
+
+  On retry, payment returns cached result AND notification skips the duplicate.
+```
+
+### Side Effects That Cannot Be Undone
+
+```
+Sending an email is not idempotent — you cannot "unsend" it.
+Sending an SMS, calling a webhook, printing a receipt — same problem.
+
+Approach: event-driven dedup at the side-effect layer.
+
+  1. Business service writes an event: "send welcome email for user 123"
+  2. Email service consumes the event
+  3. Email service checks: have I already sent this? (dedup on event_id)
+  4. If not sent → send and record event_id
+  5. If already sent → ack and skip
+
+  The dedup boundary is at the service that performs the irreversible action.
+  See 05-messaging/04-delivery-guarantees.md for delivery guarantee details.
+```
+
+### Clock Skew and Key Expiration
+
+```
+Scenario:
+  Server A sets idempotency key TTL = 24 hours at T=0
+  Client retries at T=23h59m
+  Request routed to Server B whose clock is 5 minutes ahead
+  Server B sees key as expired → processes request again → duplicate!
+
+Mitigations:
+  - Use generous expiration windows (add buffer beyond max retry window)
+  - Synchronize clocks with NTP and monitor drift
+  - Use logical timestamps (version numbers) instead of wall-clock TTLs where possible
+  - Set expiration based on creation time from the key itself (UUID v7 encodes timestamp)
+```
+
+### Idempotency vs Exactly-Once Semantics
+
+```
+Idempotency:
+  A property of an operation — calling it N times has the same effect as calling it once.
+  It is a mechanism, a building block.
+
+Exactly-once:
+  A delivery guarantee — the message is processed exactly one time.
+  It is an end-to-end guarantee, much harder to achieve.
+
+Relationship:
+  at-least-once delivery + idempotent processing = effectively exactly-once
+
+  The network gives you at-least-once (retries ensure delivery).
+  Your application adds idempotency (dedup ensures single processing).
+  The combination behaves like exactly-once from the caller's perspective.
+
+  See 05-messaging/04-delivery-guarantees.md for full treatment.
+  See 02-distributed-databases/07-distributed-transactions.md for transactional guarantees.
 ```
 
 ---

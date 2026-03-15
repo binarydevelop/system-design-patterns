@@ -487,6 +487,239 @@ Or use versioned URLs:
 
 ---
 
+## Cache Invalidation at Scale
+
+### Thundering Herd on Invalidation
+
+When a popular cache key is invalidated, every concurrent request sees a cache miss and hits the database simultaneously.
+
+```
+Popular key "product:homepage-banner" invalidated
+  → 10,000 requests/sec all miss cache
+  → 10,000 concurrent DB queries → DB connection pool exhausted
+```
+
+Mitigations:
+
+```
+1. Staggered TTLs: base_ttl + random(0, base_ttl * 0.1)
+2. Probabilistic early expiration: P(refresh) increases as TTL nears end
+3. Lock-based cache rebuild: first request acquires lock, others wait
+```
+
+```python
+def get_with_lock(key):
+    value = cache.get(key)
+    if value is not None:
+        return value
+    lock_key = f"lock:{key}"
+    if cache.set(lock_key, "1", nx=True, ex=5):  # acquire lock
+        value = db.query(key)
+        cache.set(key, value, ex=300)
+        cache.delete(lock_key)
+        return value
+    else:
+        sleep(0.05)
+        return cache.get(key)  # retry once
+```
+
+### Bulk Invalidation
+
+```
+Problem: invalidating all keys for user 123 requires enumerating them
+
+Solution: version-based keys (v2:user:123:profile → v3:user:123:profile)
+  Increment version → old keys are never read → expire via TTL
+  O(1) invalidation, no enumeration, no multi-key delete
+```
+
+### Cross-Datacenter Invalidation
+
+When a write lands in DC-A, the cache in DC-B remains stale until explicitly invalidated.
+
+```
+1. Pub/Sub invalidation bus (Kafka / Redis Pub/Sub)
+   DC-A write → publish event → DC-B consumer deletes local cache
+   Latency: 50-200ms cross-region. Message loss requires TTL fallback.
+
+2. Bounded TTL with accepted staleness
+   Set TTL low enough that staleness window is acceptable
+   Simpler — no cross-DC messaging infrastructure needed
+
+3. Lease-based invalidation
+   Cache entry includes a lease token tied to the writer DC
+   Remote DCs validate lease before serving cached data
+```
+
+### Facebook's Memcache Invalidation
+
+Facebook's `mcsqueal` daemon tails the MySQL binlog and publishes invalidation events to regional Memcached clusters. Described in the TAO paper (USENIX ATC 2013), this handles billions of invalidations per day with no application-level invalidation logic. Key insight: the commit log is the single source of truth for what changed.
+
+---
+
+## CDC-Based Invalidation
+
+### Pattern Overview
+
+```
+┌──────────┐     ┌───────────┐     ┌─────────┐     ┌──────────────┐
+│ Database │────►│ Debezium  │────►│  Kafka   │────►│    Cache     │
+│ (binlog) │     │ Connector │     │  Topic   │     │  Invalidator │
+└──────────┘     └───────────┘     └─────────┘     └──────────────┘
+
+1. Any process writes to database (app, migration, admin script)
+2. Debezium captures the change from the transaction log
+3. Change event published to Kafka topic (table-level or row-level)
+4. Cache invalidator consumes event and deletes/updates cache entry
+```
+
+### Advantages Over Application-Level Invalidation
+
+```
+Application-level: only catches writes through app code, misses direct
+DB updates/migrations/admin scripts, every writer must remember to invalidate
+
+CDC-based: captures ALL changes regardless of source, zero app code changes
+for new writers, single invalidation path — no duplication, no forgetting
+```
+
+### Ordering Guarantees
+
+CDC events arrive in commit order within a single partition (table + primary key). This prevents the stale-after-fresh race condition.
+
+```
+Without ordering: T1 writes "Bob", T2 writes "Carol", T1's cache SET arrives last
+  → cache holds "Bob" instead of "Carol"
+
+With CDC ordering: events arrive in commit order
+  → final cache state always reflects the latest write
+  → use DELETE (not SET) for extra safety against reordering
+```
+
+### Latency Characteristics
+
+Typical end-to-end: ~50-200ms (p50), ~200-500ms (p99). Breakdown: DB-to-binlog ~1ms, Debezium capture 10-50ms, Kafka publish+consume 20-100ms, cache delete 1-5ms.
+
+### When to Use CDC-Based Invalidation
+
+```
+Good fit: multi-service writes to same DB, critical cache consistency
+(financial/inventory), audit trail needed, legacy direct-DB access
+
+Poor fit: simple single-service CRUD, DB without binlog/WAL access,
+invalidation latency budget < 50ms
+```
+
+---
+
+## Consistency Windows
+
+### Definition
+
+The consistency window is the time between a database write completing and the cache reflecting that write (`T_cache_updated - T_db_commit`). Any read during this window may return stale data.
+
+### Sources of Inconsistency
+
+```
+1. TTL expiration delay:         window = 0 to full TTL
+2. Invalidation propagation:     window = 50-500ms (event-driven)
+3. Read-through race condition:  read caches pre-write value after write
+4. Cross-DC replication lag:     window = 50-200ms cross-region
+```
+
+### Measuring Consistency
+
+```
+1. Sample comparison: periodically read N random keys from cache and DB,
+   calculate staleness rate and duration
+
+2. Invalidation lag tracking: timestamp DB commit and cache invalidation,
+   track p50/p95/p99 of the delta
+
+3. Cache miss rate analysis: lower-than-expected misses indicate stale
+   data being served; unexpected misses indicate invalidation is working
+```
+
+### SLA Definition
+
+```
+Example: "Cache consistent within 500ms of DB write for 99.9% of keys"
+
+Monitoring:
+  - Alert if p99 invalidation lag > 1s
+  - Alert if staleness sample check fails > 0.1% of keys
+```
+
+### Business Impact by Staleness Duration
+
+```
+Use Case          │  1s     │  5s      │  30s     │  5min
+──────────────────┼─────────┼──────────┼──────────┼──────────
+User profile      │ Fine    │ Fine     │ Fine     │ Acceptable
+Inventory count   │ Risky   │ Oversell │ Oversell │ Dangerous
+Product price     │ Fine    │ Risky    │ Wrong $  │ Wrong $
+Session/auth      │ Fine    │ Fine     │ Security │ Security
+Feature flags     │ Fine    │ Fine     │ Fine     │ Stale exp
+Leaderboard       │ Fine    │ Fine     │ Fine     │ Fine
+```
+
+Choose TTL and invalidation strategy based on worst acceptable staleness per use case.
+
+---
+
+## Common Invalidation Bugs
+
+### Race Condition: Stale Read After Write
+
+```
+Thread A (reader):          Thread B (writer):
+  cache miss
+  read DB → old value
+                              write DB → new value
+                              delete cache
+  set cache → old value ← BUG: stale value cached after invalidation
+```
+
+Fix: always use bounded TTL. Use a short TTL on cache miss (e.g., 30s) and a longer TTL on explicit write-through (e.g., 300s). The race condition staleness is bounded to the short TTL.
+
+### Delete vs Set-Empty
+
+```
+cache.delete("avatar:123")      → cache miss → DB query → correct but costly
+cache.set("avatar:123", null)   → cache hit  → return null → fast but risky
+```
+
+Decision: if "not found" is a valid, common state (e.g., checking username availability), cache the null. If "not found" is rare or indicates a bug (e.g., user profile), delete the key and let the next read verify against DB.
+
+### Cascading Invalidation: Forgetting Derived Caches
+
+```
+user:123 name changed "Alice" → "Bob"
+  user:123            → invalidated ✓
+  user:123:feed       → still shows "Alice posted..." ✗
+  team:456:members    → still lists "Alice" ✗
+```
+
+Solutions: (1) tag-based invalidation — tag all derived caches with "user:123", single `invalidate_tag` clears them all; (2) explicit dependency registry mapping entity to derived keys; (3) short TTL on derived caches to bound staleness without cascade logic.
+
+### Invalidation During Deployment
+
+During rolling deploys, old and new code may write different cache formats. New code reading an old-format entry may hit missing fields.
+
+```
+Solutions:
+  1. Versioned cache keys — old "v1:user:123", new "v2:user:123"
+     Both coexist safely, old expires via TTL
+
+  2. Cache flush on deploy — simple but causes cold-cache stampede
+     Mitigate with cache warming (pre-populate critical keys)
+
+  3. Backward-compatible serialization — handle missing fields with defaults
+     Avoids the problem entirely but requires discipline
+```
+
+---
+
 ## Key Takeaways
 
 1. **TTL is the safety net** - Bound staleness even when invalidation fails
