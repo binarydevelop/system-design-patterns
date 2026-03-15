@@ -470,6 +470,264 @@ Trade-off:
 
 ---
 
+## Local vs Global Index Tradeoffs
+
+### Side-by-Side Comparison
+
+| Dimension | Local Index | Global Index |
+|-----------|-------------|--------------|
+| Write cost | 1 partition (cheap) | 2+ partitions (expensive) |
+| Read cost (no partition key) | All partitions (scatter-gather) | 1 index partition + 1 data partition |
+| Read cost (with partition key) | 1 partition | 1 index partition + 1 data partition |
+| Consistency | Strong (same partition) | Sync = strong, Async = eventual |
+| Failure impact | Isolated to one partition | Index partition failure → stale reads |
+| Index lag | None | Async: milliseconds to seconds |
+
+### Write Amplification in Global Indexes
+
+Every write to a globally indexed table produces at least two writes on different partitions:
+
+```
+User insert (user_id=42, email='alice@x'):
+
+  Write 1: Data partition (partition key = user_id)   → Partition A
+  Write 2: Index partition (partition key = email)     → Partition B
+
+If Partition B is unreachable:
+  - Data write succeeds on Partition A
+  - Index write fails or is queued
+  - Index becomes stale until Partition B recovers
+  - Reads via the index may miss user_id=42
+```
+
+This is the fundamental tension: **you cannot make a global index both strongly consistent and highly available**. You pick two out of three (consistency, availability, partition tolerance — CAP applies to the index itself).
+
+### The DynamoDB Async Model
+
+DynamoDB GSIs follow the async approach:
+
+- Data write commits immediately on the base table
+- Index update is propagated asynchronously (typically under one second)
+- GSI reads are **always** eventually consistent — no strongly consistent read option on GSI
+- If GSI write throughput is insufficient, updates queue up and index lag grows
+- Monitoring `OnlineIndexPercentageProgress` and `ThrottleCount` on the GSI is critical
+
+### When Local Beats Global
+
+- **Write-heavy workloads (>80% writes):** Avoiding cross-partition coordination dominates
+- **Queries usually include partition key:** Scatter-gather is avoided naturally
+- **Low-latency write SLA (<5ms p99):** Cannot tolerate cross-partition round-trip
+- **Partition count is small (<20):** Scatter-gather cost is bounded and acceptable
+
+### When Global Beats Local
+
+- **Read-heavy workloads (>80% reads):** Single-partition index lookup is worth the write overhead
+- **Queries rarely include partition key:** Scatter-gather on every read is unacceptable at scale
+- **High partition count (100+):** Scatter-gather latency grows linearly with partition count
+- **Eventual consistency is acceptable:** Async global index gives best of both worlds
+
+---
+
+## Secondary Indexes in Distributed Databases
+
+### Cassandra
+
+Cassandra offers multiple secondary index strategies, each with distinct tradeoffs:
+
+- **Materialized Views:** Server-maintained secondary table. Writes to the base table synchronously update the MV. Provides strong consistency but adds write latency. Cassandra documentation recommends limiting to low-cardinality use cases.
+- **SAI (Storage-Attached Indexes):** Replacement for the deprecated SASI. Each node indexes its own data (local index). Supports equality, range, and `CONTAINS` queries. Recommended over SASI since Cassandra 5.0.
+- **Manual denormalization:** Write to multiple tables in the application layer. Most control, most complexity. Use `BATCH` statements (logged) for atomicity across tables on the same partition.
+
+### CockroachDB
+
+CockroachDB treats secondary indexes as globally consistent via distributed transactions:
+
+- Every index write participates in the same transaction as the data write
+- Uses the Raft consensus protocol to replicate index entries across ranges
+- Adds ~5–15ms latency per write when the index range lives on a remote node
+- `CREATE INDEX` is an online schema change — does not block reads or writes during backfill
+- Supports `STORING` clause (equivalent to PostgreSQL `INCLUDE`) for covering indexes
+
+### MongoDB
+
+MongoDB secondary indexes are **local to each shard**:
+
+- Queries that include the shard key route to a single shard (targeted query)
+- Queries on a secondary index **without** the shard key scatter to all shards (`SHARD_MERGE` stage in explain plan)
+- Unique indexes on non-shard-key fields require the index to include the shard key as a prefix — true global uniqueness is not supported
+- The `mongos` router coordinates scatter-gather and merges results
+
+### DynamoDB (GSI and LSI)
+
+- **GSI (Global Secondary Index):** Eventually consistent copy of data with a different partition key. Can be added or removed at any time. Has its own provisioned throughput (or on-demand capacity). Maximum 20 GSIs per table.
+- **LSI (Local Secondary Index):** Same partition key as the base table, different sort key. Must be created at table creation time — cannot add later. Shares throughput with the base table. Supports strongly consistent reads. Maximum 5 LSIs per table. Imposes a 10 GB partition size limit.
+
+### Elasticsearch as a Secondary Index
+
+A common pattern for complex queries is maintaining Elasticsearch alongside a primary database:
+
+```
+PostgreSQL (source of truth)
+      │
+      ▼ CDC (Debezium / DynamoDB Streams / Change Streams)
+Elasticsearch (query index)
+      │
+Query path:
+  1. App queries Elasticsearch for matching document IDs
+  2. App fetches full records from PostgreSQL by primary key
+  3. Return merged results
+
+Consistency: eventual (CDC lag typically <1s)
+Failure mode: search degrades, primary DB unaffected
+```
+
+This separates the write-optimized path (OLTP database) from the read-optimized path (search engine) — each system does what it does best.
+
+---
+
+## Index Maintenance Cost
+
+### Write Amplification
+
+Each secondary index adds at least one write operation per data mutation:
+
+```
+Table with 5 secondary indexes:
+
+INSERT → 1 data write + 5 index writes = 6 writes total
+UPDATE (1 indexed col) → 1 data write + 1 index delete + 1 index insert = 3 writes
+DELETE → 1 data write + 5 index deletes = 6 writes
+
+Write amplification factor = total writes / data writes
+  Insert: 6×
+  Delete: 6×
+  Update: 2–6× depending on which columns change
+```
+
+In distributed databases, these writes may hit different partitions (global indexes) or different SSTables/pages (local indexes). The amplification is not just I/O — it is also network round-trips and transaction coordination.
+
+### Storage Overhead
+
+Index size depends on the key columns and whether the index is covering:
+
+- **Minimal index:** indexed column(s) + primary key pointer. Typically 10–30% of table size per index.
+- **Covering index:** indexed column(s) + included columns. Can approach 100% of table size if many columns are included.
+- **Composite index:** multi-column keys are wider. A 3-column composite index stores all three values per entry.
+
+Monitor index size relative to table size. If your indexes collectively exceed the table size, reconsider your indexing strategy.
+
+### Lock Contention (B-tree Databases)
+
+In B-tree-based systems (PostgreSQL, MySQL InnoDB, CockroachDB):
+
+- Index page splits can temporarily lock a range of the index tree
+- High-concurrency inserts into monotonically increasing indexes (e.g., timestamp) cause right-edge contention
+- `pg_stat_user_indexes` exposes `idx_scan`, `idx_tup_read`, `idx_tup_fetch` for monitoring
+- Index bloat (dead tuples in index pages) wastes space and slows scans — run `REINDEX` or use `pg_repack`
+
+> For B-tree split mechanics and page structure details, see `03-storage-engines/01-b-trees.md`.
+
+### Detecting and Dropping Unused Indexes
+
+```sql
+-- PostgreSQL: find indexes with zero scans since last stats reset
+SELECT
+    schemaname, tablename, indexname,
+    idx_scan,
+    pg_size_pretty(pg_relation_size(indexrelid)) AS index_size
+FROM pg_stat_user_indexes
+WHERE idx_scan = 0
+ORDER BY pg_relation_size(indexrelid) DESC;
+
+-- If idx_scan = 0 over a 30-day observation window → safe to drop
+-- Always validate against slow query logs before dropping
+```
+
+Rule of thumb: **if an index has zero scans over 30 days, it is a candidate for removal.** The write cost and storage it consumes are pure overhead.
+
+### Partial Indexes for Cost Reduction
+
+Index only the rows you actually query:
+
+```sql
+-- Instead of indexing all orders:
+CREATE INDEX idx_orders_status ON orders(status);
+
+-- Index only active orders (dramatically smaller):
+CREATE INDEX idx_orders_active ON orders(created_at)
+    WHERE status = 'active';
+
+-- If 95% of queries target active orders and only 5% of rows are active,
+-- the partial index is ~20× smaller and ~20× cheaper to maintain.
+```
+
+Partial indexes are supported in PostgreSQL, CockroachDB, and MongoDB (as partial/sparse indexes). DynamoDB and Cassandra do not support partial indexes natively — use sparse GSI patterns or filtering at the application layer instead.
+
+---
+
+## Inverted Index Pattern
+
+### Use Case
+
+Finding records by attribute value when the attribute is not the primary key:
+
+- Find all users in city = "Tokyo"
+- Find all orders with status = "pending"
+- Find all products with tag = "electronics"
+
+### Implementation
+
+An inverted index maps **attribute values to lists of record IDs**:
+
+```
+Forward index (normal):
+  user_1 → {city: "Tokyo", age: 30}
+  user_2 → {city: "Osaka", age: 25}
+  user_3 → {city: "Tokyo", age: 35}
+
+Inverted index (on city):
+  "Tokyo" → [user_1, user_3]
+  "Osaka" → [user_2]
+```
+
+This can be implemented as a dedicated mapping table, a database secondary index, or a search engine (Elasticsearch, Apache Solr).
+
+### Term-Partitioned Inverted Index
+
+Split the inverted index by term (attribute value):
+
+```
+Partition 1 (terms A-M):       Partition 2 (terms N-Z):
+  "active"  → [order_3, ...]     "pending" → [order_1, order_5]
+  "Chicago" → [user_7, ...]      "Tokyo"   → [user_1, user_3]
+
+Query: status = "pending"
+  → Route to Partition 2 only
+  → Single partition read ✓
+```
+
+Efficient for single-term lookups. Hot terms (e.g., status = "active" covering 80% of rows) can cause partition hotspots.
+
+### Document-Partitioned Inverted Index
+
+Split by document (record), each partition has a complete inverted index for its local documents:
+
+```
+Partition 1 (users 1-1000):     Partition 2 (users 1001-2000):
+  "Tokyo"  → [user_1, user_3]    "Tokyo"  → [user_1500]
+  "Osaka"  → [user_2]            "Osaka"  → [user_1200]
+
+Query: city = "Tokyo"
+  → Must query ALL partitions (scatter-gather)
+  → Merge results: [user_1, user_3, user_1500]
+```
+
+This is equivalent to a local secondary index. Writes are fast (single partition), reads require scatter-gather.
+
+> For full treatment of inverted index data structures, posting lists, and search engine internals, see `14-search-systems/01-inverted-indexes.md`.
+
+---
+
 ## Key Takeaways
 
 1. **Local indexes are write-friendly** - But require scatter-gather for reads

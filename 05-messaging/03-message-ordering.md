@@ -454,6 +454,230 @@ logger.info(f"Received message",
 
 ---
 
+## Kafka Partition Ordering Deep Dive
+
+### Ordering Guarantee Scope
+
+```
+Within a single partition:
+  Total order by offset. Consumer reads 0, 1, 2, 3... sequentially.
+
+Across partitions:
+  NO ordering guarantee. Partition 0 offset 5 may be newer or older
+  than Partition 1 offset 5. poll() returns batches in arbitrary order.
+```
+
+### Partition Key Selection
+
+```
+Key groups causally related messages:
+  Order lifecycle  → order_id  (create, pay, ship → ordered)
+  User activity    → user_id   (login, click, logout → ordered)
+  Device telemetry → device_id (readings in chronological order)
+
+Anti-pattern:
+  random_uuid → spreads load but destroys ordering
+  event_type  → groups unrelated entities together
+```
+
+### Hot Partition Problem
+
+```
+Celebrity user_id → one partition gets 100x traffic, others idle.
+
+Mitigations:
+  1. Compound key (user_id + session_id) — trades per-user for per-session ordering
+  2. Accept imbalance — scale hot consumer vertically, monitor partition lag
+  3. App-level sharding — split into virtual sub-users, merge downstream
+```
+
+### Rebalancing and Ordering
+
+```
+Consumer group rebalance (consumer joins/leaves/crashes):
+
+  Eager protocol (default before 2.4):
+    All consumers stop fetching during rebalance
+    Brief processing gap, but no out-of-order delivery
+    After rebalance, resumes from last committed offset
+
+  Cooperative rebalancing (Kafka 2.4+):
+    Only revoked partitions stop, others continue processing
+    Reduces blast radius — preferred for large consumer groups
+```
+
+### In-Flight Requests and Retries
+
+```
+Producer config: max.in.flight.requests.per.connection
+
+  Set to 5 (default):
+    Batch 1 fails, Batch 2 succeeds, Batch 1 retries
+    → Broker receives: Batch 2, Batch 1 → OUT OF ORDER
+
+  Set to 1:
+    One request at a time → correct order, lower throughput
+
+  Idempotent producer (enable.idempotence=true):
+    Broker tracks producer sequences, rejects out-of-order writes
+    Safe with max.in.flight=5. Recommended for ordering-sensitive workloads.
+```
+
+---
+
+## Ordering Across Services
+
+### The Fundamental Problem
+
+```
+Single-service: B crashes on E2 → restarts → replays from offset → works fine
+
+Cross-service: B processes E1→F1, E2→F2, publishes to C
+  F2 arrives at C before F1 (different topic/partition) → OUT OF ORDER
+
+No broker guarantees ordering across independent topics and services.
+```
+
+### Sequence Numbers for Cross-Service Ordering
+
+```python
+# Publisher embeds monotonic sequence per aggregate
+def publish(self, aggregate_id, event):
+    version = self.store.increment_version(aggregate_id)
+    event['aggregate_version'] = version
+    broker.send(key=aggregate_id, value=event)
+
+# Consumer enforces version ordering
+def on_event(self, event):
+    version = event['aggregate_version']
+    last = self.store.get_last_version(event['aggregate_id'])
+
+    if version == last + 1:      # Expected → apply
+        self.apply(event)
+        self.store.set_last_version(event['aggregate_id'], version)
+    elif version <= last:         # Duplicate → skip
+        pass
+    else:                         # Future → buffer
+        self.buffer(event['aggregate_id'], event)
+```
+
+### Causal Ordering with Vector Clocks
+
+```
+When events have causal dependencies across entities:
+
+  Event A (user created)  → clock {user_svc: 1}
+  Event B (order created) → clock {order_svc: 1, user_svc: 1}
+
+  Consumer receives B before A:
+    Missing user_svc:1 → buffer B → receive A → process A, then B
+
+  Simpler alternative — causal tokens:
+    Event A produces token T1. Event B declares dependency: [T1].
+    Consumer checks: seen T1? No → buffer B.
+
+Use only when partition-key ordering is insufficient (cross-entity chains).
+```
+
+---
+
+## Ordering vs Performance Tradeoffs
+
+### Guarantee Spectrum
+
+| Guarantee | Throughput | Parallelism | When to Use |
+|-----------|-----------|-------------|-------------|
+| No ordering (fanout) | Maximum | Unlimited | Notifications, analytics, log shipping |
+| Partition ordering (per-key) | High | # partitions | Order lifecycle, user activity, device telemetry |
+| Total ordering (single partition) | Lowest | 1 consumer | Financial ledger, distributed log, changelog |
+
+### Throughput (Approximate)
+
+```
+Kafka (3 brokers, 100-byte msgs):
+  No ordering: ~2M msg/sec | Partition: ~1M | Total: ~50K
+
+SQS:
+  Standard: ~120K msg/sec | FIFO per group: 300 (3000 batched)
+
+The gap between partition and total ordering is 20x+.
+```
+
+### The 90% Rule
+
+```
+Most systems only need partition-level ordering.
+
+Ask: "Do events for DIFFERENT entities need relative ordering?"
+
+  Almost always no:
+    User A vs User B → independent
+    Order #100 vs #101 → independent
+
+  If truly yes:
+    Can you merge entities under a common aggregate key?
+    Can you use a single-writer pattern instead?
+    Only after exhausting alternatives: accept single-partition penalty.
+```
+
+---
+
+## Reordering Recovery Patterns
+
+### Out-of-Order Detection
+
+```
+Detection signals:
+  - Sequence jump: received 5, expected 3 (gap = [3, 4])
+  - Timestamp regression: event.ts < last_processed.ts
+  - Version skip: aggregate_version jumps from 2 to 5
+
+Monitoring:
+  Metric: ordering_gap_detected{topic, partition, consumer_group}
+  Alert when gap rate exceeds baseline
+```
+
+### Buffering Strategy
+
+```
+Hold future events until gaps are filled:
+
+  last_processed=2, buffer={5: event5}
+  Receive 3 → process, Receive 4 → process, buffer has 5 → process
+
+  Risk: buffer grows unbounded if events are truly lost
+  Mitigation: cap buffer size per key (e.g., 1000 events max)
+```
+
+### Timeout and Proceed
+
+```
+After N seconds waiting for missing events, accept the gap:
+
+  Gap [3,4] detected → start 30s timer
+  Timeout expires → log gap, skip to 5, process buffered events
+
+  Late arrivals (3 or 4 after timeout):
+    Option A: Ignore (moved past them)
+    Option B: Apply retroactively if idempotent
+    Option C: Dead-letter queue for manual review
+```
+
+### Reprocessing from Source
+
+```
+When the source supports replay, request missing events:
+
+  Kafka:  consumer.seek(partition, offset) — re-consume forward
+  SQS:    message returns after visibility timeout — automatic retry
+  Custom: GET /events?aggregate_id=X&after_version=2 — direct fetch
+
+Key principle: replay is only safe if consumers are idempotent.
+See 04-delivery-guarantees.md for idempotency patterns.
+```
+
+---
+
 ## Key Takeaways
 
 1. **Total ordering is expensive** - Avoid unless truly needed
