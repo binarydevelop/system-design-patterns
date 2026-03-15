@@ -508,6 +508,212 @@ After heal:
 
 ---
 
+## Gray Failures
+
+### Definition
+
+A gray failure is a partial failure that is neither fully down nor fully up. The system continues to function but with degraded behavior that is difficult to detect through traditional binary health checks.
+
+```
+Failure spectrum:
+
+  Fully healthy        Gray failure zone        Fully failed
+      |                  |         |                  |
+      ├──────────────────┤─────────┤──────────────────┤
+   All requests      5% packet   One-way          No responses
+   succeed quickly   loss, high  failure           at all
+                     p99 latency
+```
+
+### Examples
+
+- **Packet loss at low rates:** 2–5% packet loss passes health checks. TCP retransmission masks it, but tail latency spikes.
+- **One-way failure:** A→B works, B→A drops. B thinks A is dead; A thinks B is healthy. Cluster membership disagrees.
+- **Intermittent connectivity:** Link flaps every few seconds — too short for timeout detection, but aggregate availability is poor.
+
+### Why Gray Failures Are Worse Than Total Failures
+
+| Property | Total Failure | Gray Failure |
+|----------|--------------|--------------|
+| Detection time | Seconds | Minutes to hours |
+| Confidence | High (no response) | Low (some responses succeed) |
+| Failover decision | Clear (promote replica) | Ambiguous (is failover premature?) |
+| Blast radius | Contained to failed node | Cascading (slow node backs up queues) |
+| Recovery | Restart and rejoin | Root cause unclear, may recur |
+
+Microsoft Research (2017) found that most severe outages in large-scale cloud systems stemmed from gray failures, not fail-stop crashes. Systems designed for binary up/down states miss the spectrum in between.
+
+### Detection Strategies
+
+- **Multi-path probing:** Probe each node from multiple observers. If only one reports failure, the issue may be path-specific.
+- **Application-level health checks:** TCP liveness is insufficient — verify end-to-end request serving.
+- **Peer-to-peer failure reporting:** Nodes gossip about peer health. Multiple reports of the same degraded peer increase confidence (used by Cassandra).
+
+```
+GET /health      → 200 OK                     // shallow — misses gray failures
+GET /health/deep → { "db_latency_ms": 2400,   // ← abnormally high
+                     "cache_hit_rate": 0.12,   // ← abnormally low
+                     "error_rate_1m": 0.04 }   // ← above threshold
+```
+
+---
+
+## Real Partition Incidents
+
+### AWS US-East-1 (April 2011)
+
+A routine network change caused EBS storage nodes to lose connectivity and enter a re-mirroring storm. Cascading re-replication consumed available capacity. MySQL clusters experienced split-brain when primary and replica lost contact. Recovery took over 12 hours. Reddit, Foursquare, and Quora went fully offline.
+
+### GitHub (October 2018)
+
+Replacing a failing 100G network link caused a 43-second connectivity loss between the US East Coast database primary and its replicas. The orchestration tool promoted a West Coast replica to primary. When connectivity restored, the old and new primary had diverged — 24 hours of degraded service followed. Automated tooling could not resolve the bidirectional replication conflicts.
+
+### Cloudflare (July 2020)
+
+A BGP misconfiguration in a backbone provider caused Cloudflare routes to be withdrawn from parts of the internet. For 27 minutes, traffic from affected networks could not reach Cloudflare edge servers. The failure was external — Cloudflare nodes were healthy internally — but the partition between users and edge was functionally identical to a network partition.
+
+### Google Cloud (June 2019)
+
+A configuration change reduced available bandwidth on backbone links, causing packet loss across multiple GCP regions. Cascading effects hit Compute Engine, Cloud Storage, and BigQuery for approximately 4 hours — demonstrating how bandwidth-level gray failures propagate across service boundaries.
+
+### Lessons Learned
+
+| Incident | Root Cause | Prevention |
+|----------|-----------|------------|
+| AWS 2011 | Re-mirroring storm | Rate-limit recovery, capacity reserves |
+| GitHub 2018 | Timeout-based promotion | Quorum-based promotion |
+| Cloudflare 2020 | External BGP withdrawal | Multi-provider BGP, anycast |
+| Google 2019 | Bandwidth config change | Canary network changes |
+
+**Common theme:** every incident involved a routine operation that triggered an unexpected partition. The system's reaction — not the partition itself — caused the outage.
+
+---
+
+## Advanced Partition-Tolerant Patterns
+
+### Circuit Breaker with Partition Awareness
+
+Distinguish between timeouts (possible partition) and explicit errors (definite failure). Apply different fallback strategies for each.
+
+```
+func call_remote_service(request):
+  try:
+    response = send(request, timeout=2s)
+    breaker.record_success()
+    return response
+  catch TimeoutError:
+    breaker.record_timeout()
+    if breaker.timeout_rate > 0.5:
+      return serve_from_cache(request)  // partition — use cached data
+  catch ConnectionRefused:
+    breaker.record_error()
+    if breaker.error_rate > 0.5:
+      return error("Service unavailable")  // definite failure — fail fast
+```
+
+Timeouts mean the remote side may still be processing — retrying risks duplicates. Explicit errors mean rejection — retry is safe if idempotent (see `08-idempotency.md`).
+
+### Crumbling Walls
+
+Degrade gracefully by shedding non-critical features, preserving the core user journey.
+
+```
+if partition_detected():
+  disable(priority_3)  // A/B tests, personalization, ads
+  if sustained_partition(duration > 5m):
+    disable(priority_2)  // Recommendations, reviews, analytics
+  serve_priority_1_with_local_data()  // Checkout, auth, order status
+```
+
+Define the shedding order before the partition happens, not during an incident.
+
+### Session Affinity During Partition
+
+Keep users pinned to the same side of the partition for their session duration. This avoids the worst user-facing inconsistency: seeing your own write disappear.
+
+```
+User on Partition A: reads/writes A → consistent view
+User rerouted to B mid-session:     → cart items vanish, order reverts
+
+Solution: sticky sessions via session ID hash during detected partition
+```
+
+### Conflict-Free Operations
+
+Design writes that are safe on both sides without conflict resolution:
+
+- **Commutative:** `increment(counter, 5)` not `set(counter, 15)` — merge by summing
+- **Idempotent:** `set_if_absent(key, value)` — applying twice is safe
+- **Append-only:** `add_to_set(cart, item_id)` — union is conflict-free
+
+### Partition Recovery Protocol
+
+Define merge strategy before the partition happens — during the partition is too late.
+
+```
+Pre-partition contract:
+  1. Each partition logs mutations with vector clock timestamps
+  2. On heal, compare mutation logs from both sides
+  3. Apply merge per data type:
+     Counters → sum deltas | Sets → union | Registers → LWW
+  4. Verify merged state against invariants
+  5. If invariants violated → flag for manual resolution
+```
+
+---
+
+## Systematic Partition Testing
+
+### Chaos Engineering Tooling
+
+**Toxiproxy** — A TCP proxy between your application and its dependencies for programmatic failure injection.
+
+```bash
+# Create proxy for database connection
+toxiproxy-cli create pg --listen 0.0.0.0:15432 --upstream db-primary:5432
+
+# Gray failure: 5s latency with jitter
+toxiproxy-cli toxic add pg --type latency --attribute latency=5000 --attribute jitter=1000
+
+# Total partition: drop all traffic
+toxiproxy-cli toxic add pg --type timeout --attribute timeout=0
+```
+
+**iptables** — Kernel-level asymmetric partition simulation.
+
+```bash
+iptables -A INPUT -s 10.0.1.0/24 -j DROP  # block incoming only → one-way partition
+```
+
+### Jepsen for Partition Validation
+
+Jepsen automates partition testing for distributed systems (see `03-cap-theorem.md` for CAP context). It generates concurrent workloads, injects faults, and verifies consistency against a formal model.
+
+Key findings: many "CP" databases lose acknowledged writes during partitions, many "AP" databases fail to converge after heal, and clock skew combined with partitions produces the worst bugs.
+
+### Game Days
+
+Scheduled partition simulation exercises for practicing incident response in a controlled environment.
+
+```
+Game day: announce window → inject partition → observe alerting
+  → respond per runbook → verify data consistency → retro on gaps
+```
+
+Netflix pioneered this with Chaos Monkey (instance termination) and Chaos Kong (region evacuation). The goal is to discover whether your system handles breaking correctly.
+
+### Verification Checklist
+
+| Check | Method |
+|-------|--------|
+| No lost acknowledged writes | Compare write log against final state |
+| No duplicate processing | Verify idempotency keys, count side effects |
+| Correct failover/failback | Confirm primary promotion and replica rejoin |
+| Data consistency | Cross-replica checksum comparison |
+| Referential integrity | Foreign key / cross-entity validation |
+
+---
+
 ## Key Takeaways
 
 1. **Partitions are inevitable** - Design for them, not around them

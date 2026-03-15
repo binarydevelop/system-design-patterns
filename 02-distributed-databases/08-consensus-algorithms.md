@@ -813,9 +813,11 @@ Fixes:
 
 1. **Consensus solves agreement** - One value, all nodes agree
 2. **FLP impossibility limits guarantees** - Need timeouts in practice
-3. **Paxos is correct but complex** - Hard to implement
-4. **Raft prioritizes clarity** - Widely adopted
-5. **Majority needed (2f+1 nodes)** - Tolerates f failures
+3. **Paxos is correct but complex** - Under-specified for multi-decree
+4. **Raft prioritizes clarity** - Leader completeness simplifies everything
+5. **Majority needed (2f+1 nodes)** - 5 nodes is the production sweet spot
 6. **Consensus is expensive** - Use for coordination, not all data
 7. **Leader is bottleneck** - Partition data for scale
 8. **Snapshots prevent log growth** - Essential for long-running systems
+9. **Pre-vote prevents disruption** - Partitioned nodes can't trigger unnecessary elections
+10. **Disk I/O is the silent killer** - fsync latency must be well below election timeout
