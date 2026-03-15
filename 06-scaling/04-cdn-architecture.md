@@ -83,77 +83,91 @@ PoP = Point of Presence
 
 ## CDN Request Flow
 
-```python
-from enum import Enum
-from dataclasses import dataclass
-from typing import Optional
-import time
+```nginx
+# Edge server configuration with caching and origin fetch
+# Defines a shared memory cache zone: 10MB key space, 10GB storage, inactive eviction at 60m
+proxy_cache_path /var/cache/nginx/cdn
+                 levels=1:2                # Two-level directory hash for cache files
+                 keys_zone=cdn_cache:10m   # 10MB shared memory for cache keys
+                 max_size=10g              # Maximum disk space for cached responses
+                 inactive=60m              # Evict entries not accessed in 60 minutes
+                 use_temp_path=off;        # Write directly to cache dir (avoid extra copy)
 
-class CacheStatus(Enum):
-    HIT = "hit"           # Served from cache
-    MISS = "miss"         # Not in cache, fetch from origin
-    STALE = "stale"       # In cache but expired
-    BYPASS = "bypass"     # Cache intentionally skipped
+server {
+    listen 443 ssl http2;
+    server_name cdn.example.com;
 
-@dataclass
-class CDNResponse:
-    content: bytes
-    status: CacheStatus
-    age: int              # Seconds since cached
-    ttl: int              # Remaining TTL
-    edge_location: str
+    # Activate the cache zone defined above
+    proxy_cache cdn_cache;
 
-class EdgeServer:
-    def __init__(self, location: str, origin_url: str):
-        self.location = location
-        self.origin = origin_url
-        self.cache = {}  # url -> (content, cached_at, ttl)
-    
-    def handle_request(self, url: str, headers: dict) -> CDNResponse:
-        # Check for cache bypass
-        if headers.get('Cache-Control') == 'no-cache':
-            return self._fetch_from_origin(url, CacheStatus.BYPASS)
-        
-        # Check local cache
-        cached = self.cache.get(url)
-        
-        if cached:
-            content, cached_at, ttl = cached
-            age = int(time.time() - cached_at)
-            
-            if age < ttl:
-                # Cache HIT
-                return CDNResponse(
-                    content=content,
-                    status=CacheStatus.HIT,
-                    age=age,
-                    ttl=ttl - age,
-                    edge_location=self.location
-                )
-            else:
-                # Cache STALE - revalidate
-                return self._revalidate(url, cached)
-        
-        # Cache MISS
-        return self._fetch_from_origin(url, CacheStatus.MISS)
-    
-    def _fetch_from_origin(self, url: str, 
-                           status: CacheStatus) -> CDNResponse:
-        # Fetch from origin server
-        response = self._origin_request(url)
-        
-        # Cache if cacheable
-        if self._is_cacheable(response):
-            ttl = self._get_ttl(response.headers)
-            self.cache[url] = (response.content, time.time(), ttl)
-        
-        return CDNResponse(
-            content=response.content,
-            status=status,
-            age=0,
-            ttl=ttl,
-            edge_location=self.location
-        )
+    # Cache key: scheme + host + URI covers most variations
+    proxy_cache_key "$scheme$host$request_uri";
+
+    # Forward requests to the origin server on cache MISS or STALE
+    location / {
+        proxy_pass https://origin.example.com;
+
+        # TTL rules by upstream status code
+        proxy_cache_valid 200 302  10m;   # Cache successful responses for 10 minutes
+        proxy_cache_valid 301      1h;    # Permanent redirects cached longer
+        proxy_cache_valid 404      1m;    # Cache 404s briefly to protect origin
+
+        # Bypass cache when client sends Cache-Control: no-cache
+        proxy_cache_bypass $http_cache_control;
+
+        # Serve stale content while revalidating in the background
+        proxy_cache_use_stale error timeout updating
+                              http_500 http_502 http_503 http_504;
+        proxy_cache_background_update on;
+
+        # Collapse concurrent requests for the same uncached resource into one origin fetch
+        proxy_cache_lock on;
+        proxy_cache_lock_timeout 5s;
+
+        # Expose cache status to the client via response header
+        add_header X-Cache-Status $upstream_cache_status always;
+        add_header X-Edge-Location "Tokyo" always;
+    }
+}
+```
+
+Cache status values returned by `$upstream_cache_status`:
+
+| Header value | Meaning |
+|---|---|
+| `HIT` | Served from cache |
+| `MISS` | Not in cache, fetched from origin |
+| `STALE` | Expired entry served while revalidating |
+| `BYPASS` | Cache skipped (e.g., `Cache-Control: no-cache`) |
+| `REVALIDATED` | Confirmed fresh with origin via conditional request |
+
+```bash
+# Cache HIT — asset served from the edge, 120 seconds old
+$ curl -I https://cdn.example.com/images/hero.jpg
+HTTP/2 200
+content-type: image/jpeg
+cache-control: public, max-age=600
+age: 120
+x-cache-status: HIT
+x-edge-location: Tokyo
+
+# Cache MISS — first request, fetched from origin
+$ curl -I https://cdn.example.com/images/new-banner.jpg
+HTTP/2 200
+content-type: image/jpeg
+cache-control: public, max-age=600
+age: 0
+x-cache-status: MISS
+x-edge-location: Tokyo
+
+# Cache BYPASS — client explicitly skipped cache
+$ curl -I -H "Cache-Control: no-cache" https://cdn.example.com/images/hero.jpg
+HTTP/2 200
+content-type: image/jpeg
+cache-control: public, max-age=600
+age: 0
+x-cache-status: BYPASS
+x-edge-location: Tokyo
 ```
 
 ```
@@ -197,131 +211,128 @@ Request Flow Diagram:
 
 ### Cache-Control Headers
 
-```python
-from datetime import datetime, timedelta
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name cdn.example.com;
 
-class CacheControlBuilder:
-    def __init__(self):
-        self.directives = []
-    
-    def public(self):
-        """Allow caching by CDN and browsers"""
-        self.directives.append("public")
-        return self
-    
-    def private(self):
-        """Only allow browser caching, not CDN"""
-        self.directives.append("private")
-        return self
-    
-    def max_age(self, seconds: int):
-        """Cache for this many seconds"""
-        self.directives.append(f"max-age={seconds}")
-        return self
-    
-    def s_maxage(self, seconds: int):
-        """CDN-specific max age (overrides max-age for CDN)"""
-        self.directives.append(f"s-maxage={seconds}")
-        return self
-    
-    def stale_while_revalidate(self, seconds: int):
-        """Serve stale while fetching fresh in background"""
-        self.directives.append(f"stale-while-revalidate={seconds}")
-        return self
-    
-    def stale_if_error(self, seconds: int):
-        """Serve stale if origin returns error"""
-        self.directives.append(f"stale-if-error={seconds}")
-        return self
-    
-    def no_store(self):
-        """Never cache"""
-        self.directives.append("no-store")
-        return self
-    
-    def build(self) -> str:
-        return ", ".join(self.directives)
+    # ── Static assets: immutable, cache for 1 year ─────────────────────
+    # Versioned filenames (app.a1b2c3.js) make long TTLs safe.
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff2?)$ {
+        proxy_pass https://origin.example.com;
+        proxy_cache cdn_cache;
+        proxy_cache_valid 200 365d;
 
-# Examples
-static_assets = CacheControlBuilder()\
-    .public()\
-    .max_age(31536000)\  # 1 year
-    .build()
-# "public, max-age=31536000"
+        # public          → allow CDN and browser caching
+        # max-age=31536000 → 1 year in seconds
+        # immutable       → tell browsers: never revalidate
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+    }
 
-api_response = CacheControlBuilder()\
-    .public()\
-    .s_maxage(60)\
-    .stale_while_revalidate(300)\
-    .stale_if_error(86400)\
-    .build()
-# "public, s-maxage=60, stale-while-revalidate=300, stale-if-error=86400"
+    # ── API responses: short CDN TTL + stale fallbacks ─────────────────
+    # s-maxage overrides max-age for shared caches (CDN) only.
+    # stale-while-revalidate lets the CDN serve stale while refreshing.
+    # stale-if-error serves stale if origin returns 5xx.
+    location /api/ {
+        proxy_pass https://origin.example.com;
+        proxy_cache cdn_cache;
+        proxy_cache_valid 200 60s;
 
-user_data = CacheControlBuilder()\
-    .private()\
-    .max_age(0)\
-    .build()
-# "private, max-age=0"
+        add_header Cache-Control "public, s-maxage=60, stale-while-revalidate=300, stale-if-error=86400" always;
+
+        # nginx equivalent of stale-if-error: serve stale on upstream failures
+        proxy_cache_use_stale error timeout http_500 http_502 http_503 http_504;
+        proxy_cache_background_update on;   # revalidate in background (stale-while-revalidate)
+    }
+
+    # ── User-specific data: never cache on CDN ─────────────────────────
+    # private  → only the end-user's browser may cache
+    # no-store → CDN must not store a copy at all
+    location /api/me {
+        proxy_pass https://origin.example.com;
+        proxy_no_cache 1;        # do not write to cache
+        proxy_cache_bypass 1;    # do not read from cache
+
+        add_header Cache-Control "private, no-store, max-age=0" always;
+    }
+}
+```
+
+```bash
+# Verify Cache-Control headers for each content type
+
+# Static asset — long-lived, immutable
+$ curl -I https://cdn.example.com/static/app.a1b2c3.js
+HTTP/2 200
+content-type: application/javascript
+cache-control: public, max-age=31536000, immutable
+x-cache-status: HIT
+age: 8640
+
+# API response — short CDN TTL with stale fallbacks
+$ curl -I https://cdn.example.com/api/products
+HTTP/2 200
+content-type: application/json
+cache-control: public, s-maxage=60, stale-while-revalidate=300, stale-if-error=86400
+x-cache-status: HIT
+age: 45
+
+# User-specific data — private, never cached by CDN
+$ curl -I -H "Authorization: Bearer tok_xxx" https://cdn.example.com/api/me
+HTTP/2 200
+content-type: application/json
+cache-control: private, no-store, max-age=0
+x-cache-status: BYPASS
 ```
 
 ### Cache Key Design
 
-```python
-class CacheKeyBuilder:
-    """
-    Build cache keys that capture request variations
-    """
-    def __init__(self, base_url: str):
-        self.base = base_url
-        self.vary_headers = []
-        self.query_params = []
-        self.cookies = []
-    
-    def vary_on_header(self, header: str):
-        """Include header value in cache key"""
-        self.vary_headers.append(header)
-        return self
-    
-    def vary_on_query(self, param: str):
-        """Include query parameter in cache key"""
-        self.query_params.append(param)
-        return self
-    
-    def vary_on_cookie(self, cookie: str):
-        """Include cookie in cache key"""
-        self.cookies.append(cookie)
-        return self
-    
-    def build_key(self, request) -> str:
-        parts = [self.base]
-        
-        # Add selected headers
-        for header in self.vary_headers:
-            value = request.headers.get(header, '')
-            parts.append(f"{header}={value}")
-        
-        # Add selected query params
-        for param in self.query_params:
-            value = request.args.get(param, '')
-            parts.append(f"{param}={value}")
-        
-        # Add selected cookies
-        for cookie in self.cookies:
-            value = request.cookies.get(cookie, '')
-            parts.append(f"{cookie}={value}")
-        
-        return "|".join(parts)
+```nginx
+# Cache key design — include request variations so different
+# representations get their own cache entry.
 
-# Example: Different cache for mobile vs desktop
-image_key = CacheKeyBuilder("/images/hero.jpg")\
-    .vary_on_header("Accept")\        # WebP vs JPEG
-    .vary_on_header("DPR")\           # Device pixel ratio
-    .vary_on_query("width")\          # Responsive images
-    .build_key(request)
+# Default cache key uses scheme + host + URI
+proxy_cache_key "$scheme$host$request_uri";
 
-# Cache keys:
-# "/images/hero.jpg|Accept=image/webp|DPR=2|width=800"
-# "/images/hero.jpg|Accept=image/jpeg|DPR=1|width=400"
+location ~* \.(jpg|png|webp)$ {
+    proxy_pass https://origin.example.com;
+    proxy_cache cdn_cache;
+    proxy_cache_valid 200 1h;
+
+    # ── Vary by Accept header (WebP vs JPEG) ──────────────────────
+    # Origin sends `Vary: Accept` so the CDN stores one entry per
+    # Accept value. Extend the cache key to match.
+    proxy_cache_key "$scheme$host$request_uri$http_accept";
+
+    # ── Vary by device pixel ratio and width query param ──────────
+    # For responsive images, include DPR header and width param
+    # so each device resolution gets its own cached variant.
+    proxy_cache_key "$scheme$host$request_uri|Accept=$http_accept|DPR=$http_dpr|width=$arg_width";
+
+    # Pass variation headers upstream so origin can respond correctly
+    proxy_set_header Accept $http_accept;
+    proxy_set_header DPR $http_dpr;
+}
+```
+
+```bash
+# Two requests for the same image produce different cache entries:
+
+# WebP-capable browser at 2x resolution
+$ curl -I -H "Accept: image/webp" -H "DPR: 2" "https://cdn.example.com/images/hero.jpg?width=800"
+HTTP/2 200
+content-type: image/webp
+vary: Accept, DPR
+x-cache-status: MISS
+# Cache key: "https|cdn.example.com|/images/hero.jpg?width=800|Accept=image/webp|DPR=2|width=800"
+
+# JPEG-only browser at 1x resolution
+$ curl -I -H "Accept: image/jpeg" -H "DPR: 1" "https://cdn.example.com/images/hero.jpg?width=400"
+HTTP/2 200
+content-type: image/jpeg
+vary: Accept, DPR
+x-cache-status: MISS
+# Cache key: "https|cdn.example.com|/images/hero.jpg?width=400|Accept=image/jpeg|DPR=1|width=400"
 ```
 
 ---
@@ -364,48 +375,66 @@ With Shield (Origin receives 1 request per cache miss):
                   └──────────┘
 ```
 
-```python
-import asyncio
-from collections import defaultdict
-from typing import Awaitable
+```nginx
+# Origin Shield configuration
+# The shield is a mid-tier nginx proxy that sits between edge PoPs and the origin.
+# It coalesces concurrent requests for the same resource so the origin sees only one.
 
-class OriginShield:
-    def __init__(self):
-        self.pending_requests = defaultdict(list)
-        self.cache = {}
-        self.locks = defaultdict(asyncio.Lock)
-    
-    async def get(self, url: str) -> bytes:
-        # Check local cache first
-        if url in self.cache:
-            return self.cache[url]
-        
-        async with self.locks[url]:
-            # Double-check after acquiring lock
-            if url in self.cache:
-                return self.cache[url]
-            
-            # Request coalescing: only one request to origin
-            if not self.pending_requests[url]:
-                # First request, fetch from origin
-                future = asyncio.create_task(self._fetch_origin(url))
-                self.pending_requests[url].append(future)
-                
-                try:
-                    content = await future
-                    self.cache[url] = content
-                    return content
-                finally:
-                    del self.pending_requests[url]
-            else:
-                # Wait for existing request
-                return await self.pending_requests[url][0]
-    
-    async def _fetch_origin(self, url: str) -> bytes:
-        # Actual origin fetch
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{self.origin_url}{url}") as resp:
-                return await resp.read()
+proxy_cache_path /var/cache/nginx/shield
+                 levels=1:2
+                 keys_zone=shield_cache:20m    # Larger key zone — aggregates all edge traffic
+                 max_size=50g
+                 inactive=24h                  # Keep entries longer than edge caches
+                 use_temp_path=off;
+
+server {
+    listen 443 ssl http2;
+    server_name shield.internal.example.com;
+
+    proxy_cache shield_cache;
+    proxy_cache_key "$scheme$host$request_uri";
+
+    location / {
+        proxy_pass https://origin.example.com;
+
+        # Cache durations mirror edge, but shield holds entries longer
+        proxy_cache_valid 200 302  30m;
+        proxy_cache_valid 301      6h;
+        proxy_cache_valid 404      5m;
+
+        # ── Request coalescing ────────────────────────────────────
+        # proxy_cache_lock ensures only ONE request per cache key
+        # reaches the origin. All other concurrent requests wait for
+        # the first to complete, then share its cached response.
+        proxy_cache_lock on;
+        proxy_cache_lock_age 10s;      # Max time to wait before sending another request
+        proxy_cache_lock_timeout 15s;  # Max time a waiting request will block
+
+        # Serve stale on origin failure — shield is the last line of defense
+        proxy_cache_use_stale error timeout updating
+                              http_500 http_502 http_503 http_504;
+        proxy_cache_background_update on;
+
+        add_header X-Shield-Cache $upstream_cache_status always;
+    }
+}
+```
+
+```bash
+# Edge servers point to the shield instead of directly to origin:
+# (in edge server config)
+#   proxy_pass https://shield.internal.example.com;
+
+# First edge request — shield fetches from origin (MISS)
+$ curl -sI https://cdn.example.com/images/hero.jpg | grep -i x-
+x-cache-status: MISS
+x-shield-cache: MISS
+
+# Second edge request from a different PoP — shield serves cached (HIT)
+$ curl -sI https://cdn.example.com/images/hero.jpg | grep -i x-
+x-cache-status: MISS
+x-shield-cache: HIT
+# Origin received only 1 request even though 2 PoPs asked
 ```
 
 ---
@@ -414,186 +443,193 @@ class OriginShield:
 
 ### Purge by URL
 
-```python
-import aiohttp
-from typing import List
+```bash
+# ── Purge specific URLs ───────────────────────────────────────────────
+$ curl -X POST "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/purge_cache" \
+  -H "Authorization: Bearer ${CF_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"files": [
+    "https://cdn.example.com/images/hero.jpg",
+    "https://cdn.example.com/css/main.css"
+  ]}'
+# {"success": true, "result": {"id": "abc123..."}}
 
-class CDNPurger:
-    def __init__(self, api_key: str, zone_id: str):
-        self.api_key = api_key
-        self.zone_id = zone_id
-        self.api_url = "https://api.cloudflare.com/client/v4"
-    
-    async def purge_urls(self, urls: List[str]) -> dict:
-        """Purge specific URLs from cache"""
-        async with aiohttp.ClientSession() as session:
-            resp = await session.post(
-                f"{self.api_url}/zones/{self.zone_id}/purge_cache",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={"files": urls}
-            )
-            return await resp.json()
-    
-    async def purge_by_prefix(self, prefix: str) -> dict:
-        """Purge all URLs matching prefix"""
-        async with aiohttp.ClientSession() as session:
-            resp = await session.post(
-                f"{self.api_url}/zones/{self.zone_id}/purge_cache",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={"prefixes": [prefix]}
-            )
-            return await resp.json()
-    
-    async def purge_by_tag(self, tags: List[str]) -> dict:
-        """Purge by cache tag (most efficient)"""
-        async with aiohttp.ClientSession() as session:
-            resp = await session.post(
-                f"{self.api_url}/zones/{self.zone_id}/purge_cache",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={"tags": tags}
-            )
-            return await resp.json()
-    
-    async def purge_all(self) -> dict:
-        """Nuclear option - purge everything"""
-        async with aiohttp.ClientSession() as session:
-            resp = await session.post(
-                f"{self.api_url}/zones/{self.zone_id}/purge_cache",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={"purge_everything": True}
-            )
-            return await resp.json()
+# ── Purge by URL prefix ──────────────────────────────────────────────
+$ curl -X POST "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/purge_cache" \
+  -H "Authorization: Bearer ${CF_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"prefixes": ["https://cdn.example.com/images/"]}'
 
-# Usage with cache tags
-# Response headers: Cache-Tag: product-123, category-electronics
-await purger.purge_by_tag(["product-123"])  # Invalidates all pages with this product
+# ── Purge by cache tag (most efficient — surgical invalidation) ──────
+# Origin sets: Cache-Tag: product-123, category-electronics
+$ curl -X POST "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/purge_cache" \
+  -H "Authorization: Bearer ${CF_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"tags": ["product-123"]}'
+# Invalidates all pages tagged with product-123, leaves everything else intact
+
+# ── Nuclear option — purge everything ────────────────────────────────
+$ curl -X POST "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/purge_cache" \
+  -H "Authorization: Bearer ${CF_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"purge_everything": true}'
+```
+
+```nginx
+# Origin server: attach cache tags to responses so purges can target them
+location /products/ {
+    proxy_pass http://backend;
+
+    # Tag every product page with its product ID and category.
+    # When product-123 changes, purge the "product-123" tag
+    # instead of listing every URL that includes it.
+    add_header Cache-Tag "product-$arg_id, category-$arg_cat" always;
+    add_header Cache-Control "public, s-maxage=3600" always;
+}
 ```
 
 ### Cache Versioning (URL-based invalidation)
 
-```python
-import hashlib
-from flask import Flask, url_for
+```nginx
+# Cache versioning via content-hashed filenames
+# Build tools (webpack, vite) produce filenames like app.a1b2c3d4.js.
+# When the file changes, the hash changes → new URL → automatic cache bust.
 
-app = Flask(__name__)
+# Match versioned static assets (contain a hash segment in the filename)
+location ~* \.(js|css)$ {
+    proxy_pass https://origin.example.com;
+    proxy_cache cdn_cache;
 
-class AssetVersioner:
-    def __init__(self, static_folder: str):
-        self.static_folder = static_folder
-        self.version_cache = {}
-    
-    def get_versioned_url(self, filename: str) -> str:
-        """Generate versioned URL based on file content"""
-        if filename not in self.version_cache:
-            filepath = f"{self.static_folder}/{filename}"
-            with open(filepath, 'rb') as f:
-                content_hash = hashlib.md5(f.read()).hexdigest()[:8]
-            self.version_cache[filename] = content_hash
-        
-        version = self.version_cache[filename]
-        return f"/static/{filename}?v={version}"
-    
-    def invalidate(self, filename: str):
-        """Clear cached version (on file update)"""
-        self.version_cache.pop(filename, None)
+    # Safe to cache for 1 year because the filename itself changes on update
+    proxy_cache_valid 200 365d;
+    add_header Cache-Control "public, max-age=31536000, immutable" always;
+}
 
-versioner = AssetVersioner("./static")
+# Strip query-string version params so old ?v= patterns still get cached
+# consistently — the filename hash is the canonical version key.
+location ~* ^/static/ {
+    proxy_pass https://origin.example.com;
+    proxy_cache cdn_cache;
+    proxy_cache_valid 200 365d;
 
-# In templates:
-# <script src="{{ versioner.get_versioned_url('app.js') }}"></script>
-# Outputs: <script src="/static/app.js?v=a1b2c3d4"></script>
+    # Ignore ?v= query strings in cache key — filename hash is sufficient
+    proxy_cache_key "$scheme$host$uri";
 
-# When file changes, hash changes = new URL = automatic cache bust
+    add_header Cache-Control "public, max-age=31536000, immutable" always;
+}
+```
+
+```bash
+# In HTML templates:
+#   <script src="/static/app.a1b2c3d4.js"></script>
+#
+# When app.js changes, the build produces app.ef56gh78.js — a brand-new URL.
+# The old cached entry expires naturally; no purge needed.
+
+$ curl -I https://cdn.example.com/static/app.a1b2c3d4.js
+HTTP/2 200
+content-type: application/javascript
+cache-control: public, max-age=31536000, immutable
+x-cache-status: HIT
+age: 259200
 ```
 
 ---
 
 ## Edge Computing
 
-```python
-# Cloudflare Workers example
-"""
-addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request))
-})
+```nginx
+# ── A/B testing at the edge ───────────────────────────────────────────
+# Route users to variant a or b based on a cookie.
+# Sticky: once assigned, the cookie keeps the user on the same variant.
 
-async function handleRequest(request) {
-  const url = new URL(request.url)
-  
-  // A/B testing at the edge
-  const variant = request.headers.get('cookie')?.includes('variant=b') 
-    ? 'b' 
-    : 'a'
-  
-  // Modify request before sending to origin
-  const modifiedUrl = new URL(request.url)
-  modifiedUrl.pathname = `/${variant}${url.pathname}`
-  
-  const response = await fetch(modifiedUrl, request)
-  
-  // Modify response
-  const newResponse = new Response(response.body, response)
-  newResponse.headers.set('X-Variant', variant)
-  
-  // Set variant cookie for consistency
-  if (!request.headers.get('cookie')?.includes('variant=')) {
-    newResponse.headers.set('Set-Cookie', `variant=${variant}; max-age=86400`)
-  }
-  
-  return newResponse
+map $cookie_variant $ab_variant {
+    "b"       "b";           # Existing cookie → honour it
+    default   "a";           # No cookie → default to variant a
 }
-"""
 
-# Python equivalent for edge logic
-class EdgeHandler:
-    async def handle_request(self, request: dict) -> dict:
-        url = request['url']
-        headers = request['headers']
-        
-        # Geolocation-based routing
-        country = headers.get('CF-IPCountry', 'US')
-        
-        if country in ['CN', 'HK', 'TW']:
-            # Route to APAC origin
-            origin = "https://apac-origin.example.com"
-        elif country in ['DE', 'FR', 'GB']:
-            # Route to EU origin
-            origin = "https://eu-origin.example.com"
-        else:
-            # Default to US origin
-            origin = "https://us-origin.example.com"
-        
-        # Bot detection
-        user_agent = headers.get('User-Agent', '')
-        if self._is_bot(user_agent):
-            return self._serve_bot_response(request)
-        
-        # Image optimization
-        if url.endswith(('.jpg', '.png', '.webp')):
-            return await self._optimize_image(request, origin)
-        
-        # Forward to origin
-        return await self._forward_to_origin(request, origin)
-    
-    def _is_bot(self, user_agent: str) -> bool:
-        bot_patterns = ['Googlebot', 'Bingbot', 'curl', 'wget']
-        return any(bot in user_agent for bot in bot_patterns)
-    
-    async def _optimize_image(self, request: dict, origin: str) -> dict:
-        # Check for WebP support
-        accept = request['headers'].get('Accept', '')
-        supports_webp = 'image/webp' in accept
-        
-        # Get device pixel ratio
-        dpr = float(request['headers'].get('DPR', '1'))
-        
-        # Build optimized image URL
-        width = request.get('width', 800)
-        format_ext = 'webp' if supports_webp else 'jpg'
-        
-        optimized_url = f"{origin}/cdn-cgi/image/width={int(width*dpr)},format={format_ext}/{request['url']}"
-        
-        return await self._fetch(optimized_url)
+server {
+    listen 443 ssl http2;
+    server_name cdn.example.com;
+
+    location / {
+        # Rewrite request path to /<variant>/original/path before forwarding
+        rewrite ^(.*)$ /$ab_variant$1 break;
+        proxy_pass https://origin.example.com;
+
+        # Tag the response so downstream can see which variant was served
+        add_header X-Variant $ab_variant always;
+
+        # Set the variant cookie if the client doesn't already have one
+        # (nginx evaluates $cookie_variant from the request)
+        if ($cookie_variant = "") {
+            add_header Set-Cookie "variant=$ab_variant; Max-Age=86400; Path=/" always;
+        }
+    }
+}
+
+# ── Geolocation-based origin routing ──────────────────────────────────
+# Use the GeoIP2 module to select the closest origin.
+
+map $geoip2_data_country_code $geo_origin {
+    CN    "apac-origin.example.com";
+    HK    "apac-origin.example.com";
+    TW    "apac-origin.example.com";
+    DE    "eu-origin.example.com";
+    FR    "eu-origin.example.com";
+    GB    "eu-origin.example.com";
+    default "us-origin.example.com";
+}
+
+server {
+    listen 443 ssl http2;
+    server_name cdn-geo.example.com;
+
+    # ── Bot detection — return lightweight response for crawlers ──────
+    location / {
+        if ($http_user_agent ~* "(Googlebot|Bingbot|curl|wget)") {
+            # Serve a pre-rendered or stripped-down page for bots
+            rewrite ^ /bot-render$request_uri break;
+        }
+
+        proxy_pass https://$geo_origin;
+        proxy_set_header Host $host;
+    }
+
+    # ── Image optimization — serve correct format & size at the edge ──
+    location ~* \.(jpg|png|webp)$ {
+        proxy_pass https://$geo_origin;
+        proxy_cache cdn_cache;
+        proxy_cache_valid 200 1h;
+
+        # Vary cache by Accept (WebP support) and DPR (pixel density)
+        proxy_cache_key "$scheme$host$request_uri|$http_accept|$http_dpr";
+
+        # Pass client hints to the image-resizing origin
+        proxy_set_header Accept $http_accept;
+        proxy_set_header DPR    $http_dpr;
+        proxy_set_header Width  $arg_width;
+    }
+}
+```
+
+```bash
+# Verify A/B variant assignment
+$ curl -I https://cdn.example.com/landing
+HTTP/2 200
+x-variant: a
+set-cookie: variant=a; Max-Age=86400; Path=/
+
+# Subsequent request with cookie — same variant, no new cookie
+$ curl -I -b "variant=a" https://cdn.example.com/landing
+HTTP/2 200
+x-variant: a
+
+# Geo-routed request — origin selected by country
+$ curl -I https://cdn-geo.example.com/products
+HTTP/2 200
+x-cache-status: MISS
+# Request forwarded to eu-origin.example.com (based on client IP in GB)
 ```
 
 ---
@@ -622,146 +658,136 @@ class EdgeHandler:
                               └──────────────┘
 ```
 
-```python
-import random
-from dataclasses import dataclass
-from typing import List, Dict
-import asyncio
+```nginx
+# Multi-CDN routing via nginx as a traffic-splitting load balancer.
+# Weighted upstreams distribute traffic across CDN providers.
+# Health checks automatically remove unhealthy providers.
 
-@dataclass
-class CDNProvider:
-    name: str
-    weight: int  # Traffic percentage
-    health_url: str
-    base_url: str
-    is_healthy: bool = True
+upstream cdn_backends {
+    # ── Weighted traffic split ────────────────────────────────────
+    # CloudFlare: 60%, Fastly: 25%, Akamai: 15%
+    server cf.example.com      weight=60;
+    server fastly.example.com  weight=25;
+    server akamai.example.com  weight=15;
 
-class MultiCDNRouter:
-    def __init__(self, providers: List[CDNProvider]):
-        self.providers = providers
-        self._build_weighted_list()
-    
-    def _build_weighted_list(self):
-        """Build weighted selection list"""
-        self.weighted_providers = []
-        for provider in self.providers:
-            if provider.is_healthy:
-                self.weighted_providers.extend(
-                    [provider] * provider.weight
-                )
-    
-    def select_cdn(self) -> CDNProvider:
-        """Select CDN based on weights"""
-        if not self.weighted_providers:
-            raise Exception("No healthy CDN providers")
-        return random.choice(self.weighted_providers)
-    
-    async def health_check_loop(self):
-        """Continuously monitor CDN health"""
-        while True:
-            for provider in self.providers:
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(
-                            provider.health_url, 
-                            timeout=aiohttp.ClientTimeout(total=5)
-                        ) as resp:
-                            was_healthy = provider.is_healthy
-                            provider.is_healthy = resp.status == 200
-                            
-                            if was_healthy != provider.is_healthy:
-                                self._build_weighted_list()
-                                print(f"CDN {provider.name} health: {provider.is_healthy}")
-                except Exception:
-                    if provider.is_healthy:
-                        provider.is_healthy = False
-                        self._build_weighted_list()
-            
-            await asyncio.sleep(10)
-    
-    def get_failover_provider(self, 
-                               failed_provider: CDNProvider) -> CDNProvider:
-        """Get alternative provider on failure"""
-        for provider in self.providers:
-            if provider != failed_provider and provider.is_healthy:
-                return provider
-        raise Exception("No failover CDN available")
+    # ── Health checks (nginx Plus / OpenResty) ────────────────────
+    # Probe each backend every 10s; mark as down after 3 failures;
+    # re-enable after 2 consecutive successes.
+    # Traffic auto-redistributes among healthy backends.
+    health_check interval=10 fails=3 passes=2 uri=/health;
 
-# Usage
-router = MultiCDNRouter([
-    CDNProvider("cloudflare", 60, "https://cf.example.com/health", 
-                "https://cf.example.com"),
-    CDNProvider("fastly", 25, "https://fastly.example.com/health",
-                "https://fastly.example.com"),
-    CDNProvider("akamai", 15, "https://akamai.example.com/health",
-                "https://akamai.example.com"),
-])
+    # ── Failover ──────────────────────────────────────────────────
+    # If the selected backend fails, retry on the next one
+    # (up to 2 retries before returning an error to the client).
+}
+
+server {
+    listen 443 ssl http2;
+    server_name www.example.com;
+
+    location / {
+        proxy_pass https://cdn_backends;
+        proxy_set_header Host $host;
+
+        # Retry on the next upstream if the chosen one fails
+        proxy_next_upstream error timeout http_502 http_503 http_504;
+        proxy_next_upstream_tries 2;        # Max 2 failover attempts
+        proxy_next_upstream_timeout 5s;     # Time budget for retries
+
+        # Pass the selected backend name for observability
+        add_header X-CDN-Backend $upstream_addr always;
+    }
+}
+```
+
+```bash
+# Verify weighted routing — repeated requests hit different backends
+$ for i in $(seq 1 5); do
+    curl -sI https://www.example.com/ | grep x-cdn-backend
+  done
+x-cdn-backend: 104.16.132.229:443     # CloudFlare
+x-cdn-backend: 104.16.132.229:443     # CloudFlare
+x-cdn-backend: 151.101.1.57:443       # Fastly
+x-cdn-backend: 104.16.132.229:443     # CloudFlare
+x-cdn-backend: 23.215.0.136:443       # Akamai
+
+# When a backend goes down, health checks remove it automatically.
+# All traffic redistributes among remaining healthy providers.
 ```
 
 ---
 
 ## Performance Metrics
 
-```python
-from dataclasses import dataclass
-from typing import Optional
-import time
+```nginx
+# ── nginx logging for CDN metrics ─────────────────────────────────────
+# Custom log format capturing cache status, latency, and upstream timing.
+# Feed these logs into Prometheus/Grafana or any log aggregator.
 
-@dataclass
-class CDNMetrics:
-    # Cache performance
-    cache_hit_ratio: float    # Target: > 90%
-    cache_miss_ratio: float
-    cache_bypass_ratio: float
-    
-    # Latency
-    edge_latency_p50: float   # Target: < 50ms
-    edge_latency_p99: float   # Target: < 200ms
-    origin_latency_p50: float
-    
-    # Bandwidth
-    bandwidth_saved_gb: float
-    origin_bandwidth_gb: float
-    
-    # Errors
-    error_rate_4xx: float     # Target: < 1%
-    error_rate_5xx: float     # Target: < 0.1%
+log_format cdn_metrics
+    '$remote_addr - [$time_local] '
+    '"$request" $status $body_bytes_sent '
+    'cache=$upstream_cache_status '          # HIT, MISS, BYPASS, etc.
+    'edge_time=${request_time}s '            # Total time at edge
+    'origin_time=${upstream_response_time}s ' # Time waiting on origin
+    'bytes_sent=$bytes_sent';
 
-class CDNMonitor:
-    def __init__(self, cdn_api):
-        self.api = cdn_api
-    
-    async def collect_metrics(self, time_range: str = "1h") -> CDNMetrics:
-        data = await self.api.get_analytics(time_range)
-        
-        total_requests = data['requests']['total']
-        cache_hits = data['requests']['cached']
-        
-        return CDNMetrics(
-            cache_hit_ratio=cache_hits / total_requests,
-            cache_miss_ratio=(total_requests - cache_hits) / total_requests,
-            cache_bypass_ratio=data['requests']['bypass'] / total_requests,
-            edge_latency_p50=data['latency']['edge']['p50'],
-            edge_latency_p99=data['latency']['edge']['p99'],
-            origin_latency_p50=data['latency']['origin']['p50'],
-            bandwidth_saved_gb=data['bandwidth']['cached'] / 1e9,
-            origin_bandwidth_gb=data['bandwidth']['uncached'] / 1e9,
-            error_rate_4xx=data['errors']['4xx'] / total_requests,
-            error_rate_5xx=data['errors']['5xx'] / total_requests,
-        )
-    
-    def calculate_cost_savings(self, metrics: CDNMetrics, 
-                                origin_cost_per_gb: float = 0.09) -> dict:
-        """Calculate cost savings from CDN caching"""
-        bandwidth_cost_saved = metrics.bandwidth_saved_gb * origin_cost_per_gb
-        origin_requests_avoided = metrics.cache_hit_ratio
-        
-        return {
-            "bandwidth_cost_saved_usd": bandwidth_cost_saved,
-            "origin_load_reduction_pct": metrics.cache_hit_ratio * 100,
-            "effective_origin_capacity_multiplier": 1 / (1 - metrics.cache_hit_ratio)
-        }
+access_log /var/log/nginx/cdn_access.log cdn_metrics;
 ```
+
+```bash
+# ── Collect metrics via Cloudflare API ────────────────────────────────
+
+# Cache hit ratio, bandwidth, error rates (last 1 hour)
+$ curl -s "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/analytics/dashboard?since=-60" \
+  -H "Authorization: Bearer ${CF_API_TOKEN}" | jq '.result.totals'
+{
+  "requests": {
+    "all": 1250000,
+    "cached": 1137500,       # 91% cache hit ratio  (target: >90%)
+    "uncached": 112500
+  },
+  "bandwidth": {
+    "all": 52428800000,      # ~52 GB total
+    "cached": 47185920000,   # ~47 GB served from cache
+    "uncached": 5242880000   # ~5 GB pulled from origin
+  },
+  "threats": { "all": 342 },
+  "pageViews": { "all": 890000 },
+  "uniques": { "all": 245000 }
+}
+
+# ── Latency percentiles via curl timing ───────────────────────────────
+# Measure real edge latency from the client's perspective.
+$ curl -o /dev/null -s -w "\
+  dns:       %{time_namelookup}s\n\
+  connect:   %{time_connect}s\n\
+  ttfb:      %{time_starttransfer}s\n\
+  total:     %{time_total}s\n\
+  http_code: %{http_code}\n" \
+  https://cdn.example.com/images/hero.jpg
+  dns:       0.012s
+  connect:   0.025s
+  ttfb:      0.038s          # Time to first byte — edge latency (target: <50ms)
+  total:     0.052s
+  http_code: 200
+
+# ── Cost savings calculation ──────────────────────────────────────────
+# With 91% cache hit ratio and $0.09/GB origin egress:
+#   Bandwidth saved:  47 GB × $0.09 = $4.23/hour saved
+#   Origin load:      reduced to 9% of total traffic
+#   Effective origin capacity: 1 / (1 - 0.91) ≈ 11× multiplier
+```
+
+Key metrics and targets:
+
+| Metric | Target | How to measure |
+|---|---|---|
+| Cache hit ratio | > 90% | `$upstream_cache_status` in logs or CDN analytics API |
+| Edge latency p50 | < 50ms | `curl -w '%{time_starttransfer}'` or RUM |
+| Edge latency p99 | < 200ms | Log percentiles from `$request_time` |
+| Error rate (4xx) | < 1% | `$status` in nginx logs |
+| Error rate (5xx) | < 0.1% | `$status` in nginx logs + CDN dashboard |
 
 ---
 

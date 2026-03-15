@@ -97,23 +97,22 @@ Client ──TCP SYN──► LB ──TCP SYN──► Backend
 
 ### 1. Round Robin
 
-```python
-class RoundRobinBalancer:
-    def __init__(self, servers: list[str]):
-        self.servers = servers
-        self.current = 0
-    
-    def get_server(self) -> str:
-        server = self.servers[self.current]
-        self.current = (self.current + 1) % len(self.servers)
-        return server
+```nginx
+# Round Robin — nginx default when no algorithm directive is specified.
+# Requests cycle through the list in order: server1 → server2 → server3 → server1 …
+upstream round_robin_backend {
+    server server1.example.com:8080;   # receives request 1, 4, 7 …
+    server server2.example.com:8080;   # receives request 2, 5, 8 …
+    server server3.example.com:8080;   # receives request 3, 6, 9 …
+}
 
-# Usage
-balancer = RoundRobinBalancer(["server1", "server2", "server3"])
-# Request 1 → server1
-# Request 2 → server2
-# Request 3 → server3
-# Request 4 → server1 (wraps around)
+server {
+    listen 80;
+
+    location / {
+        proxy_pass http://round_robin_backend;
+    }
+}
 ```
 
 ```
@@ -126,152 +125,141 @@ Request 5 ──► Server 2
 
 ### 2. Weighted Round Robin
 
-```python
-class WeightedRoundRobinBalancer:
-    def __init__(self, servers: dict[str, int]):
-        # servers = {"server1": 3, "server2": 1, "server3": 2}
-        self.servers = []
-        for server, weight in servers.items():
-            self.servers.extend([server] * weight)
-        self.current = 0
-    
-    def get_server(self) -> str:
-        server = self.servers[self.current]
-        self.current = (self.current + 1) % len(self.servers)
-        return server
+```nginx
+# Weighted Round Robin — higher-weight servers receive proportionally more requests.
+# With weights 3:1:2, server1 gets 50%, server2 ~17%, server3 ~33% of traffic.
+upstream weighted_backend {
+    server server1.example.com:8080 weight=3;   # 50% of traffic
+    server server2.example.com:8080 weight=1;   # ~17% of traffic
+    server server3.example.com:8080 weight=2;   # ~33% of traffic
+}
 
-# With weights {server1: 3, server2: 1, server3: 2}
-# Expanded: [s1, s1, s1, s2, s3, s3]
-# server1 gets 50% of traffic
-# server2 gets ~17% of traffic
-# server3 gets ~33% of traffic
+server {
+    listen 80;
+
+    location / {
+        proxy_pass http://weighted_backend;
+    }
+}
 ```
 
 ### 3. Least Connections
 
-```python
-import threading
-from dataclasses import dataclass
+```nginx
+# Least Connections — each new request goes to the server with the fewest
+# active connections, adapting naturally to varying request durations.
+#
+# Visualization:
+#   Server 1: [████████░░] 8 connections
+#   Server 2: [██░░░░░░░░] 2 connections  ← next request goes here
+#   Server 3: [█████░░░░░] 5 connections
+upstream least_conn_backend {
+    least_conn;
 
-@dataclass
-class Server:
-    address: str
-    active_connections: int = 0
-    lock: threading.Lock = None
-    
-    def __post_init__(self):
-        self.lock = threading.Lock()
+    server server1.example.com:8080;
+    server server2.example.com:8080;
+    server server3.example.com:8080;
+}
 
-class LeastConnectionsBalancer:
-    def __init__(self, servers: list[str]):
-        self.servers = [Server(addr) for addr in servers]
-        self.lock = threading.Lock()
-    
-    def get_server(self) -> Server:
-        with self.lock:
-            # Find server with fewest connections
-            server = min(self.servers, key=lambda s: s.active_connections)
-            with server.lock:
-                server.active_connections += 1
-            return server
-    
-    def release_server(self, server: Server):
-        with server.lock:
-            server.active_connections -= 1
+server {
+    listen 80;
 
-# Visualization
-# Server 1: [████████░░] 8 connections
-# Server 2: [██░░░░░░░░] 2 connections  ← next request goes here
-# Server 3: [█████░░░░░] 5 connections
+    location / {
+        proxy_pass http://least_conn_backend;
+    }
+}
 ```
 
 ### 4. Weighted Least Connections
 
-```python
-class WeightedLeastConnectionsBalancer:
-    def __init__(self, servers: dict[str, int]):
-        # servers = {"server1": 3, "server2": 1}
-        self.servers = {
-            addr: {"weight": weight, "connections": 0}
-            for addr, weight in servers.items()
-        }
-    
-    def get_server(self) -> str:
-        # Score = connections / weight (lower is better)
-        best_server = min(
-            self.servers.items(),
-            key=lambda x: x[1]["connections"] / x[1]["weight"]
-        )
-        self.servers[best_server[0]]["connections"] += 1
-        return best_server[0]
-
+```nginx
+# Weighted Least Connections — combines least_conn with weight so that
+# higher-capacity servers absorb proportionally more connections.
+#
+# Effective score = active_connections / weight  (lower wins)
 # Example:
-# server1 (weight 3): 6 connections → score = 6/3 = 2.0
-# server2 (weight 1): 1 connection  → score = 1/1 = 1.0 ← winner
+#   server1 (weight 3): 6 conns → score = 6/3 = 2.0
+#   server2 (weight 1): 1 conn  → score = 1/1 = 1.0  ← next request goes here
+upstream weighted_least_conn_backend {
+    least_conn;
+
+    server server1.example.com:8080 weight=3;
+    server server2.example.com:8080 weight=1;
+}
+
+server {
+    listen 80;
+
+    location / {
+        proxy_pass http://weighted_least_conn_backend;
+    }
+}
 ```
 
 ### 5. IP Hash (Session Persistence)
 
-```python
-import hashlib
+```nginx
+# IP Hash — the client's IP address determines which server receives the
+# request, giving sticky-session behaviour without cookies.
+# Same IP always routes to the same server:
+#   192.168.1.100 → always server2
+#   192.168.1.101 → always server1
+upstream ip_hash_backend {
+    ip_hash;
 
-class IPHashBalancer:
-    def __init__(self, servers: list[str]):
-        self.servers = servers
-    
-    def get_server(self, client_ip: str) -> str:
-        # Hash the IP to get consistent server selection
-        hash_value = int(hashlib.md5(client_ip.encode()).hexdigest(), 16)
-        index = hash_value % len(self.servers)
-        return self.servers[index]
+    server server1.example.com:8080;
+    server server2.example.com:8080;
+    server server3.example.com:8080;
+}
 
-# Same IP always routes to same server (sticky sessions)
-# 192.168.1.100 → always server2
-# 192.168.1.101 → always server1
+server {
+    listen 80;
+
+    location / {
+        proxy_pass http://ip_hash_backend;
+    }
+}
 ```
 
 ### 6. Consistent Hashing
 
-```python
-import hashlib
-from bisect import bisect_left
+```
+Consistent Hashing — Pseudocode
 
-class ConsistentHashBalancer:
-    def __init__(self, servers: list[str], replicas: int = 100):
-        self.replicas = replicas
-        self.ring = []
-        self.server_map = {}
-        
-        for server in servers:
-            self.add_server(server)
-    
-    def _hash(self, key: str) -> int:
-        return int(hashlib.md5(key.encode()).hexdigest(), 16)
-    
-    def add_server(self, server: str):
-        for i in range(self.replicas):
-            hash_key = self._hash(f"{server}:{i}")
-            self.ring.append(hash_key)
-            self.server_map[hash_key] = server
-        self.ring.sort()
-    
-    def remove_server(self, server: str):
-        for i in range(self.replicas):
-            hash_key = self._hash(f"{server}:{i}")
-            self.ring.remove(hash_key)
-            del self.server_map[hash_key]
-    
-    def get_server(self, key: str) -> str:
-        if not self.ring:
-            return None
-        
-        hash_key = self._hash(key)
-        idx = bisect_left(self.ring, hash_key)
-        
-        if idx == len(self.ring):
-            idx = 0
-        
-        return self.server_map[self.ring[idx]]
+INIT(servers, replicas_per_server = 100):
+    ring   ← empty sorted list        # positions on the hash ring (0 … 2^128)
+    map    ← empty hash map           # ring position → server
+
+    for each server in servers:
+        ADD_SERVER(server)
+
+ADD_SERVER(server):
+    for i in 0 .. replicas_per_server:
+        pos ← HASH(server + ":" + i)  # e.g. MD5, SHA-256
+        INSERT pos into ring (keep sorted)
+        map[pos] ← server
+
+REMOVE_SERVER(server):
+    for i in 0 .. replicas_per_server:
+        pos ← HASH(server + ":" + i)
+        DELETE pos from ring
+        DELETE map[pos]
+
+GET_SERVER(request_key):
+    if ring is empty: return NULL
+
+    pos ← HASH(request_key)
+    idx ← first index in ring where ring[idx] >= pos   # binary search
+    if idx == length(ring):
+        idx ← 0                                        # wrap around
+    return map[ring[idx]]
+
+---
+Why this matters:
+  • Adding/removing a server remaps only ~1/N of keys (N = server count).
+  • Virtual replicas (typically 100-200 per server) smooth out distribution.
+  • Cannot be expressed as a single nginx directive — real implementations
+    live in application code or specialised proxies (e.g. Envoy, Maglev).
 ```
 
 ```
@@ -302,66 +290,52 @@ When S2 is removed:
 
 ## Health Checks
 
-```python
-import asyncio
-import aiohttp
-from dataclasses import dataclass
-from enum import Enum
+```nginx
+# Nginx — passive health checks (open-source) + active checks (nginx Plus)
+upstream healthcheck_backend {
+    server server1.example.com:8080 max_fails=3 fail_timeout=30s;
+    server server2.example.com:8080 max_fails=3 fail_timeout=30s;
+    server server3.example.com:8080 max_fails=3 fail_timeout=30s;
+    # max_fails  — consecutive failures before marking the server as down
+    # fail_timeout — how long the server stays marked down, and the window
+    #                in which max_fails failures must occur
+}
 
-class HealthStatus(Enum):
-    HEALTHY = "healthy"
-    UNHEALTHY = "unhealthy"
-    UNKNOWN = "unknown"
+server {
+    listen 80;
 
-@dataclass
-class HealthCheck:
-    endpoint: str
-    interval_seconds: int = 10
-    timeout_seconds: int = 5
-    healthy_threshold: int = 2
-    unhealthy_threshold: int = 3
+    location / {
+        proxy_pass              http://healthcheck_backend;
+        proxy_connect_timeout   5s;
+        proxy_read_timeout      10s;
+        proxy_next_upstream     error timeout http_502 http_503;
+        #                       ↑ on failure, retry the next server automatically
+    }
 
-class HealthChecker:
-    def __init__(self, servers: list[str], health_check: HealthCheck):
-        self.servers = {s: HealthStatus.UNKNOWN for s in servers}
-        self.check_counts = {s: {"healthy": 0, "unhealthy": 0} for s in servers}
-        self.health_check = health_check
-    
-    async def check_server(self, server: str) -> bool:
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = f"http://{server}{self.health_check.endpoint}"
-                async with session.get(
-                    url,
-                    timeout=aiohttp.ClientTimeout(
-                        total=self.health_check.timeout_seconds
-                    )
-                ) as response:
-                    return response.status == 200
-        except Exception:
-            return False
-    
-    async def update_health(self, server: str):
-        is_healthy = await self.check_server(server)
-        
-        if is_healthy:
-            self.check_counts[server]["healthy"] += 1
-            self.check_counts[server]["unhealthy"] = 0
-            
-            if self.check_counts[server]["healthy"] >= \
-               self.health_check.healthy_threshold:
-                self.servers[server] = HealthStatus.HEALTHY
-        else:
-            self.check_counts[server]["unhealthy"] += 1
-            self.check_counts[server]["healthy"] = 0
-            
-            if self.check_counts[server]["unhealthy"] >= \
-               self.health_check.unhealthy_threshold:
-                self.servers[server] = HealthStatus.UNHEALTHY
-    
-    def get_healthy_servers(self) -> list[str]:
-        return [s for s, status in self.servers.items() 
-                if status == HealthStatus.HEALTHY]
+    # Self health endpoint (for upstream LBs or orchestrators to probe)
+    location = /health {
+        access_log off;
+        return 200 "healthy\n";
+    }
+}
+```
+
+```haproxy
+# HAProxy — active health checks with thresholds
+backend app_servers
+    balance roundrobin
+
+    option httpchk GET /health          # active probe endpoint
+    http-check expect status 200
+
+    default-server inter 10s            # check every 10 s
+                    fall  3             # 3 failures → mark DOWN
+                    rise  2             # 2 successes → mark UP
+                    timeout check 5s    # per-check timeout
+
+    server srv1 192.168.1.10:8080 check
+    server srv2 192.168.1.11:8080 check
+    server srv3 192.168.1.12:8080 check
 ```
 
 ```
@@ -391,52 +365,47 @@ Health Check Flow:
 
 ## Session Persistence (Sticky Sessions)
 
-```python
-import time
-from dataclasses import dataclass
+```nginx
+# Sticky Sessions — nginx uses a cookie to pin a client to the same backend.
+# Option A: ip_hash (no cookie, based on client IP)
+upstream sticky_ip {
+    ip_hash;
 
-@dataclass
-class Session:
-    server: str
-    created_at: float
-    last_accessed: float
+    server server1.example.com:8080;
+    server server2.example.com:8080;
+    server server3.example.com:8080;
+}
 
-class StickySessionBalancer:
-    def __init__(self, servers: list[str], session_ttl: int = 3600):
-        self.servers = servers
-        self.sessions = {}  # session_id -> Session
-        self.session_ttl = session_ttl
-        self.round_robin = RoundRobinBalancer(servers)
-    
-    def get_server(self, session_id: str = None) -> tuple[str, str]:
-        now = time.time()
-        
-        # Check for existing session
-        if session_id and session_id in self.sessions:
-            session = self.sessions[session_id]
-            
-            # Check if session is still valid
-            if now - session.last_accessed < self.session_ttl:
-                session.last_accessed = now
-                return session.server, session_id
-            else:
-                # Session expired
-                del self.sessions[session_id]
-        
-        # Create new session
-        server = self.round_robin.get_server()
-        new_session_id = self._generate_session_id()
-        self.sessions[new_session_id] = Session(
-            server=server,
-            created_at=now,
-            last_accessed=now
-        )
-        
-        return server, new_session_id
-    
-    def _generate_session_id(self) -> str:
-        import uuid
-        return str(uuid.uuid4())
+# Option B: sticky cookie (nginx Plus — explicit cookie-based affinity)
+# upstream sticky_cookie {
+#     sticky cookie SERVERID expires=1h path=/;
+#
+#     server server1.example.com:8080;
+#     server server2.example.com:8080;
+#     server server3.example.com:8080;
+# }
+
+server {
+    listen 80;
+
+    location / {
+        proxy_pass http://sticky_ip;
+    }
+}
+```
+
+```haproxy
+# HAProxy — cookie-based sticky sessions (open-source)
+backend sticky_servers
+    balance roundrobin
+
+    # Insert a SERVERID cookie; the client sends it back on subsequent requests
+    # so HAProxy routes to the same backend.
+    cookie SERVERID insert indirect nocache maxlife 1h
+
+    server srv1 192.168.1.10:8080 check cookie srv1
+    server srv2 192.168.1.11:8080 check cookie srv2
+    server srv3 192.168.1.12:8080 check cookie srv3
 ```
 
 ```

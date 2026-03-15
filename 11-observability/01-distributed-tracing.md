@@ -67,25 +67,25 @@ Trace ID: abc123
 
 A span represents a single unit of work within a trace.
 
-```python
+```json
 {
-    "trace_id": "abc123",
-    "span_id": "span456",
-    "parent_span_id": "span123",  # None for root span
-    "operation_name": "HTTP GET /users/{id}",
-    "service_name": "user-service",
-    "start_time": "2024-01-01T10:00:00.000Z",
-    "duration_ms": 200,
+    "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "spanId": "00f067aa0ba902b7",
+    "parentSpanId": "d5ebc7e161ade64a",
+    "operationName": "HTTP GET /users/{id}",
+    "serviceName": "user-service",
+    "startTime": "2024-01-01T10:00:00.000Z",
+    "duration": "200ms",
     "status": "OK",
-    "tags": {
+    "attributes": {
         "http.method": "GET",
         "http.url": "/users/123",
         "http.status_code": 200,
         "user.id": "123"
     },
-    "logs": [
-        {"timestamp": "...", "message": "Cache miss, querying database"},
-        {"timestamp": "...", "message": "User found"}
+    "events": [
+        {"timestamp": "...", "name": "cache.miss", "attributes": {"db.system": "redis"}},
+        {"timestamp": "...", "name": "user.found"}
     ]
 }
 ```
@@ -126,116 +126,86 @@ tracestate: congo=t61rcWkgMzE,rojo=00f067aa0ba902b7
 
 ## Implementation
 
-### Manual Instrumentation
+### Go Instrumentation Example
 
-```python
-from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode
+```go
+package main
 
-tracer = trace.get_tracer(__name__)
+import (
+	"context"
 
-def process_order(order_id: str):
-    # Start a new span
-    with tracer.start_as_current_span("process_order") as span:
-        # Add attributes
-        span.set_attribute("order.id", order_id)
-        
-        try:
-            # Child span for validation
-            with tracer.start_as_current_span("validate_order") as child:
-                order = validate_order(order_id)
-                child.set_attribute("order.total", order.total)
-            
-            # Child span for payment
-            with tracer.start_as_current_span("process_payment") as child:
-                result = payment_service.charge(order)
-                child.set_attribute("payment.method", result.method)
-                
-                if not result.success:
-                    child.set_status(Status(StatusCode.ERROR))
-                    child.record_exception(result.error)
-                    raise PaymentError(result.error)
-            
-            span.set_status(Status(StatusCode.OK))
-            return order
-            
-        except Exception as e:
-            span.set_status(Status(StatusCode.ERROR))
-            span.record_exception(e)
-            raise
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+)
+
+var tracer = otel.Tracer("order-service")
+
+func processOrder(ctx context.Context, orderID string) (*Order, error) {
+	ctx, span := tracer.Start(ctx, "process_order")
+	defer span.End()
+	span.SetAttributes(attribute.String("order.id", orderID))
+
+	// Child span — validation
+	order, err := validateOrder(ctx, orderID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+
+	// Child span — payment
+	ctx, paySpan := tracer.Start(ctx, "process_payment")
+	result, err := paymentService.Charge(ctx, order)
+	if err != nil {
+		paySpan.RecordError(err)
+		paySpan.SetStatus(codes.Error, err.Error())
+		paySpan.End()
+		return nil, err
+	}
+	paySpan.SetAttributes(attribute.String("payment.method", result.Method))
+	paySpan.End()
+
+	span.SetStatus(codes.Ok, "")
+	return order, nil
+}
 ```
 
-### Automatic Instrumentation
+### W3C Trace Context in HTTP
 
-```python
-# Most frameworks have auto-instrumentation libraries
-from opentelemetry.instrumentation.flask import FlaskInstrumentor
-from opentelemetry.instrumentation.requests import RequestsInstrumentor
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+Outgoing request from Service A (order-service) to Service B (payment-service):
 
-# Automatically instruments Flask routes
-FlaskInstrumentor().instrument_app(app)
+```http
+POST /api/v1/charge HTTP/1.1
+Host: payment-service:8080
+Content-Type: application/json
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+tracestate: order-svc=00f067aa0ba902b7
 
-# Automatically traces outgoing HTTP requests
-RequestsInstrumentor().instrument()
-
-# Automatically traces database queries
-SQLAlchemyInstrumentor().instrument(engine=engine)
+{"order_id": "ord_456", "amount": 99.00}
 ```
 
-### Context Propagation in HTTP
+Response from Service B, continuing the same trace:
 
-```python
-from opentelemetry import trace
-from opentelemetry.propagate import inject, extract
-import requests
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+traceresponse: 00-4bf92f3577b34da6a3ce929d0e0e4736-d5ebc7e161ade64a-01
 
-def call_downstream_service(url: str, data: dict):
-    headers = {}
-    
-    # Inject current trace context into headers
-    inject(headers)
-    
-    # Headers now contain: traceparent, tracestate
-    response = requests.post(url, json=data, headers=headers)
-    return response
-
-# On the receiving service
-from flask import request
-
-@app.route('/api/endpoint', methods=['POST'])
-def handle_request():
-    # Extract trace context from incoming request
-    context = extract(request.headers)
-    
-    # Create span with extracted context as parent
-    with tracer.start_as_current_span("handle_request", context=context):
-        # Process request
-        pass
+{"status": "charged", "transaction_id": "txn_789"}
 ```
+
+The OTel SDK (or auto-instrumentation agent) handles injection and extraction automatically. In Kafka/gRPC, the same `traceparent` header propagates through message headers or gRPC metadata.
 
 ### Context Propagation in Message Queues
 
-```python
-# Producer
-def publish_message(queue: str, message: dict):
-    headers = {}
-    inject(headers)  # Inject trace context
-    
-    kafka_producer.send(
-        queue,
-        value=message,
-        headers=[(k, v.encode()) for k, v in headers.items()]
-    )
+```
+Kafka Record Headers (produced by order-service):
+  traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-a1b2c3d4e5f60718-01
+  tracestate:  order-svc=a1b2c3d4e5f60718
 
-# Consumer
-def consume_message(message):
-    # Extract trace context from message headers
-    headers = {k: v.decode() for k, v in message.headers}
-    context = extract(headers)
-    
-    with tracer.start_as_current_span("process_message", context=context):
-        process(message.value)
+Consumer (notification-service) extracts these headers → creates
+a child span with the same trace_id, linking the async flow.
 ```
 
 ---
@@ -248,24 +218,21 @@ Tracing everything is expensive. Sampling reduces overhead:
 
 Decision made at trace start, propagated to all spans.
 
-```python
-from opentelemetry.sdk.trace.sampling import (
-    TraceIdRatioBased,
-    ParentBased,
-    ALWAYS_ON,
-    ALWAYS_OFF
-)
+```
+traceparent flags byte controls the sampling decision:
 
-# Sample 10% of traces
-sampler = TraceIdRatioBased(0.10)
+  Sampled:      00-4bf92f35...-00f067aa...-01   ← flags=01 (sampled)
+  Not sampled:  00-4bf92f35...-00f067aa...-00   ← flags=00 (not sampled)
 
-# Respect parent's sampling decision
-sampler = ParentBased(root=TraceIdRatioBased(0.10))
+All downstream services respect the parent's decision.
+```
 
-# Configuration
-trace.set_tracer_provider(
-    TracerProvider(sampler=sampler)
-)
+Configured via environment variables or OTel Collector config:
+
+```yaml
+# Application-side (env vars)
+OTEL_TRACES_SAMPLER: parentbased_traceidratio
+OTEL_TRACES_SAMPLER_ARG: "0.10"   # Sample 10% of root traces
 ```
 
 ### Tail-Based Sampling
@@ -300,25 +267,16 @@ Cons:
 
 ### Adaptive Sampling
 
-```python
-class AdaptiveSampler:
-    """Adjust sampling rate based on traffic volume"""
-    
-    def __init__(self, target_traces_per_second: int):
-        self.target_tps = target_traces_per_second
-        self.current_tps = 0
-        self.sample_rate = 1.0
-    
-    def should_sample(self, trace_id: str) -> bool:
-        # Adjust sample rate to hit target
-        if self.current_tps > self.target_tps:
-            self.sample_rate = max(0.01, self.sample_rate * 0.9)
-        elif self.current_tps < self.target_tps * 0.8:
-            self.sample_rate = min(1.0, self.sample_rate * 1.1)
-        
-        # Hash-based consistent sampling
-        hash_value = hash(trace_id) % 100
-        return hash_value < (self.sample_rate * 100)
+```
+Adaptive sampling adjusts the rate based on traffic volume to maintain
+a target traces-per-second. Typically implemented via tail-based sampling
+in the OTel Collector (see Collector Configuration below) rather than
+in application code. Jaeger's remote sampler also supports this natively.
+
+Strategy:
+  Low traffic  → sample 100% (capture everything)
+  High traffic → reduce to hit target TPS (e.g., 50 traces/sec)
+  Always keep  → errors, slow traces (>2s)
 ```
 
 ---
@@ -426,81 +384,76 @@ service:
 
 ### Span Naming
 
-```python
-# BAD - Too specific, causes cardinality explosion
-span_name = f"GET /users/{user_id}"  # Millions of unique names
+```
+BAD — too specific, causes cardinality explosion:
+  "GET /users/8291037"             # Millions of unique span names
 
-# GOOD - Parameterized
-span_name = "GET /users/{id}"
+GOOD — parameterized:
+  "GET /users/{id}"
 
-# BAD - Too generic
-span_name = "database_query"
+BAD — too generic:
+  "database_query"
 
-# GOOD - Descriptive
-span_name = "SELECT users by id"
+GOOD — descriptive:
+  "SELECT users by id"
 ```
 
 ### Useful Attributes
 
-```python
-# HTTP spans
-span.set_attribute("http.method", "POST")
-span.set_attribute("http.url", "/api/orders")
-span.set_attribute("http.status_code", 200)
-span.set_attribute("http.request_content_length", 1024)
+```
+OTel Semantic Conventions — standard attribute keys:
 
-# Database spans
-span.set_attribute("db.system", "postgresql")
-span.set_attribute("db.name", "users")
-span.set_attribute("db.statement", "SELECT * FROM users WHERE id = ?")
-span.set_attribute("db.operation", "SELECT")
+HTTP spans:
+  http.method                    = "POST"
+  http.url                       = "/api/orders"
+  http.status_code               = 200
+  http.request_content_length    = 1024
 
-# Business context
-span.set_attribute("user.id", "123")
-span.set_attribute("order.id", "ord_456")
-span.set_attribute("tenant.id", "acme-corp")
+Database spans:
+  db.system                      = "postgresql"
+  db.name                        = "users"
+  db.statement                   = "SELECT * FROM users WHERE id = ?"
+  db.operation                   = "SELECT"
+
+Business context (custom):
+  user.id                        = "123"
+  order.id                       = "ord_456"
+  tenant.id                      = "acme-corp"
 ```
 
 ### Error Handling
 
-```python
-with tracer.start_as_current_span("operation") as span:
-    try:
-        result = do_something()
-    except ValidationError as e:
-        # Expected error - set status but don't record exception
-        span.set_status(Status(StatusCode.ERROR, str(e)))
-        raise
-    except Exception as e:
-        # Unexpected error - record full exception
-        span.set_status(Status(StatusCode.ERROR))
-        span.record_exception(e)
-        raise
+```
+Error handling strategy for spans:
+
+Expected errors (validation, auth):
+  → Set span status to ERROR with message
+  → Do NOT record exception event (reduces noise)
+
+Unexpected errors (panics, infrastructure failures):
+  → Set span status to ERROR
+  → Record exception event with stack trace
+  → These show up as red spans in Jaeger/Tempo
+
+Span status values:  Unset | Ok | Error
 ```
 
 ### Correlation with Logs
 
-```python
-import logging
-from opentelemetry import trace
+```
+Structured log line with embedded trace context:
 
-class TraceContextFilter(logging.Filter):
-    def filter(self, record):
-        span = trace.get_current_span()
-        ctx = span.get_span_context()
-        
-        record.trace_id = format(ctx.trace_id, '032x') if ctx.trace_id else None
-        record.span_id = format(ctx.span_id, '016x') if ctx.span_id else None
-        
-        return True
+{
+  "timestamp": "2024-01-01T10:00:00.000Z",
+  "level": "INFO",
+  "message": "Processing order",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "span_id": "00f067aa0ba902b7",
+  "service": "order-service"
+}
 
-# Log format includes trace context
-formatter = logging.Formatter(
-    '%(asctime)s [%(trace_id)s:%(span_id)s] %(levelname)s %(message)s'
-)
-
-# Now logs are correlated with traces
-# 2024-01-01 10:00:00 [abc123...:def456...] INFO Processing order
+This lets Grafana/Loki link directly from a log line → Tempo/Jaeger trace view.
+OTel auto-instrumentation injects trace_id/span_id into logs automatically.
 ```
 
 ---
@@ -536,6 +489,37 @@ Normal Trace (200ms):                Slow Trace (5000ms):
 │   └── DB Query (80ms)              │   ├── DB Query (80ms)
 └── Service C (50ms)                 │   └── Retry x3 (4500ms) ← Retries!
                                      └── Service C (50ms)
+```
+
+### Jaeger / Tempo Query Examples
+
+```
+Jaeger UI / API queries:
+
+  # Find traces by service and operation
+  GET /api/traces?service=order-service&operation=process_order&limit=20
+
+  # Find traces by tag
+  GET /api/traces?service=order-service&tags={"http.status_code":"500"}
+
+  # Find traces slower than 2 seconds
+  GET /api/traces?service=order-service&minDuration=2s
+
+  # Lookup a specific trace by ID
+  GET /api/traces/4bf92f3577b34da6a3ce929d0e0e4736
+```
+
+```text
+Grafana Tempo — TraceQL queries:
+
+  # All error spans from order-service slower than 1s
+  {resource.service.name="order-service" && status=error && duration>1s}
+
+  # Traces with a specific attribute
+  {span.http.status_code=500}
+
+  # Traces touching both order-service and payment-service
+  {resource.service.name="order-service"} && {resource.service.name="payment-service"}
 ```
 
 ---

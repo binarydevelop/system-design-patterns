@@ -69,64 +69,81 @@ Token Bucket Visualization:
     └─────────────────────────────────────┘
 ```
 
-```python
-import time
-from threading import Lock
-from dataclasses import dataclass
+```go
+package main
 
-@dataclass
-class TokenBucketConfig:
-    capacity: int      # Maximum tokens in bucket
-    refill_rate: float # Tokens added per second
+import (
+	"sync"
+	"time"
+)
 
-class TokenBucket:
-    def __init__(self, config: TokenBucketConfig):
-        self.capacity = config.capacity
-        self.refill_rate = config.refill_rate
-        self.tokens = config.capacity
-        self.last_refill = time.time()
-        self.lock = Lock()
-    
-    def _refill(self):
-        """Add tokens based on elapsed time"""
-        now = time.time()
-        elapsed = now - self.last_refill
-        new_tokens = elapsed * self.refill_rate
-        
-        self.tokens = min(self.capacity, self.tokens + new_tokens)
-        self.last_refill = now
-    
-    def allow(self, tokens: int = 1) -> bool:
-        """Check if request is allowed"""
-        with self.lock:
-            self._refill()
-            
-            if self.tokens >= tokens:
-                self.tokens -= tokens
-                return True
-            return False
-    
-    def wait_time(self, tokens: int = 1) -> float:
-        """Calculate wait time until tokens available"""
-        with self.lock:
-            self._refill()
-            
-            if self.tokens >= tokens:
-                return 0
-            
-            needed = tokens - self.tokens
-            return needed / self.refill_rate
+type TokenBucket struct {
+	capacity   float64
+	refillRate float64 // tokens per second
+	tokens     float64
+	lastRefill time.Time
+	mu         sync.Mutex
+}
 
-# Usage
-limiter = TokenBucket(TokenBucketConfig(
-    capacity=100,      # Burst up to 100 requests
-    refill_rate=10     # 10 requests per second sustained
-))
+func NewTokenBucket(capacity int, refillRate float64) *TokenBucket {
+	return &TokenBucket{
+		capacity:   float64(capacity),
+		refillRate: refillRate,
+		tokens:     float64(capacity),
+		lastRefill: time.Now(),
+	}
+}
 
-if limiter.allow():
-    process_request()
-else:
-    raise RateLimitExceeded(retry_after=limiter.wait_time())
+func (tb *TokenBucket) refill() {
+	now := time.Now()
+	elapsed := now.Sub(tb.lastRefill).Seconds()
+	tb.tokens += elapsed * tb.refillRate
+	if tb.tokens > tb.capacity {
+		tb.tokens = tb.capacity
+	}
+	tb.lastRefill = now
+}
+
+func (tb *TokenBucket) Allow(tokens int) bool {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+
+	tb.refill()
+	need := float64(tokens)
+	if tb.tokens >= need {
+		tb.tokens -= need
+		return true
+	}
+	return false
+}
+
+func (tb *TokenBucket) WaitTime(tokens int) time.Duration {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+
+	tb.refill()
+	need := float64(tokens)
+	if tb.tokens >= need {
+		return 0
+	}
+	deficit := need - tb.tokens
+	return time.Duration(deficit / tb.refillRate * float64(time.Second))
+}
+
+// Usage
+func main() {
+	limiter := NewTokenBucket(
+		100,  // Burst up to 100 requests
+		10,   // 10 requests per second sustained
+	)
+
+	if limiter.Allow(1) {
+		processRequest()
+	} else {
+		retryAfter := limiter.WaitTime(1)
+		rateLimitExceeded(retryAfter)
+	}
+}
 ```
 
 ### 2. Leaky Bucket
@@ -156,49 +173,65 @@ Leaky Bucket Visualization:
 Overflow → Request rejected (queue full)
 ```
 
-```python
-from collections import deque
-import time
-import threading
+```go
+package main
 
-class LeakyBucket:
-    def __init__(self, capacity: int, leak_rate: float):
-        self.capacity = capacity
-        self.leak_rate = leak_rate  # requests per second
-        self.queue = deque()
-        self.lock = threading.Lock()
-        self.last_leak = time.time()
-    
-    def _leak(self):
-        """Process queued requests at constant rate"""
-        now = time.time()
-        elapsed = now - self.last_leak
-        leaked = int(elapsed * self.leak_rate)
-        
-        for _ in range(min(leaked, len(self.queue))):
-            self.queue.popleft()
-        
-        self.last_leak = now
-    
-    def allow(self) -> bool:
-        """Add request to queue if space available"""
-        with self.lock:
-            self._leak()
-            
-            if len(self.queue) < self.capacity:
-                self.queue.append(time.time())
-                return True
-            return False
-    
-    def queue_position(self) -> int:
-        """Get current position in queue"""
-        with self.lock:
-            self._leak()
-            return len(self.queue)
+import (
+	"sync"
+	"time"
+)
 
-# Leaky bucket smooths out traffic
-# Even if 100 requests arrive at once,
-# they're processed at constant rate (e.g., 10/sec)
+type LeakyBucket struct {
+	capacity int
+	leakRate float64 // requests per second
+	queue    []time.Time
+	lastLeak time.Time
+	mu       sync.Mutex
+}
+
+func NewLeakyBucket(capacity int, leakRate float64) *LeakyBucket {
+	return &LeakyBucket{
+		capacity: capacity,
+		leakRate: leakRate,
+		lastLeak: time.Now(),
+	}
+}
+
+func (lb *LeakyBucket) leak() {
+	now := time.Now()
+	elapsed := now.Sub(lb.lastLeak).Seconds()
+	leaked := int(elapsed * lb.leakRate)
+
+	if leaked > len(lb.queue) {
+		leaked = len(lb.queue)
+	}
+	lb.queue = lb.queue[leaked:]
+	lb.lastLeak = now
+}
+
+func (lb *LeakyBucket) Allow() bool {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	lb.leak()
+	if len(lb.queue) < lb.capacity {
+		lb.queue = append(lb.queue, time.Now())
+		return true
+	}
+	return false
+}
+
+func (lb *LeakyBucket) QueuePosition() int {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	lb.leak()
+	return len(lb.queue)
+}
+
+// Leaky bucket smooths out traffic
+// Even if 100 requests arrive at once,
+// they're processed at constant rate (e.g., 10/sec)
 ```
 
 ### 3. Fixed Window
@@ -224,49 +257,75 @@ Window 2:                       │███████████████
 Within 1 minute (12:00:30 - 12:01:30): 160 requests! (exceeds 100 limit)
 ```
 
-```python
-import time
-from collections import defaultdict
+```go
+package main
 
-class FixedWindowLimiter:
-    def __init__(self, limit: int, window_seconds: int):
-        self.limit = limit
-        self.window_seconds = window_seconds
-        self.counters = defaultdict(int)
-        self.windows = {}
-    
-    def _get_window(self) -> int:
-        """Get current window identifier"""
-        return int(time.time() // self.window_seconds)
-    
-    def allow(self, key: str) -> bool:
-        """Check if request allowed for given key"""
-        window = self._get_window()
-        window_key = f"{key}:{window}"
-        
-        # Reset counter if new window
-        if self.windows.get(key) != window:
-            self.counters[key] = 0
-            self.windows[key] = window
-        
-        if self.counters[key] < self.limit:
-            self.counters[key] += 1
-            return True
-        return False
-    
-    def remaining(self, key: str) -> int:
-        """Get remaining requests in current window"""
-        window = self._get_window()
-        if self.windows.get(key) != window:
-            return self.limit
-        return max(0, self.limit - self.counters[key])
-    
-    def reset_time(self) -> int:
-        """Seconds until window resets"""
-        return self.window_seconds - (int(time.time()) % self.window_seconds)
+import (
+	"sync"
+	"time"
+)
 
-# Simple but has burst issue at window boundaries
-limiter = FixedWindowLimiter(limit=100, window_seconds=60)
+type FixedWindowLimiter struct {
+	limit         int
+	windowSeconds int64
+	counters      map[string]int
+	windows       map[string]int64
+	mu            sync.Mutex
+}
+
+func NewFixedWindowLimiter(limit int, windowSeconds int64) *FixedWindowLimiter {
+	return &FixedWindowLimiter{
+		limit:         limit,
+		windowSeconds: windowSeconds,
+		counters:      make(map[string]int),
+		windows:       make(map[string]int64),
+	}
+}
+
+func (fw *FixedWindowLimiter) getWindow() int64 {
+	return time.Now().Unix() / fw.windowSeconds
+}
+
+func (fw *FixedWindowLimiter) Allow(key string) bool {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+
+	window := fw.getWindow()
+
+	// Reset counter if new window
+	if fw.windows[key] != window {
+		fw.counters[key] = 0
+		fw.windows[key] = window
+	}
+
+	if fw.counters[key] < fw.limit {
+		fw.counters[key]++
+		return true
+	}
+	return false
+}
+
+func (fw *FixedWindowLimiter) Remaining(key string) int {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
+
+	window := fw.getWindow()
+	if fw.windows[key] != window {
+		return fw.limit
+	}
+	rem := fw.limit - fw.counters[key]
+	if rem < 0 {
+		return 0
+	}
+	return rem
+}
+
+func (fw *FixedWindowLimiter) ResetTime() int64 {
+	return fw.windowSeconds - (time.Now().Unix() % fw.windowSeconds)
+}
+
+// Simple but has burst issue at window boundaries
+// limiter := NewFixedWindowLimiter(100, 60)
 ```
 
 ### 4. Sliding Window Log
@@ -292,42 +351,70 @@ Limit: 100
 → Allow request
 ```
 
-```python
-import time
-from collections import defaultdict
-import bisect
+```go
+package main
 
-class SlidingWindowLogLimiter:
-    def __init__(self, limit: int, window_seconds: int):
-        self.limit = limit
-        self.window_seconds = window_seconds
-        self.logs = defaultdict(list)  # key -> sorted list of timestamps
-    
-    def _cleanup(self, key: str, now: float):
-        """Remove timestamps outside window"""
-        cutoff = now - self.window_seconds
-        logs = self.logs[key]
-        
-        # Find first timestamp in window
-        idx = bisect.bisect_left(logs, cutoff)
-        self.logs[key] = logs[idx:]
-    
-    def allow(self, key: str) -> bool:
-        now = time.time()
-        self._cleanup(key, now)
-        
-        if len(self.logs[key]) < self.limit:
-            bisect.insort(self.logs[key], now)
-            return True
-        return False
-    
-    def get_count(self, key: str) -> int:
-        now = time.time()
-        self._cleanup(key, now)
-        return len(self.logs[key])
+import (
+	"sort"
+	"sync"
+	"time"
+)
 
-# Accurate but memory-intensive (stores every timestamp)
-# O(n) space where n = requests in window
+type SlidingWindowLogLimiter struct {
+	limit         int
+	windowSeconds float64
+	logs          map[string][]float64 // key -> sorted timestamps
+	mu            sync.Mutex
+}
+
+func NewSlidingWindowLogLimiter(limit int, windowSeconds int) *SlidingWindowLogLimiter {
+	return &SlidingWindowLogLimiter{
+		limit:         limit,
+		windowSeconds: float64(windowSeconds),
+		logs:          make(map[string][]float64),
+	}
+}
+
+func (sw *SlidingWindowLogLimiter) cleanup(key string, now float64) {
+	cutoff := now - sw.windowSeconds
+	logs := sw.logs[key]
+
+	// Find first timestamp in window (binary search)
+	idx := sort.SearchFloat64s(logs, cutoff)
+	sw.logs[key] = logs[idx:]
+}
+
+func (sw *SlidingWindowLogLimiter) Allow(key string) bool {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
+	now := float64(time.Now().UnixNano()) / 1e9
+	sw.cleanup(key, now)
+
+	if len(sw.logs[key]) < sw.limit {
+		// Insert in sorted order
+		logs := sw.logs[key]
+		idx := sort.SearchFloat64s(logs, now)
+		logs = append(logs, 0)
+		copy(logs[idx+1:], logs[idx:])
+		logs[idx] = now
+		sw.logs[key] = logs
+		return true
+	}
+	return false
+}
+
+func (sw *SlidingWindowLogLimiter) GetCount(key string) int {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
+	now := float64(time.Now().UnixNano()) / 1e9
+	sw.cleanup(key, now)
+	return len(sw.logs[key])
+}
+
+// Accurate but memory-intensive (stores every timestamp)
+// O(n) space where n = requests in window
 ```
 
 ### 5. Sliding Window Counter
@@ -359,57 +446,75 @@ Weighted count =
 └─────────────────────────────────────────────────────────────┘
 ```
 
-```python
-import time
-from dataclasses import dataclass
+```go
+package main
 
-@dataclass
-class WindowData:
-    count: int
-    start_time: float
+import (
+	"math"
+	"sync"
+	"time"
+)
 
-class SlidingWindowCounterLimiter:
-    def __init__(self, limit: int, window_seconds: int):
-        self.limit = limit
-        self.window_seconds = window_seconds
-        self.windows = {}  # key -> {current: WindowData, previous: WindowData}
-    
-    def _get_window_start(self, now: float) -> float:
-        return (now // self.window_seconds) * self.window_seconds
-    
-    def allow(self, key: str) -> bool:
-        now = time.time()
-        window_start = self._get_window_start(now)
-        
-        if key not in self.windows:
-            self.windows[key] = {
-                'current': WindowData(0, window_start),
-                'previous': WindowData(0, window_start - self.window_seconds)
-            }
-        
-        data = self.windows[key]
-        
-        # Check if we need to slide windows
-        if data['current'].start_time < window_start:
-            data['previous'] = data['current']
-            data['current'] = WindowData(0, window_start)
-        
-        # Calculate weighted count
-        elapsed_ratio = (now - window_start) / self.window_seconds
-        previous_weight = 1 - elapsed_ratio
-        
-        weighted_count = (
-            data['previous'].count * previous_weight + 
-            data['current'].count
-        )
-        
-        if weighted_count < self.limit:
-            data['current'].count += 1
-            return True
-        return False
+type windowData struct {
+	count     int
+	startTime float64
+}
 
-# Best of both worlds: accurate + memory efficient
-# O(1) space per key
+type SlidingWindowCounterLimiter struct {
+	limit         int
+	windowSeconds float64
+	windows       map[string]*[2]windowData // [0]=current, [1]=previous
+	mu            sync.Mutex
+}
+
+func NewSlidingWindowCounterLimiter(limit int, windowSeconds int) *SlidingWindowCounterLimiter {
+	return &SlidingWindowCounterLimiter{
+		limit:         limit,
+		windowSeconds: float64(windowSeconds),
+		windows:       make(map[string]*[2]windowData),
+	}
+}
+
+func (sw *SlidingWindowCounterLimiter) getWindowStart(now float64) float64 {
+	return math.Floor(now/sw.windowSeconds) * sw.windowSeconds
+}
+
+func (sw *SlidingWindowCounterLimiter) Allow(key string) bool {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+
+	now := float64(time.Now().UnixNano()) / 1e9
+	windowStart := sw.getWindowStart(now)
+
+	data, exists := sw.windows[key]
+	if !exists {
+		data = &[2]windowData{
+			{count: 0, startTime: windowStart},
+			{count: 0, startTime: windowStart - sw.windowSeconds},
+		}
+		sw.windows[key] = data
+	}
+
+	// Slide windows if needed
+	if data[0].startTime < windowStart {
+		data[1] = data[0]
+		data[0] = windowData{count: 0, startTime: windowStart}
+	}
+
+	// Calculate weighted count
+	elapsedRatio := (now - windowStart) / sw.windowSeconds
+	previousWeight := 1.0 - elapsedRatio
+	weightedCount := float64(data[1].count)*previousWeight + float64(data[0].count)
+
+	if weightedCount < float64(sw.limit) {
+		data[0].count++
+		return true
+	}
+	return false
+}
+
+// Best of both worlds: accurate + memory efficient
+// O(1) space per key
 ```
 
 ---
@@ -521,57 +626,45 @@ class RedisRateLimiter:
 
 ## Rate Limit Response Headers
 
-```python
-from flask import Flask, request, jsonify, make_response
-from functools import wraps
+```nginx
+# nginx rate limiting with limit_req
 
-app = Flask(__name__)
-limiter = RedisRateLimiter(redis.Redis())
+http {
+    # Define rate limit zones
+    # $binary_remote_addr uses client IP; zone=api stores state; rate=100r/m
+    limit_req_zone $binary_remote_addr zone=api:10m rate=100r/m;
 
-def rate_limit(limit: int, window: int):
-    def decorator(f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            # Use IP or API key as identifier
-            key = request.headers.get('X-API-Key') or request.remote_addr
-            
-            allowed, info = limiter.sliding_window(
-                key=f"{f.__name__}:{key}",
-                limit=limit,
-                window_seconds=window
-            )
-            
-            # Set rate limit headers
-            headers = {
-                'X-RateLimit-Limit': str(limit),
-                'X-RateLimit-Remaining': str(info['remaining']),
-                'X-RateLimit-Reset': str(info['reset']),
-            }
-            
-            if not allowed:
-                response = make_response(
-                    jsonify({
-                        'error': 'Rate limit exceeded',
-                        'retry_after': info['reset'] - int(time.time())
-                    }),
-                    429
-                )
-                headers['Retry-After'] = str(info['reset'] - int(time.time()))
-                for header, value in headers.items():
-                    response.headers[header] = value
-                return response
-            
-            response = make_response(f(*args, **kwargs))
-            for header, value in headers.items():
-                response.headers[header] = value
-            return response
-        return wrapper
-    return decorator
+    # Optional: rate limit by API key header
+    map $http_x_api_key $limit_key {
+        default         $binary_remote_addr;
+        "~.+"           $http_x_api_key;
+    }
+    limit_req_zone $limit_key zone=api_by_key:10m rate=100r/m;
 
-@app.route('/api/resource')
-@rate_limit(limit=100, window=60)
-def get_resource():
-    return jsonify({'data': 'resource'})
+    server {
+        listen 80;
+
+        location /api/resource {
+            # Allow small bursts (up to 10 excess), delay after 5
+            limit_req zone=api_by_key burst=10 delay=5;
+
+            # Custom 429 error response
+            limit_req_status 429;
+            error_page 429 = @rate_limited;
+
+            proxy_pass http://upstream_backend;
+
+            # Forward rate limit headers from upstream
+            add_header X-RateLimit-Limit    100;
+            add_header X-RateLimit-Reset    $upstream_http_x_ratelimit_reset;
+        }
+
+        location @rate_limited {
+            default_type application/json;
+            return 429 '{"error":"Rate limit exceeded","retry_after":45}';
+        }
+    }
+}
 ```
 
 ```
@@ -624,93 +717,106 @@ Rate Limiting Tiers:
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-```python
-from dataclasses import dataclass
-from typing import List, Optional
-from enum import Enum
+```go
+package main
 
-class Tier(Enum):
-    FREE = "free"
-    PRO = "pro"
-    ENTERPRISE = "enterprise"
+import "fmt"
 
-@dataclass
-class RateLimitRule:
-    name: str
-    key_template: str  # e.g., "user:{user_id}" or "global"
-    limit: int
-    window_seconds: int
+type Tier int
 
-class TieredRateLimiter:
-    def __init__(self, redis_client):
-        self.redis = redis_client
-        self.limiter = RedisRateLimiter(redis_client)
-        
-        # Define tier limits
-        self.tier_limits = {
-            Tier.FREE: {'per_minute': 60, 'per_hour': 1000, 'per_day': 10000},
-            Tier.PRO: {'per_minute': 600, 'per_hour': 10000, 'per_day': 100000},
-            Tier.ENTERPRISE: {'per_minute': 6000, 'per_hour': 100000, 'per_day': 1000000},
-        }
-        
-        # Endpoint-specific limits (override tier limits)
-        self.endpoint_limits = {
-            '/api/search': {'limit': 10, 'window': 1},  # 10/sec
-            '/api/export': {'limit': 5, 'window': 60},   # 5/min
-            '/api/batch': {'limit': 1, 'window': 10},    # 1/10sec
-        }
-    
-    def check(self, user_id: str, tier: Tier, endpoint: str) -> tuple[bool, dict]:
-        """Check all applicable rate limits"""
-        
-        results = []
-        
-        # 1. Global rate limit
-        allowed, info = self.limiter.sliding_window(
-            key="global",
-            limit=100000,
-            window_seconds=1
-        )
-        if not allowed:
-            return False, {'reason': 'global_limit', **info}
-        results.append(('global', info))
-        
-        # 2. Endpoint-specific limit
-        if endpoint in self.endpoint_limits:
-            config = self.endpoint_limits[endpoint]
-            allowed, info = self.limiter.sliding_window(
-                key=f"endpoint:{endpoint}:{user_id}",
-                limit=config['limit'],
-                window_seconds=config['window']
-            )
-            if not allowed:
-                return False, {'reason': f'endpoint_limit:{endpoint}', **info}
-            results.append(('endpoint', info))
-        
-        # 3. User tier limits (check multiple windows)
-        limits = self.tier_limits[tier]
-        
-        for window_name, limit in limits.items():
-            window_seconds = {
-                'per_minute': 60,
-                'per_hour': 3600,
-                'per_day': 86400
-            }[window_name]
-            
-            allowed, info = self.limiter.sliding_window(
-                key=f"user:{user_id}:{window_name}",
-                limit=limit,
-                window_seconds=window_seconds
-            )
-            if not allowed:
-                return False, {'reason': f'user_limit:{window_name}', **info}
-            results.append((window_name, info))
-        
-        # All limits passed
-        return True, {
-            'limits_checked': len(results),
-            'details': results
-        }
+const (
+	TierFree Tier = iota
+	TierPro
+	TierEnterprise
+)
+
+type RateLimitRule struct {
+	Name          string
+	KeyTemplate   string // e.g., "user:{user_id}" or "global"
+	Limit         int
+	WindowSeconds int
+}
+
+type EndpointLimit struct {
+	Limit  int
+	Window int
+}
+
+type TierLimits struct {
+	PerMinute int
+	PerHour   int
+	PerDay    int
+}
+
+type CheckResult struct {
+	Allowed       bool
+	Reason        string
+	LimitsChecked int
+}
+
+type TieredRateLimiter struct {
+	limiter        *RedisRateLimiter // assumes RedisRateLimiter from earlier section
+	tierLimits     map[Tier]TierLimits
+	endpointLimits map[string]EndpointLimit
+}
+
+func NewTieredRateLimiter(limiter *RedisRateLimiter) *TieredRateLimiter {
+	return &TieredRateLimiter{
+		limiter: limiter,
+		tierLimits: map[Tier]TierLimits{
+			TierFree:       {PerMinute: 60, PerHour: 1000, PerDay: 10000},
+			TierPro:        {PerMinute: 600, PerHour: 10000, PerDay: 100000},
+			TierEnterprise: {PerMinute: 6000, PerHour: 100000, PerDay: 1000000},
+		},
+		endpointLimits: map[string]EndpointLimit{
+			"/api/search": {Limit: 10, Window: 1},  // 10/sec
+			"/api/export": {Limit: 5, Window: 60},   // 5/min
+			"/api/batch":  {Limit: 1, Window: 10},   // 1/10sec
+		},
+	}
+}
+
+func (t *TieredRateLimiter) Check(userID string, tier Tier, endpoint string) CheckResult {
+	checked := 0
+
+	// 1. Global rate limit
+	if allowed, _ := t.limiter.SlidingWindow("global", 100000, 1); !allowed {
+		return CheckResult{Allowed: false, Reason: "global_limit"}
+	}
+	checked++
+
+	// 2. Endpoint-specific limit
+	if ep, ok := t.endpointLimits[endpoint]; ok {
+		key := fmt.Sprintf("endpoint:%s:%s", endpoint, userID)
+		if allowed, _ := t.limiter.SlidingWindow(key, ep.Limit, ep.Window); !allowed {
+			return CheckResult{Allowed: false, Reason: fmt.Sprintf("endpoint_limit:%s", endpoint)}
+		}
+		checked++
+	}
+
+	// 3. User tier limits (check multiple windows)
+	limits := t.tierLimits[tier]
+	windows := []struct {
+		name    string
+		limit   int
+		seconds int
+	}{
+		{"per_minute", limits.PerMinute, 60},
+		{"per_hour", limits.PerHour, 3600},
+		{"per_day", limits.PerDay, 86400},
+	}
+
+	for _, w := range windows {
+		key := fmt.Sprintf("user:%s:%s", userID, w.name)
+		if allowed, _ := t.limiter.SlidingWindow(key, w.limit, w.seconds); !allowed {
+			return CheckResult{Allowed: false, Reason: fmt.Sprintf("user_limit:%s", w.name)}
+		}
+		checked++
+	}
+
+	// All limits passed
+	return CheckResult{Allowed: true, LimitsChecked: checked}
+}
 ```
 
 ---
@@ -719,81 +825,125 @@ class TieredRateLimiter:
 
 ### By IP Address
 
-```python
-def get_client_ip(request) -> str:
-    """Extract real client IP considering proxies"""
-    # Check forwarded headers
-    forwarded = request.headers.get('X-Forwarded-For')
-    if forwarded:
-        # First IP is the original client
-        return forwarded.split(',')[0].strip()
-    
-    real_ip = request.headers.get('X-Real-IP')
-    if real_ip:
-        return real_ip
-    
-    return request.remote_addr
+```go
+package main
 
-# Problem: Shared IPs (NAT, proxies)
-# Solution: Combine with other identifiers
+import (
+	"net"
+	"net/http"
+	"strings"
+)
+
+func GetClientIP(r *http.Request) string {
+	// Check forwarded headers
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		// First IP is the original client
+		if ip := strings.TrimSpace(strings.Split(forwarded, ",")[0]); ip != "" {
+			return ip
+		}
+	}
+
+	if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
+		return realIP
+	}
+
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// Problem: Shared IPs (NAT, proxies)
+// Solution: Combine with other identifiers
 ```
 
 ### By API Key
 
-```python
-def rate_limit_by_api_key(request):
-    api_key = request.headers.get('X-API-Key')
-    
-    if not api_key:
-        # Anonymous requests get stricter limits
-        return rate_limit_by_ip(request)
-    
-    # Get tier from API key
-    key_info = get_api_key_info(api_key)
-    tier = key_info.tier
-    
-    return check_rate_limit(
-        key=f"api_key:{api_key}",
-        tier=tier
-    )
+```go
+package main
+
+import (
+	"fmt"
+	"net/http"
+)
+
+func RateLimitByAPIKey(r *http.Request) (bool, string) {
+	apiKey := r.Header.Get("X-API-Key")
+
+	if apiKey == "" {
+		// Anonymous requests get stricter limits
+		return RateLimitByIP(r)
+	}
+
+	// Get tier from API key
+	keyInfo := GetAPIKeyInfo(apiKey)
+
+	return CheckRateLimit(
+		fmt.Sprintf("api_key:%s", apiKey),
+		keyInfo.Tier,
+	)
+}
 ```
 
 ### By User with Quotas
 
-```python
-@dataclass
-class UserQuota:
-    requests_remaining: int
-    requests_total: int
-    reset_at: datetime
-    overage_allowed: bool
-    overage_rate: float  # Cost per request over quota
+```go
+package main
 
-class QuotaRateLimiter:
-    def check_quota(self, user_id: str) -> tuple[bool, dict]:
-        quota = self.get_user_quota(user_id)
-        
-        if quota.requests_remaining > 0:
-            self.decrement_quota(user_id)
-            return True, {
-                'remaining': quota.requests_remaining - 1,
-                'total': quota.requests_total,
-                'reset_at': quota.reset_at.isoformat()
-            }
-        
-        if quota.overage_allowed:
-            # Allow but charge overage
-            self.record_overage(user_id)
-            return True, {
-                'remaining': 0,
-                'overage': True,
-                'overage_rate': quota.overage_rate
-            }
-        
-        return False, {
-            'remaining': 0,
-            'reset_at': quota.reset_at.isoformat()
-        }
+import "time"
+
+type UserQuota struct {
+	RequestsRemaining int
+	RequestsTotal     int
+	ResetAt           time.Time
+	OverageAllowed    bool
+	OverageRate       float64 // cost per request over quota
+}
+
+type QuotaResult struct {
+	Allowed     bool
+	Remaining   int
+	Total       int
+	ResetAt     time.Time
+	Overage     bool
+	OverageRate float64
+}
+
+type QuotaRateLimiter struct {
+	// storage fields omitted for brevity
+}
+
+func (q *QuotaRateLimiter) CheckQuota(userID string) QuotaResult {
+	quota := q.getUserQuota(userID)
+
+	if quota.RequestsRemaining > 0 {
+		q.decrementQuota(userID)
+		return QuotaResult{
+			Allowed:   true,
+			Remaining: quota.RequestsRemaining - 1,
+			Total:     quota.RequestsTotal,
+			ResetAt:   quota.ResetAt,
+		}
+	}
+
+	if quota.OverageAllowed {
+		// Allow but charge overage
+		q.recordOverage(userID)
+		return QuotaResult{
+			Allowed:     true,
+			Remaining:   0,
+			Overage:     true,
+			OverageRate: quota.OverageRate,
+		}
+	}
+
+	return QuotaResult{
+		Allowed:   false,
+		Remaining: 0,
+		ResetAt:   quota.ResetAt,
+	}
+}
 ```
 
 ---

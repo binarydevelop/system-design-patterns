@@ -47,17 +47,12 @@ Use for:
 - Errors occurred
 ```
 
-```python
-from prometheus_client import Counter
-
-http_requests = Counter(
-    'http_requests_total',
-    'Total HTTP requests',
-    ['method', 'endpoint', 'status']
-)
-
-# Increment
-http_requests.labels(method='GET', endpoint='/api/users', status='200').inc()
+```
+# TYPE http_requests_total counter
+# HELP http_requests_total Total HTTP requests.
+http_requests_total{method="GET",endpoint="/api/users",status="200"} 1027
+http_requests_total{method="POST",endpoint="/api/orders",status="201"} 563
+http_requests_total{method="GET",endpoint="/api/users",status="500"} 12
 ```
 
 ### Gauge
@@ -78,25 +73,11 @@ Use for:
 - Active users
 ```
 
-```python
-from prometheus_client import Gauge
-
-active_connections = Gauge(
-    'active_connections',
-    'Current active connections',
-    ['service']
-)
-
-# Set absolute value
-active_connections.labels(service='api').set(42)
-
-# Increment/decrement
-active_connections.labels(service='api').inc()
-active_connections.labels(service='api').dec()
-
-# Context manager for tracking in-progress
-with active_connections.labels(service='api').track_inprogress():
-    process_request()
+```
+# TYPE active_connections gauge
+# HELP active_connections Current active connections.
+active_connections{service="api"} 42
+active_connections{service="worker"} 17
 ```
 
 ### Histogram
@@ -125,39 +106,32 @@ Enables:
 - SLO tracking
 ```
 
-```python
-from prometheus_client import Histogram
-
-request_duration = Histogram(
-    'http_request_duration_seconds',
-    'HTTP request duration in seconds',
-    ['method', 'endpoint'],
-    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
-)
-
-# Observe a value
-request_duration.labels(method='GET', endpoint='/api').observe(0.25)
-
-# Time a function
-@request_duration.labels(method='GET', endpoint='/api').time()
-def handle_request():
-    pass
+```
+# TYPE http_request_duration_seconds histogram
+# HELP http_request_duration_seconds HTTP request duration in seconds.
+http_request_duration_seconds_bucket{method="GET",endpoint="/api",le="0.01"} 0
+http_request_duration_seconds_bucket{method="GET",endpoint="/api",le="0.05"} 3
+http_request_duration_seconds_bucket{method="GET",endpoint="/api",le="0.1"} 4
+http_request_duration_seconds_bucket{method="GET",endpoint="/api",le="0.5"} 6
+http_request_duration_seconds_bucket{method="GET",endpoint="/api",le="1.0"} 6
+http_request_duration_seconds_bucket{method="GET",endpoint="/api",le="5.0"} 7
+http_request_duration_seconds_bucket{method="GET",endpoint="/api",le="+Inf"} 7
+http_request_duration_seconds_sum{method="GET",endpoint="/api"} 2.82
+http_request_duration_seconds_count{method="GET",endpoint="/api"} 7
 ```
 
 ### Summary
 
 Similar to histogram but calculates quantiles client-side.
 
-```python
-from prometheus_client import Summary
-
-request_duration = Summary(
-    'http_request_duration_seconds',
-    'HTTP request duration',
-    ['method'],
-    # Pre-calculated quantiles (cannot aggregate across instances!)
-    objectives={0.5: 0.05, 0.9: 0.01, 0.99: 0.001}
-)
+```
+# TYPE http_request_duration_seconds summary
+# HELP http_request_duration_seconds HTTP request duration.
+http_request_duration_seconds{method="GET",quantile="0.5"} 0.042
+http_request_duration_seconds{method="GET",quantile="0.9"} 0.15
+http_request_duration_seconds{method="GET",quantile="0.99"} 0.48
+http_request_duration_seconds_sum{method="GET"} 8734.29
+http_request_duration_seconds_count{method="GET"} 51432
 ```
 
 **Histogram vs. Summary:**
@@ -176,35 +150,35 @@ request_duration = Summary(
 
 ### Prometheus Naming Best Practices
 
-```python
-# Format: <namespace>_<subsystem>_<name>_<unit>
+```
+Format: <namespace>_<subsystem>_<name>_<unit>
 
-# GOOD
-http_requests_total                    # Counter
-http_request_duration_seconds          # Histogram
-process_memory_bytes                   # Gauge
-database_connections_active            # Gauge
+GOOD:
+  http_requests_total                    # Counter — use _total suffix
+  http_request_duration_seconds          # Histogram — base unit (seconds, not ms)
+  process_memory_bytes                   # Gauge — base unit (bytes, not MB)
+  database_connections_active            # Gauge
 
-# BAD
-requests                               # Too vague
-http_requests_count                    # Use _total for counters
-requestDurationMilliseconds            # Wrong format, wrong unit
-HttpRequestDuration                    # Wrong case
+BAD:
+  requests                               # Too vague
+  http_requests_count                    # Use _total for counters
+  requestDurationMilliseconds            # Wrong format, wrong unit
+  HttpRequestDuration                    # Wrong case
 ```
 
 ### Label Best Practices
 
-```python
-# GOOD - Low cardinality
-http_requests_total{method="GET", status="200", endpoint="/api/users"}
+```
+GOOD — low cardinality:
+  http_requests_total{method="GET", status="200", endpoint="/api/users"}
 
-# BAD - High cardinality (unbounded)
-http_requests_total{user_id="12345"}  # Millions of unique values!
-http_requests_total{request_id="..."}  # Unique per request!
+BAD — high cardinality (unbounded):
+  http_requests_total{user_id="12345"}   # Millions of unique values!
+  http_requests_total{request_id="..."}  # Unique per request!
 
-# Rule of thumb: 
-# Unique label combinations < 10,000
-# Each label value should have < 100 unique values
+Rule of thumb:
+  Unique label combinations < 10,000
+  Each label value should have < 100 unique values
 ```
 
 ---
@@ -332,107 +306,112 @@ Relationship to RED/USE:
 
 ## Instrumentation Patterns
 
-### Middleware Instrumentation
+### Go Instrumentation Example
 
-```python
-import time
-from prometheus_client import Counter, Histogram
+```go
+package main
 
-REQUEST_COUNT = Counter(
-    'http_requests_total',
-    'Total requests',
-    ['method', 'endpoint', 'status']
+import (
+	"net/http"
+	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 )
 
-REQUEST_LATENCY = Histogram(
-    'http_request_duration_seconds',
-    'Request latency',
-    ['method', 'endpoint'],
-    buckets=[0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+var meter = otel.Meter("api-server")
+
+var (
+	requestCount, _    = meter.Int64Counter("http_requests_total",
+		metric.WithDescription("Total HTTP requests"))
+	requestDuration, _ = meter.Float64Histogram("http_request_duration_seconds",
+		metric.WithDescription("HTTP request duration in seconds"))
+	inFlight, _        = meter.Int64UpDownCounter("http_requests_in_progress",
+		metric.WithDescription("Requests currently being processed"))
 )
 
-REQUESTS_IN_PROGRESS = Gauge(
-    'http_requests_in_progress',
-    'Requests currently being processed',
-    ['method', 'endpoint']
-)
+func metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attrs := metric.WithAttributes(
+			attribute.String("method", r.Method),
+			attribute.String("endpoint", r.URL.Path),
+		)
+		inFlight.Add(r.Context(), 1, attrs)
+		start := time.Now()
 
-class MetricsMiddleware:
-    def __init__(self, app):
-        self.app = app
-    
-    def __call__(self, environ, start_response):
-        method = environ['REQUEST_METHOD']
-        endpoint = self.normalize_endpoint(environ['PATH_INFO'])
-        
-        REQUESTS_IN_PROGRESS.labels(method=method, endpoint=endpoint).inc()
-        start_time = time.time()
-        
-        status_code = '500'  # Default if exception
-        
-        def custom_start_response(status, headers, exc_info=None):
-            nonlocal status_code
-            status_code = status.split()[0]
-            return start_response(status, headers, exc_info)
-        
-        try:
-            response = self.app(environ, custom_start_response)
-            return response
-        finally:
-            duration = time.time() - start_time
-            
-            REQUEST_COUNT.labels(
-                method=method, 
-                endpoint=endpoint, 
-                status=status_code
-            ).inc()
-            
-            REQUEST_LATENCY.labels(
-                method=method, 
-                endpoint=endpoint
-            ).observe(duration)
-            
-            REQUESTS_IN_PROGRESS.labels(method=method, endpoint=endpoint).dec()
-    
-    def normalize_endpoint(self, path):
-        # /users/123 → /users/{id}
-        # Prevents cardinality explosion
-        import re
-        path = re.sub(r'/\d+', '/{id}', path)
-        path = re.sub(r'/[a-f0-9-]{36}', '/{uuid}', path)
-        return path
+		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		next.ServeHTTP(rw, r)
+
+		duration := time.Since(start).Seconds()
+		requestCount.Add(r.Context(), 1, metric.WithAttributes(
+			attribute.String("method", r.Method),
+			attribute.String("endpoint", r.URL.Path),
+			attribute.Int("status", rw.statusCode),
+		))
+		requestDuration.Record(r.Context(), duration, attrs)
+		inFlight.Add(r.Context(), -1, attrs)
+	})
+}
+```
+
+### OpenTelemetry Collector Pipeline (Metrics)
+
+```yaml
+# otel-collector-config.yaml
+receivers:
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: "api-server"
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["api:8080"]
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+
+exporters:
+  prometheusremotewrite:
+    endpoint: "http://mimir:9009/api/v1/push"
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, batch]
+      exporters: [prometheusremotewrite, prometheus]
 ```
 
 ### Business Metrics
 
-```python
-# Business-relevant metrics beyond technical ones
+```
+# TYPE orders_total counter
+# HELP orders_total Total orders processed.
+orders_total{status="completed",payment_method="credit_card"} 4521
+orders_total{status="completed",payment_method="paypal"} 1203
+orders_total{status="refunded",payment_method="credit_card"} 47
 
-orders_total = Counter(
-    'orders_total',
-    'Total orders processed',
-    ['status', 'payment_method']
-)
+# TYPE order_value_dollars histogram
+# HELP order_value_dollars Order value in dollars.
+order_value_dollars_bucket{le="50"} 1200
+order_value_dollars_bucket{le="100"} 3100
+order_value_dollars_bucket{le="500"} 5400
+order_value_dollars_bucket{le="+Inf"} 5771
 
-order_value = Histogram(
-    'order_value_dollars',
-    'Order value in dollars',
-    buckets=[10, 25, 50, 100, 250, 500, 1000, 5000]
-)
-
-active_users = Gauge(
-    'active_users',
-    'Currently active users'
-)
-
-# In application code
-def process_order(order):
-    orders_total.labels(
-        status='completed',
-        payment_method=order.payment_method
-    ).inc()
-    
-    order_value.observe(order.total)
+# TYPE active_users gauge
+# HELP active_users Currently active users.
+active_users 342
 ```
 
 ---
@@ -604,25 +583,22 @@ receivers:
 
 ### Cardinality Explosion
 
-```python
-# BAD: Unbounded label values
-metrics.labels(
-    user_id=user.id,        # Millions of users
-    request_id=request.id,  # Unique per request
-    timestamp=str(time.time())  # Infinite
-)
+```
+BAD — unbounded label values:
+  http_requests_total{user_id="8291037"}      # Millions of users
+  http_requests_total{request_id="a1b2c3..."}  # Unique per request
+  http_requests_total{timestamp="1710504000"}  # Infinite
 
-# Impact:
-# - Memory exhaustion
-# - Query performance degradation
-# - Storage costs explode
+Impact:
+  - Memory exhaustion in Prometheus
+  - Query performance degradation
+  - Storage costs explode
 
-# GOOD: Bounded, low-cardinality labels
-metrics.labels(
-    user_tier=user.tier,    # free, pro, enterprise
-    endpoint="/api/users",  # ~100 endpoints
-    status_class="2xx"      # 2xx, 3xx, 4xx, 5xx
-)
+GOOD — bounded, low-cardinality labels:
+  http_requests_total{user_tier="pro",endpoint="/api/users",status_class="2xx"}
+  # user_tier:    free, pro, enterprise  (3 values)
+  # endpoint:     ~100 routes
+  # status_class: 2xx, 3xx, 4xx, 5xx    (4 values)
 ```
 
 ### Monitoring What's Easy, Not What Matters

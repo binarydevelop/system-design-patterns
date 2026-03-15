@@ -70,141 +70,114 @@ Comment (keepalive):
 
 ## Basic Implementation
 
-### Server-Side (Python/Flask)
+### Server-Side (Node.js)
 
-```python
-from flask import Flask, Response, request
-import json
-import time
-from typing import Generator
-import queue
-import threading
+```javascript
+import http from 'node:http';
 
-app = Flask(__name__)
+class SSEManager {
+  /** Manage SSE connections and broadcasting. */
+  constructor() {
+    this.clients = new Map();   // clientId -> http.ServerResponse
+    this.messageId = 0;
+  }
 
-class SSEManager:
-    """Manage SSE connections and broadcasting."""
-    
-    def __init__(self):
-        self.clients: dict[str, queue.Queue] = {}
-        self.message_id = 0
-        self.lock = threading.Lock()
-    
-    def register(self, client_id: str) -> queue.Queue:
-        """Register a new client."""
-        client_queue = queue.Queue()
-        with self.lock:
-            self.clients[client_id] = client_queue
-        return client_queue
-    
-    def unregister(self, client_id: str):
-        """Unregister a client."""
-        with self.lock:
-            self.clients.pop(client_id, None)
-    
-    def broadcast(self, data: dict, event: str = None):
-        """Send message to all clients."""
-        with self.lock:
-            self.message_id += 1
-            msg_id = self.message_id
-            clients = list(self.clients.values())
-        
-        for client_queue in clients:
-            try:
-                client_queue.put_nowait({
-                    'id': msg_id,
-                    'event': event,
-                    'data': data
-                })
-            except queue.Full:
-                pass  # Client too slow, skip
-    
-    def send_to(self, client_id: str, data: dict, event: str = None):
-        """Send message to specific client."""
-        with self.lock:
-            if client_id in self.clients:
-                self.message_id += 1
-                try:
-                    self.clients[client_id].put_nowait({
-                        'id': self.message_id,
-                        'event': event,
-                        'data': data
-                    })
-                except queue.Full:
-                    pass
+  register(clientId, res) {
+    this.clients.set(clientId, res);
+  }
 
-sse_manager = SSEManager()
+  unregister(clientId) {
+    this.clients.delete(clientId);
+  }
 
-def format_sse(data: dict, event: str = None, id: int = None) -> str:
-    """Format data as SSE message."""
-    lines = []
-    
-    if id is not None:
-        lines.append(f'id: {id}')
-    
-    if event:
-        lines.append(f'event: {event}')
-    
-    # Handle multi-line data
-    json_data = json.dumps(data)
-    lines.append(f'data: {json_data}')
-    
-    return '\n'.join(lines) + '\n\n'
+  broadcast(data, event = null) {
+    this.messageId += 1;
+    const frame = formatSSE(data, event, this.messageId);
 
-def event_stream(client_id: str, last_event_id: int = None) -> Generator:
-    """Generate SSE stream for client."""
-    client_queue = sse_manager.register(client_id)
-    
-    try:
-        # Send any missed messages if reconnecting
-        if last_event_id:
-            missed = get_messages_since(last_event_id)
-            for msg in missed:
-                yield format_sse(msg['data'], msg.get('event'), msg['id'])
-        
-        # Send keepalive comment
-        yield ': connected\n\n'
-        
-        while True:
-            try:
-                # Wait for message with timeout (for keepalive)
-                message = client_queue.get(timeout=30)
-                yield format_sse(
-                    message['data'],
-                    message.get('event'),
-                    message.get('id')
-                )
-            except queue.Empty:
-                # Send keepalive comment
-                yield ': keepalive\n\n'
-    finally:
-        sse_manager.unregister(client_id)
+    for (const res of this.clients.values()) {
+      res.write(frame);
+    }
+  }
 
-@app.route('/events')
-def sse_endpoint():
-    """SSE endpoint."""
-    client_id = request.args.get('client_id', request.remote_addr)
-    last_event_id = request.headers.get('Last-Event-ID', type=int)
-    
-    response = Response(
-        event_stream(client_id, last_event_id),
-        mimetype='text/event-stream'
-    )
-    
-    # Important headers
-    response.headers['Cache-Control'] = 'no-cache'
-    response.headers['Connection'] = 'keep-alive'
-    response.headers['X-Accel-Buffering'] = 'no'  # Disable nginx buffering
-    
-    return response
+  sendTo(clientId, data, event = null) {
+    const res = this.clients.get(clientId);
+    if (!res) return;
 
-@app.route('/publish', methods=['POST'])
-def publish():
-    """Publish event to all clients."""
-    data = request.json
-    event_type = data.pop('_event', None)
-    sse_manager.broadcast(data, event_type)
-    return {'status': 'published'}
+    this.messageId += 1;
+    res.write(formatSSE(data, event, this.messageId));
+  }
+}
+
+const sseManager = new SSEManager();
+
+function formatSSE(data, event = null, id = null) {
+  const lines = [];
+  if (id !== null) lines.push(`id: ${id}`);
+  if (event) lines.push(`event: ${event}`);
+  lines.push(`data: ${JSON.stringify(data)}`);
+  return lines.join('\n') + '\n\n';
+}
+
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+
+  // SSE endpoint
+  if (req.method === 'GET' && url.pathname === '/events') {
+    const clientId = url.searchParams.get('client_id') ?? req.socket.remoteAddress;
+    const lastEventId = req.headers['last-event-id']
+      ? Number(req.headers['last-event-id'])
+      : null;
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no', // Disable nginx buffering
+    });
+
+    // Replay missed messages if reconnecting
+    if (lastEventId) {
+      for (const msg of getMessagesSince(lastEventId)) {
+        res.write(formatSSE(msg.data, msg.event ?? null, msg.id));
+      }
+    }
+
+    // Send keepalive comment
+    res.write(': connected\n\n');
+
+    sseManager.register(clientId, res);
+
+    // Keepalive interval
+    const keepalive = setInterval(() => res.write(': keepalive\n\n'), 30_000);
+
+    req.on('close', () => {
+      clearInterval(keepalive);
+      sseManager.unregister(clientId);
+    });
+    return;
+  }
+
+  // Publish endpoint
+  if (req.method === 'POST' && url.pathname === '/publish') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      const data = JSON.parse(body);
+      const eventType = data._event ?? null;
+      delete data._event;
+      sseManager.broadcast(data, eventType);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'published' }));
+    });
+    return;
+  }
+
+  res.writeHead(404);
+  res.end();
+});
+
+server.listen(3000, () => console.log('SSE server listening on :3000'));
 ```
 
 ### Client-Side (JavaScript)
@@ -326,156 +299,140 @@ sse.connect();
 
 ## Scaling SSE with Redis
 
-```python
-import redis
-import json
-import threading
-from typing import Dict, Set
-import gevent
-from gevent import queue as gqueue
+```javascript
+import http from 'node:http';
+import { createClient } from 'redis';
+import { randomUUID } from 'node:crypto';
 
-class RedisSSEManager:
-    """
-    Scalable SSE using Redis pub/sub.
-    Works across multiple server instances.
-    """
-    
-    def __init__(self, redis_url: str = 'redis://localhost:6379'):
-        self.redis = redis.from_url(redis_url)
-        self.pubsub = self.redis.pubsub()
-        self.local_clients: Dict[str, Dict[str, gqueue.Queue]] = {}
-        self.subscriptions: Set[str] = set()
-        self.lock = threading.Lock()
-        
-        # Message ID counter in Redis for consistency
-        self.id_key = 'sse:message_id'
-        
-        # Start listener
-        self.listener = gevent.spawn(self._listen)
-    
-    def _listen(self):
-        """Listen to Redis pub/sub."""
-        for message in self.pubsub.listen():
-            if message['type'] == 'message':
-                channel = message['channel'].decode()
-                data = json.loads(message['data'])
-                self._distribute_locally(channel, data)
-    
-    def _distribute_locally(self, channel: str, data: dict):
-        """Send message to local clients subscribed to channel."""
-        with self.lock:
-            clients = list(self.local_clients.get(channel, {}).values())
-        
-        for client_queue in clients:
-            try:
-                client_queue.put_nowait(data)
-            except:
-                pass
-    
-    def subscribe(self, channel: str, client_id: str) -> gqueue.Queue:
-        """Subscribe client to channel."""
-        client_queue = gqueue.Queue(maxsize=100)
-        
-        with self.lock:
-            if channel not in self.local_clients:
-                self.local_clients[channel] = {}
-                self.pubsub.subscribe(channel)
-                self.subscriptions.add(channel)
-            
-            self.local_clients[channel][client_id] = client_queue
-        
-        return client_queue
-    
-    def unsubscribe(self, channel: str, client_id: str):
-        """Unsubscribe client from channel."""
-        with self.lock:
-            if channel in self.local_clients:
-                self.local_clients[channel].pop(client_id, None)
-                
-                if not self.local_clients[channel]:
-                    del self.local_clients[channel]
-                    self.pubsub.unsubscribe(channel)
-                    self.subscriptions.discard(channel)
-    
-    def publish(self, channel: str, data: dict, event: str = None) -> int:
-        """Publish message to channel (all instances)."""
-        message_id = self.redis.incr(self.id_key)
-        
-        message = {
-            'id': message_id,
-            'event': event,
-            'data': data,
-            'timestamp': time.time()
-        }
-        
-        # Store in Redis for reconnection support
-        self._store_message(channel, message)
-        
-        # Publish to all instances
-        self.redis.publish(channel, json.dumps(message))
-        
-        return message_id
-    
-    def _store_message(self, channel: str, message: dict, ttl: int = 300):
-        """Store message for reconnection support."""
-        key = f'sse:history:{channel}'
-        self.redis.zadd(key, {json.dumps(message): message['id']})
-        self.redis.expire(key, ttl)
-        
-        # Trim to last 1000 messages
-        self.redis.zremrangebyrank(key, 0, -1001)
-    
-    def get_messages_since(self, channel: str, last_id: int) -> list:
-        """Get messages since last_id for reconnection."""
-        key = f'sse:history:{channel}'
-        messages = self.redis.zrangebyscore(
-            key, 
-            f'({last_id}',  # exclusive
-            '+inf'
-        )
-        return [json.loads(m) for m in messages]
+/**
+ * Scalable SSE using Redis pub/sub.
+ * Works across multiple server instances.
+ */
+class RedisSSEManager {
+  constructor(redisUrl = 'redis://localhost:6379') {
+    this.pub = createClient({ url: redisUrl });
+    this.sub = this.pub.duplicate();
+    this.localClients = new Map();   // channel -> Map<clientId, res>
+    this.subscriptions = new Set();
+    this.idKey = 'sse:message_id';
+  }
 
-# Usage with Flask
-redis_sse = RedisSSEManager()
+  async connect() {
+    await Promise.all([this.pub.connect(), this.sub.connect()]);
+  }
 
-def channel_stream(channel: str, client_id: str, last_id: int = None):
-    """Generate SSE stream for a channel."""
-    client_queue = redis_sse.subscribe(channel, client_id)
-    
-    try:
-        # Replay missed messages
-        if last_id:
-            for msg in redis_sse.get_messages_since(channel, last_id):
-                yield format_sse(msg['data'], msg.get('event'), msg['id'])
-        
-        yield ': connected\n\n'
-        
-        while True:
-            try:
-                message = client_queue.get(timeout=30)
-                yield format_sse(
-                    message['data'],
-                    message.get('event'),
-                    message['id']
-                )
-            except gqueue.Empty:
-                yield ': keepalive\n\n'
-    finally:
-        redis_sse.unsubscribe(channel, client_id)
+  _distributeLocally(channel, data) {
+    const clients = this.localClients.get(channel);
+    if (!clients) return;
 
-@app.route('/events/<channel>')
-def channel_events(channel):
-    client_id = request.args.get('client_id', str(uuid.uuid4()))
-    last_id = request.headers.get('Last-Event-ID', type=int)
-    
-    return Response(
-        channel_stream(channel, client_id, last_id),
-        mimetype='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache',
-            'X-Accel-Buffering': 'no'
-        }
-    )
+    const frame = formatSSE(data.data, data.event ?? null, data.id);
+    for (const res of clients.values()) {
+      res.write(frame);
+    }
+  }
+
+  async subscribe(channel, clientId, res) {
+    if (!this.localClients.has(channel)) {
+      this.localClients.set(channel, new Map());
+      await this.sub.subscribe(channel, (raw) => {
+        this._distributeLocally(channel, JSON.parse(raw));
+      });
+      this.subscriptions.add(channel);
+    }
+    this.localClients.get(channel).set(clientId, res);
+  }
+
+  unsubscribe(channel, clientId) {
+    const clients = this.localClients.get(channel);
+    if (!clients) return;
+
+    clients.delete(clientId);
+    if (clients.size === 0) {
+      this.localClients.delete(channel);
+      this.sub.unsubscribe(channel);
+      this.subscriptions.delete(channel);
+    }
+  }
+
+  async publish(channel, data, event = null) {
+    const messageId = await this.pub.incr(this.idKey);
+
+    const message = {
+      id: messageId,
+      event,
+      data,
+      timestamp: Date.now(),
+    };
+
+    // Store in Redis for reconnection support
+    await this._storeMessage(channel, message);
+
+    // Publish to all instances
+    await this.pub.publish(channel, JSON.stringify(message));
+    return messageId;
+  }
+
+  async _storeMessage(channel, message, ttl = 300) {
+    const key = `sse:history:${channel}`;
+    await this.pub.zAdd(key, { score: message.id, value: JSON.stringify(message) });
+    await this.pub.expire(key, ttl);
+    // Trim to last 1000 messages
+    await this.pub.zRemRangeByRank(key, 0, -1001);
+  }
+
+  async getMessagesSince(channel, lastId) {
+    const key = `sse:history:${channel}`;
+    const raw = await this.pub.zRangeByScore(key, `(${lastId}`, '+inf');
+    return raw.map((m) => JSON.parse(m));
+  }
+}
+
+// Usage with Node.js http server
+const redisSSE = new RedisSSEManager();
+await redisSSE.connect();
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const channelMatch = url.pathname.match(/^\/events\/(.+)$/);
+
+  if (req.method === 'GET' && channelMatch) {
+    const channel = channelMatch[1];
+    const clientId = url.searchParams.get('client_id') ?? randomUUID();
+    const lastId = req.headers['last-event-id']
+      ? Number(req.headers['last-event-id'])
+      : null;
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'X-Accel-Buffering': 'no',
+    });
+
+    // Replay missed messages
+    if (lastId) {
+      for (const msg of await redisSSE.getMessagesSince(channel, lastId)) {
+        res.write(formatSSE(msg.data, msg.event ?? null, msg.id));
+      }
+    }
+
+    res.write(': connected\n\n');
+
+    await redisSSE.subscribe(channel, clientId, res);
+
+    const keepalive = setInterval(() => res.write(': keepalive\n\n'), 30_000);
+
+    req.on('close', () => {
+      clearInterval(keepalive);
+      redisSSE.unsubscribe(channel, clientId);
+    });
+    return;
+  }
+
+  res.writeHead(404);
+  res.end();
+});
+
+server.listen(3000, () => console.log('SSE server listening on :3000'));
 ```
 
 ---
@@ -484,45 +441,48 @@ def channel_events(channel):
 
 ### Real-Time Dashboard
 
-```python
-import psutil
-import time
-from threading import Thread
+```javascript
+import os from 'node:os';
 
-class SystemMetricsPublisher:
-    """Publish system metrics via SSE."""
-    
-    def __init__(self, sse_manager, interval: float = 1.0):
-        self.sse = sse_manager
-        self.interval = interval
-        self.running = False
-    
-    def start(self):
-        self.running = True
-        Thread(target=self._publish_loop, daemon=True).start()
-    
-    def stop(self):
-        self.running = False
-    
-    def _publish_loop(self):
-        while self.running:
-            metrics = {
-                'cpu_percent': psutil.cpu_percent(interval=None),
-                'memory_percent': psutil.virtual_memory().percent,
-                'disk_percent': psutil.disk_usage('/').percent,
-                'network': {
-                    'bytes_sent': psutil.net_io_counters().bytes_sent,
-                    'bytes_recv': psutil.net_io_counters().bytes_recv
-                },
-                'timestamp': time.time()
-            }
-            
-            self.sse.publish('metrics', metrics, event='system-metrics')
-            time.sleep(self.interval)
+class SystemMetricsPublisher {
+  /** Publish system metrics via SSE. */
+  constructor(sseManager, interval = 1000) {
+    this.sse = sseManager;
+    this.interval = interval;
+    this.timer = null;
+  }
 
-# Start publishing
-publisher = SystemMetricsPublisher(redis_sse)
-publisher.start()
+  start() {
+    this.timer = setInterval(() => this._publish(), this.interval);
+  }
+
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+  }
+
+  _publish() {
+    const cpus = os.cpus();
+    const totalIdle = cpus.reduce((sum, c) => sum + c.times.idle, 0);
+    const totalTick = cpus.reduce(
+      (sum, c) => sum + c.times.user + c.times.nice + c.times.sys + c.times.irq + c.times.idle,
+      0,
+    );
+    const cpuPercent = ((1 - totalIdle / totalTick) * 100).toFixed(1);
+    const mem = os.totalmem() - os.freemem();
+
+    const metrics = {
+      cpu_percent: Number(cpuPercent),
+      memory_percent: Number(((mem / os.totalmem()) * 100).toFixed(1)),
+      timestamp: Date.now(),
+    };
+
+    this.sse.publish('metrics', metrics, 'system-metrics');
+  }
+}
+
+// Start publishing
+const publisher = new SystemMetricsPublisher(redisSSE);
+publisher.start();
 ```
 
 ```javascript
@@ -542,88 +502,92 @@ dashboard.connect();
 
 ### Live Activity Feed
 
-```python
-class ActivityFeedPublisher:
-    """Publish user activity events."""
-    
-    def __init__(self, sse_manager):
-        self.sse = sse_manager
-    
-    def publish_activity(self, user_id: str, action: str, details: dict):
-        """Publish activity event."""
-        event_data = {
-            'user_id': user_id,
-            'action': action,
-            'details': details,
-            'timestamp': time.time()
-        }
-        
-        # Publish to user's followers
-        for follower_id in self.get_followers(user_id):
-            self.sse.publish(f'feed:{follower_id}', event_data, event='activity')
-        
-        # Publish to global feed
-        self.sse.publish('feed:global', event_data, event='activity')
-    
-    def get_followers(self, user_id: str) -> list:
-        # Fetch from database
-        return db.get_followers(user_id)
+```javascript
+class ActivityFeedPublisher {
+  /** Publish user activity events. */
+  constructor(sseManager) {
+    this.sse = sseManager;
+  }
 
-# Usage
-feed = ActivityFeedPublisher(redis_sse)
+  async publishActivity(userId, action, details) {
+    const eventData = {
+      user_id: userId,
+      action,
+      details,
+      timestamp: Date.now(),
+    };
 
-@app.route('/api/posts', methods=['POST'])
-def create_post():
-    post = create_post_in_db(request.json)
-    
-    # Publish activity
-    feed.publish_activity(
-        user_id=current_user.id,
-        action='created_post',
-        details={'post_id': post.id, 'title': post.title}
-    )
-    
-    return jsonify(post.to_dict())
+    // Publish to user's followers
+    const followers = await this.getFollowers(userId);
+    for (const followerId of followers) {
+      await this.sse.publish(`feed:${followerId}`, eventData, 'activity');
+    }
+
+    // Publish to global feed
+    await this.sse.publish('feed:global', eventData, 'activity');
+  }
+
+  async getFollowers(userId) {
+    // Fetch from database
+    return db.getFollowers(userId);
+  }
+}
+
+// Usage
+const feed = new ActivityFeedPublisher(redisSSE);
+
+// POST /api/posts handler (inside your http server request handler)
+async function handleCreatePost(req, res) {
+  const body = await readBody(req);
+  const post = await createPostInDb(JSON.parse(body));
+
+  await feed.publishActivity(
+    currentUser.id,
+    'created_post',
+    { postId: post.id, title: post.title },
+  );
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(post));
+}
 ```
 
 ### Stock Price Ticker
 
-```python
-import asyncio
-import random
+```javascript
+class StockTickerPublisher {
+  /** Simulate stock price updates. */
+  constructor(sseManager) {
+    this.sse = sseManager;
+    this.stocks = {
+      AAPL: 150.0,
+      GOOGL: 2800.0,
+      MSFT: 300.0,
+      AMZN: 3400.0,
+    };
+  }
 
-class StockTickerPublisher:
-    """Simulate stock price updates."""
-    
-    def __init__(self, sse_manager):
-        self.sse = sse_manager
-        self.stocks = {
-            'AAPL': 150.00,
-            'GOOGL': 2800.00,
-            'MSFT': 300.00,
-            'AMZN': 3400.00
-        }
-    
-    async def start(self):
-        while True:
-            for symbol, price in self.stocks.items():
-                # Simulate price change
-                change = random.uniform(-0.5, 0.5)
-                new_price = round(price + change, 2)
-                self.stocks[symbol] = new_price
-                
-                self.sse.publish(
-                    f'stocks:{symbol}',
-                    {
-                        'symbol': symbol,
-                        'price': new_price,
-                        'change': round(change, 2),
-                        'change_percent': round(change / price * 100, 2)
-                    },
-                    event='price-update'
-                )
-            
-            await asyncio.sleep(0.1)  # 10 updates/second
+  start() {
+    setInterval(() => {
+      for (const [symbol, price] of Object.entries(this.stocks)) {
+        const change = (Math.random() - 0.5);                       // -0.5 .. +0.5
+        const newPrice = Math.round((price + change) * 100) / 100;
+        this.stocks[symbol] = newPrice;
+
+        this.sse.publish(
+          `stocks:${symbol}`,
+          {
+            symbol,
+            price: newPrice,
+            change: Math.round(change * 100) / 100,
+            change_percent: Math.round((change / price) * 10000) / 100,
+          },
+          'price-update',
+        );
+      }
+    }, 100); // 10 updates/second
+  }
+}
 ```
 
 ---
