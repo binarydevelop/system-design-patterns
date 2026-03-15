@@ -455,6 +455,309 @@ def check_replication_health():
 
 ---
 
+## PostgreSQL Streaming Replication Internals
+
+### WAL Sender and Receiver
+
+The primary spawns one **WAL sender** process per connected replica. Each WAL sender reads from the Write-Ahead Log and streams records over PostgreSQL's replication protocol (a libpq connection in `replication` mode). On the replica side, a **WAL receiver** process accepts the stream, writes records to the replica's local WAL files, and then hands them to the startup process for replay against the data files.
+
+```
+Primary                                      Replica
+┌──────────────┐    replication protocol    ┌──────────────┐
+│  WAL Sender  │ ────────────────────────►  │ WAL Receiver │
+│  (per replica)│   (streaming walsender)   │              │
+└──────┬───────┘                            └──────┬───────┘
+       │                                           │
+  reads WAL                                  writes to local WAL
+  segments                                   startup process replays
+```
+
+This is a push-based model: the primary pushes WAL as it's generated. The replica does not poll. If the replica falls behind, the WAL sender catches up from the retained WAL segments.
+
+### Physical vs Logical Replication Slots
+
+**Physical replication slots** deliver a byte-for-byte copy of WAL. The replica applies it identically, producing an exact binary clone of the primary. This is the standard mechanism for hot standby replicas.
+
+**Logical replication slots** decode WAL into logical change events (INSERT, UPDATE, DELETE) using an output plugin (e.g., `pgoutput`). This enables:
+- Selective table replication (not all-or-nothing)
+- Independent schema evolution on subscriber and publisher
+- Cross-version replication (e.g., PG 14 → PG 16 for upgrades)
+- Feeding CDC pipelines (Debezium, etc.)
+
+Physical slots are simpler and lower-overhead. Logical slots are more flexible but carry higher CPU cost due to decoding.
+
+### Monitoring Replication Slots
+
+```sql
+SELECT slot_name, slot_type, active,
+       restart_lsn, confirmed_flush_lsn,
+       pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS retained_bytes
+FROM pg_replication_slots;
+```
+
+Key fields:
+- `active`: whether a consumer is connected. Inactive slots are the danger zone.
+- `restart_lsn`: oldest WAL position the slot forces the primary to retain.
+- `confirmed_flush_lsn`: (logical slots) position the consumer has confirmed processing.
+- `retained_bytes`: how much WAL is being held. If this grows unbounded, you have a problem.
+
+### Slot Bloat Failure Mode
+
+If a consumer disconnects (replica down, Debezium crashed, network partition), the slot **prevents WAL recycling**. The primary accumulates WAL segments indefinitely until the disk fills, at which point the primary itself crashes — taking down writes for all clients.
+
+Monitor with:
+```sql
+SELECT slot_name,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained_wal
+FROM pg_replication_slots
+WHERE NOT active;
+```
+
+Alert when `retained_wal` exceeds a threshold (e.g., 10 GB). Remediation: drop the orphaned slot with `pg_drop_replication_slot('slot_name')` and re-provision the consumer.
+
+### `wal_keep_size` vs Replication Slots
+
+- `wal_keep_size` (formerly `wal_keep_segments`): a **hint** — keeps at least this much WAL, but if the follower is further behind, it will fail to catch up and need a full base backup.
+- Replication slots: a **guarantee** — WAL is never recycled past the slot's `restart_lsn`, so the follower can always catch up. But this guarantee can fill your disk.
+
+Best practice: use replication slots for reliability, but pair them with monitoring and automated slot cleanup for inactive consumers.
+
+---
+
+## Failover Automation
+
+### Patroni
+
+**Patroni** is the de facto standard for PostgreSQL HA. Its architecture:
+
+```
+┌────────────┐   ┌────────────┐   ┌────────────┐
+│  PG Node 1 │   │  PG Node 2 │   │  PG Node 3 │
+│  (primary)  │   │  (replica) │   │  (replica) │
+│  + Patroni  │   │  + Patroni │   │  + Patroni │
+└──────┬─────┘   └──────┬─────┘   └──────┬─────┘
+       │                │                │
+       └────────────────┼────────────────┘
+                        │
+                ┌───────▼───────┐
+                │  DCS (etcd /  │
+                │  Consul / ZK) │
+                └───────────────┘
+```
+
+Each Patroni agent holds a **leader lock** in the DCS with a TTL (typically 30s). The primary must renew the lock before expiry or lose leadership.
+
+### Planned Switchover vs Unplanned Failover
+
+**`patronictl switchover`** (planned):
+1. Operator selects target replica
+2. Patroni checkpoints the primary and waits for the target to catch up
+3. Demotes old primary (shuts down PG or makes it read-only)
+4. Promotes target replica
+5. Other replicas reconfigure to follow new primary
+6. Near-zero data loss, typically < 5s total
+
+**`patronictl failover`** / automatic failover (unplanned):
+1. Primary fails to renew DCS leader lock (detection time = TTL)
+2. Patroni agents on replicas race to acquire the lock
+3. Winner is the replica with least replication lag
+4. Winner promotes itself, other replicas follow
+5. Typical total time: 10–30s (detection + promotion + routing)
+
+### Alternative Tools
+
+| Tool | Database | DCS Required | Fencing |
+|------|----------|-------------|---------|
+| Patroni | PostgreSQL | Yes (etcd/Consul/ZK) | Watchdog + DCS lease |
+| repmgr | PostgreSQL | No | SSH-based (less reliable) |
+| Orchestrator | MySQL | No (uses own raft or DB backend) | Hooks-based |
+| ProxySQL | MySQL | No | Routing layer only (no fencing) |
+| Group Replication | MySQL | No (built-in Paxos) | Consensus-based |
+
+**repmgr** is simpler to set up but lacks DCS integration. It relies on SSH to fence the old primary, which fails if the network is partitioned — exactly when you need fencing most.
+
+### Key Metric
+
+```
+failover_time = detection_time + promotion_time + routing_update_time
+```
+
+With Patroni: typically 10–30s. The detection phase (DCS lease expiry) dominates. Promotion itself is fast (< 5s). Routing update depends on your proxy layer (HAProxy, PgBouncer, DNS TTL).
+
+---
+
+## Split-Brain Prevention Deep Dive
+
+### Why Timeout-Based Detection Fails
+
+A timeout fires when the primary stops responding. But "not responding" ≠ "dead":
+- JVM/CLR GC pause (stop-the-world for 10+ seconds)
+- Disk I/O stall (RAID rebuild, SAN hiccup)
+- Network partition (primary is fine, just unreachable)
+- CPU saturation (primary is alive but slow)
+
+In all cases, the primary is still running and may still accept writes. If a replica promotes itself, you have **two primaries** — split brain.
+
+### Fencing Tokens
+
+A lock service (ZooKeeper, etcd) issues a **monotonically increasing token** with each lock acquisition. Every write to the storage layer must include the token. The storage rejects any write with a token lower than the highest it has seen.
+
+```
+Lock service issues token 33 → Old primary writes with token 33
+Old primary loses lock
+Lock service issues token 34 → New primary writes with token 34
+Old primary tries to write with token 33 → REJECTED (33 < 34)
+```
+
+This requires the storage layer to participate in the protocol. Not all systems support it, but it is the theoretically sound solution (see Martin Kleppmann's critique of Redlock).
+
+### STONITH (Shoot The Other Node In The Head)
+
+Physical fencing: send an IPMI/BMC command to **power off** the old primary's hardware. If the node is off, it cannot accept writes. Brutal but effective.
+
+Used in: Pacemaker/Corosync clusters, enterprise HA setups with BMC access. Not available in cloud environments (use cloud-native fencing instead — e.g., AWS `stop-instances` API).
+
+### Patroni's Watchdog
+
+Patroni can register a Linux **kernel watchdog** (`/dev/watchdog`). Patroni periodically pings the watchdog. If Patroni crashes or hangs (and thus cannot renew the DCS lock), the watchdog **reboots the entire node** within seconds. This prevents the zombie-primary scenario where the PG process is still running but Patroni is not managing it.
+
+Configuration: set `watchdog.mode: required` in Patroni config. The watchdog timeout must be shorter than the DCS TTL.
+
+### PostgreSQL Timeline Mechanism
+
+After failover, the new primary starts a **new timeline** (timeline ID increments). Replicas must be configured with `recovery_target_timeline = 'latest'` to follow the promoted primary. If a replica is stuck on the old timeline, it will diverge and require a pg_rewind or fresh base backup.
+
+---
+
+## Replication Lag Decoded
+
+### PostgreSQL `pg_stat_replication` Lag Fields
+
+```sql
+SELECT client_addr, application_name,
+       write_lag, flush_lag, replay_lag
+FROM pg_stat_replication;
+```
+
+These three fields represent **time intervals**, not byte offsets:
+
+| Field | Measures | Meaning |
+|-------|----------|---------|
+| `write_lag` | Primary sent WAL → replica OS acknowledged write to disk buffer | Network + kernel buffer delay |
+| `flush_lag` | Primary sent WAL → replica fsynced WAL to disk | Network + disk durability delay |
+| `replay_lag` | Primary sent WAL → replica applied WAL to data files | Full end-to-end delay including apply |
+
+### Which to Alert On
+
+- **`replay_lag`** for query consistency: if you're reading from the replica, this is how stale your reads are.
+- **`flush_lag`** for durability: if the primary dies right now, WAL up to `flush_lag` ago is safely on the replica's disk. Anything between `flush_lag` and `write_lag` is in the replica's OS buffer and could be lost if the replica also crashes.
+
+### Recommended Thresholds
+
+| Threshold | Action | Rationale |
+|-----------|--------|-----------|
+| `replay_lag` > 100ms | WARN | Read queries may return stale data |
+| `replay_lag` > 1s | PAGE | Failover to this replica would lose 1s of data |
+| `replay_lag` > 10s | CRITICAL | Replica is falling behind; investigate apply bottleneck |
+| `flush_lag` > 5s | PAGE | Durability guarantee degraded |
+
+### MySQL Comparison
+
+MySQL's `Seconds_Behind_Master` is a single coarser metric. It measures the difference between the timestamp embedded in the relay log event and the current time when the SQL thread applies it. Limitations:
+- Granularity is 1 second (PostgreSQL's fields are sub-millisecond)
+- Does not distinguish write/flush/replay phases
+- Can report 0 while the I/O thread is disconnected (misleading)
+- Affected by clock skew between primary and replica
+
+---
+
+## Cascading Replication
+
+### Topology
+
+```
+Primary (US-East)
+    │
+    ├──► Regional Replica (EU-West)
+    │         │
+    │         ├──► Local Replica (EU-West AZ1)
+    │         └──► Local Replica (EU-West AZ2)
+    │
+    └──► Regional Replica (AP-Southeast)
+              │
+              ├──► Local Replica (AP-SE AZ1)
+              └──► Local Replica (AP-SE AZ2)
+```
+
+### Use Case
+
+Cross-region replication without overloading the primary's WAL sender. Instead of 6 direct connections to the primary, you have 2 regional connections. The regional replicas fan out locally.
+
+### Configuration
+
+In PostgreSQL, set `primary_conninfo` on cascade replicas to point to the regional replica, not the primary:
+
+```ini
+# Local replica in EU-West AZ1
+primary_conninfo = 'host=eu-west-regional port=5432 user=replicator'
+```
+
+The regional replica must have `wal_level = replica` and `max_wal_senders` configured, just like a primary.
+
+### Trade-offs
+
+- **Lag accumulates**: primary → regional = 50ms, regional → local = 50ms → total = ~100ms
+- **Single point of failure**: if the regional replica fails, all downstream replicas lose replication
+- **Mitigation**: each downstream replica should be **reconfigurable** to connect directly to the primary. Patroni handles this automatically. Without Patroni, you need an operator runbook or automation.
+
+---
+
+## Semi-Synchronous Silent Downgrade
+
+### The Problem
+
+MySQL's semi-synchronous replication has a parameter `rpl_semi_sync_master_timeout` (default: **10 seconds**). If no replica acknowledges within this timeout, MySQL **silently falls back to asynchronous replication**. It logs a warning but continues accepting writes.
+
+This means:
+1. You configured semi-sync expecting durability
+2. A replica went down or became slow
+3. After 10 seconds, MySQL switched to async **without any client error**
+4. Data loss window is now open — writes are only on the primary
+5. If the primary crashes, those writes are gone
+
+### Detection
+
+Monitor the MySQL status variable:
+```sql
+SHOW STATUS LIKE 'Rpl_semi_sync_master_status';
+-- ON = semi-sync active
+-- OFF = silently fell back to async
+```
+
+Alert immediately when this flips to OFF. Also monitor `Rpl_semi_sync_master_no_tx` (count of commits that fell back to async).
+
+### Mitigation Options
+
+| Strategy | Behavior | Risk |
+|----------|----------|------|
+| Set timeout to very high (e.g., `3600000` ms) | Writes block until replica comes back | Extended write downtime if replica fails |
+| Accept the downgrade | Semi-sync is "best effort" | Silent data loss window |
+| Use Group Replication (MySQL) | True consensus (Paxos-based) | Higher write latency, more operational complexity |
+| Add more sync replicas | Timeout less likely to fire | More infrastructure cost |
+
+### PostgreSQL Comparison
+
+PostgreSQL handles this **more safely by default**. With `synchronous_commit = on` and `synchronous_standby_names` configured:
+- If all named synchronous replicas are down, **writes block** — they do not silently fall back to async
+- The primary waits indefinitely for a sync replica to come back
+- This prevents silent data loss but can cause write availability issues
+
+You can configure `synchronous_standby_names = 'ANY 1 (replica1, replica2, replica3)'` so that a write succeeds as long as any one of three replicas acknowledges. This balances durability with availability.
+
+To opt into MySQL-like behavior (accept async fallback), set `synchronous_commit = local` — but this is an explicit choice, not a silent downgrade.
+
+---
+
 ## Key Takeaways
 
 1. **All writes through leader** - Simple consistency, single point of failure

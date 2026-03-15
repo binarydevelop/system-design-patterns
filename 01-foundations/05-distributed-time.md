@@ -52,6 +52,176 @@ UTC occasionally adds leap seconds. Clocks might:
 
 ---
 
+## NTP Deep Dive
+
+### Stratum Hierarchy
+
+NTP uses a layered trust model called strata:
+
+```
+Stratum 0 │ Reference clocks: atomic clocks, GPS receivers
+           │ Not directly on the network — hardware devices
+           ▼
+Stratum 1 │ Servers directly attached to Stratum 0 hardware
+           │ e.g., time.nist.gov, GPS-disciplined servers
+           ▼
+Stratum 2 │ NTP servers syncing from Stratum 1
+           │ Most corporate/cloud NTP servers live here
+           ▼
+Stratum 3 │ End-client machines syncing from Stratum 2
+           │ Your application servers
+           ▼
+Stratum 16 │ Unsynchronized (invalid)
+```
+
+Each hop adds uncertainty. A Stratum 2 server has ~1-10ms accuracy; Stratum 3 clients typically 1-50ms depending on network path.
+
+### Slew vs Step Correction
+
+When NTP detects an offset, it has two correction strategies:
+
+| Strategy | Behavior | When Used |
+|----------|----------|-----------|
+| **Slew** | Adjusts clock rate gradually, max ±500 ppm | Offset < 128ms (ntpd default) |
+| **Step** | Jumps clock instantly to correct time | Offset > 128ms |
+
+Slew is safer — no timestamp discontinuities — but slow. At 500 ppm, correcting a 100ms offset takes ~200 seconds. Step is faster but creates a time discontinuity where timestamps can repeat or gap.
+
+```
+Slew correction (offset = 50ms ahead):
+  Clock rate slowed from 1.0 to 0.9995 for ~100 seconds
+  Applications see time slow down slightly, never jump
+
+Step correction (offset = 500ms ahead):
+  Clock jumps:  10:00:05.500 → 10:00:05.000
+  Applications see time go BACKWARDS by 500ms
+```
+
+### chrony vs ntpd
+
+| Feature | ntpd | chrony |
+|---------|------|--------|
+| Convergence speed | Minutes to hours | Seconds to minutes |
+| VM/container friendly | Poor (assumes stable clock) | Good (handles TSC instability) |
+| Intermittent connectivity | Poor | Good (stores drift between restarts) |
+| Default on modern distros | RHEL ≤6, older Debian | RHEL ≥7, Fedora, Ubuntu |
+
+**Production recommendation:** Use chrony. It converges 10-100x faster after boot or network disruption, critical for containers and VMs that start/stop frequently.
+
+### Reading `chronyc tracking`
+
+```shell
+$ chronyc tracking
+Reference ID    : A9FEA97B (169.254.169.123)    # NTP server IP
+Stratum         : 3                                # Our stratum level
+Ref time (UTC)  : Sat Mar 14 10:23:45 2026        # Last sync time
+System time     : 0.000000345 seconds fast          # Current offset from NTP
+Last offset     : +0.000000213 seconds              # Offset at last correction
+RMS offset      : 0.000000892 seconds              # Moving avg of recent offsets
+Frequency       : 3.451 ppm slow                   # Crystal drift rate
+```
+
+Key fields: **System time** is the current error. **RMS offset** is your typical accuracy. **Frequency** tells you the crystal's natural drift rate — chrony compensates for this between syncs.
+
+### Cloud Provider NTP
+
+| Provider | NTP Endpoint | Smearing | Typical Accuracy |
+|----------|-------------|----------|-----------------|
+| **AWS** | `169.254.169.123` (link-local) | Leap-smeared | 0.1-1ms |
+| **GCP** | `metadata.google.internal` | Leap-smeared (24h linear) | <1ms |
+| **Azure** | `time.windows.com` | Not smeared by default | 5-50ms |
+
+AWS provides a dedicated NTP service via the Nitro hypervisor at a link-local address — no network hop. GCP runs its own Stratum-1 fleet with atomic clocks (similar to Spanner infrastructure). Azure lags behind; for serious time requirements, configure chrony to use an external Stratum-1 source or deploy your own GPS-disciplined NTP server.
+
+**Warning:** Mixing leap-smeared and non-smeared NTP sources causes subtle errors during leap second events — up to 0.5s of drift during the smearing window.
+
+---
+
+## Real-World Clock Incidents
+
+### Linux Leap Second Bug (2012)
+
+On June 30, 2012, a leap second insertion triggered a bug in the Linux kernel's `hrtimer` subsystem. The `CLOCK_REALTIME` adjustment interacted with the futex (fast userspace mutex) implementation, causing threads to spin at 100% CPU instead of sleeping.
+
+**Impact:**
+- Reddit, Mozilla, Yelp, FourSquare, StumbleUpon went down
+- Qantas airlines grounded flights due to check-in system failures
+- Java and MySQL processes particularly affected (heavy futex usage)
+
+**Root cause:** The kernel's `ntp_leap()` called `clock_was_set()`, which invalidated timer caches. Futex waiters woke up, saw time hadn't advanced, and re-entered the wait — creating a busy-spin loop.
+
+**Fix:** `date -s "$(date)"` (force-resetting the clock) was the immediate workaround. Kernel patches landed in 3.4+.
+
+**Lesson:** Leap seconds are not a theoretical concern. If your system runs on Linux, you need leap smearing or kernel patches.
+
+### Cloudflare RRDNS Outage (2017)
+
+On January 1, 2017, Cloudflare's custom DNS server (RRDNS, written in Go) crashed during the leap second.
+
+**Root cause:** The code computed time differences between two CLOCK_REALTIME readings. During the leap second, a later reading returned an earlier timestamp, producing a negative duration. This negative value was passed to a function expecting a positive duration, causing a panic.
+
+```go
+// Simplified version of the bug
+elapsed := time.Now().Sub(startTime)  // Negative during leap second!
+// Used elapsed to compute weighted random selection — panicked on negative
+```
+
+**Lesson:** Always use monotonic clocks for duration calculations. Go fixed this at the language level in Go 1.9 — `time.Now()` now stores both wall clock and monotonic readings.
+
+### GPS Week Rollover (2019)
+
+GPS encodes the current week in a 10-bit field, which rolls over every 1024 weeks (~19.7 years). On April 6, 2019, the second GPS week rollover occurred (first was in 1999).
+
+**Impact:**
+- Older GPS receivers reported dates from 1999 or showed invalid timestamps
+- Affected aviation, maritime, and telecommunications timing equipment
+- Some cell tower synchronization degraded, causing call drops
+
+**Lesson:** Time infrastructure has hidden assumptions. If your system depends on GPS-disciplined clocks, verify firmware handles the rollover. The next 10-bit rollover is November 20, 2038 — around the same time as the Unix Y2K38 overflow.
+
+---
+
+## Clock Skew in Cloud Environments
+
+Cloud VMs introduce unique clock challenges that bare-metal servers don't face: live migration, shared hypervisor scheduling, variable TSC (Time Stamp Counter) reliability, and stolen CPU time.
+
+### Per-Provider Characteristics
+
+| Provider | Steady State | During Live Migration | During CPU Steal |
+|----------|-------------|----------------------|-----------------|
+| **AWS EC2** | 0.1-3ms | 10-50ms spike, recovers in <5s with chrony | 1-10ms if steal >5% |
+| **GCP** | <1ms | <5ms (migration is faster) | Rare on dedicated VMs |
+| **Azure** | 5-50ms (default NTP) | 50-200ms spikes observed | Common on burstable tiers |
+
+Live migration is the biggest risk: the VM pauses, moves to new hardware, resumes. The TSC jumps, and NTP must re-converge. With ntpd this can take minutes; with chrony, seconds.
+
+### Monitoring Clock Skew
+
+Use Prometheus `node_exporter` to track NTP health:
+
+```promql
+# Current offset from NTP server
+node_timex_offset_seconds
+
+# Estimated error bound
+node_timex_maxerror_seconds
+
+# Clock synchronized (1 = yes)
+node_timex_sync_status
+```
+
+**Alert thresholds for production:**
+
+| Scope | Warning | Page |
+|-------|---------|------|
+| Intra-datacenter | >1ms sustained for 5m | >10ms sustained for 1m |
+| Cross-region | >10ms sustained for 5m | >50ms sustained for 1m |
+| NTP sync loss | `sync_status == 0` for 1m | `sync_status == 0` for 5m |
+
+**Key practice:** Log the local NTP offset with every request trace. When debugging ordering anomalies weeks later, you need to know how far off each node's clock was at that moment.
+
+---
+
 ## Why Ordering Matters
 
 ### The Timestamp Ordering Problem
@@ -414,6 +584,31 @@ On message receive:
     log_error("Clock regression detected")
 ```
 
+### CLOCK_MONOTONIC vs CLOCK_REALTIME
+
+Operating systems expose multiple clock sources. Choosing wrong causes real bugs (see Cloudflare 2017 incident above).
+
+| Clock | Adjustable? | Use Case |
+|-------|------------|----------|
+| `CLOCK_REALTIME` | Yes — NTP step, admin change, leap second | Wall-clock timestamps for humans |
+| `CLOCK_MONOTONIC` | No — always moves forward, NTP slewing only | Timeouts, durations, intervals |
+| `CLOCK_MONOTONIC_RAW` | No — no NTP adjustment at all | Benchmarking, hardware timing |
+| `CLOCK_BOOTTIME` | No — includes suspend time | Lease expiration across sleep/wake |
+
+**The rule:** Use `CLOCK_MONOTONIC` for measuring elapsed time and timeouts. Use `CLOCK_REALTIME` only when you need a timestamp that means something to a human.
+
+**Language mappings:**
+
+| Language | REALTIME | MONOTONIC |
+|----------|----------|-----------|
+| **Go** | `time.Now().Unix()` | `time.Since(start)` uses monotonic internally (Go ≥1.9) |
+| **Java** | `System.currentTimeMillis()` | `System.nanoTime()` |
+| **Python** | `time.time()` | `time.monotonic()` |
+| **Rust** | `SystemTime::now()` | `Instant::now()` |
+| **C** | `clock_gettime(CLOCK_REALTIME, ...)` | `clock_gettime(CLOCK_MONOTONIC, ...)` |
+
+Go 1.9 was a watershed: `time.Now()` stores both wall and monotonic readings. Subtraction between two `time.Time` values automatically uses the monotonic component, so `time.Since(start)` is safe even across NTP steps. Before 1.9, the Cloudflare RRDNS bug was possible in any Go program using `time.Now().Sub()`.
+
 ### Defensive Design
 
 1. **Never trust equality:** `if time_a == time_b` is dangerous
@@ -421,6 +616,97 @@ On message receive:
 3. **Include sequence numbers:** for ordering within same timestamp
 4. **Prefer logical time for internal events**
 5. **Reserve physical time for human interfaces**
+
+---
+
+## Fencing Tokens Pattern
+
+### The Problem: Stale Leaders
+
+Distributed locks have a fundamental time-dependent failure mode:
+
+```
+Timeline:
+  T=0   Client A acquires lock (lease=30s), gets token=33
+  T=15  Client A enters long GC pause (or network partition)
+  T=31  Lock expires — Client A doesn't know yet
+  T=32  Client B acquires lock, gets token=34
+  T=33  Client B writes to storage: "value=B" with token=34
+  T=35  Client A wakes up from GC, still thinks it holds the lock
+  T=36  Client A writes to storage: "value=A" with token=33  ← STALE WRITE
+```
+
+Without protection, Client A's stale write silently overwrites Client B's valid write. The lock provided no safety — only the illusion of safety.
+
+### The Solution: Monotonic Fencing Tokens
+
+Every time a lock is granted, the lock service issues a monotonically increasing **fencing token**. The storage layer enforces token ordering:
+
+```
+Lock Service:
+  grant_lock() → { lock_handle, fencing_token: 34 }
+
+Storage Server:
+  max_seen_token = 0
+
+  write(key, value, token):
+    if token < max_seen_token:
+      reject("stale token")       ← Client A's write rejected here
+    max_seen_token = token
+    do_write(key, value)
+```
+
+### Implementation with ZooKeeper
+
+ZooKeeper provides natural fencing tokens via two mechanisms:
+
+1. **`zxid` (transaction ID):** Globally ordered, incremented on every ZK write. Use the `zxid` returned by the lock creation call.
+2. **Sequential ephemeral nodes:** Creating `/locks/resource-000000034` gives you `34` as a natural token.
+
+```python
+# Pseudocode: fenced lock usage
+class FencedLock:
+    def __init__(self, zk_client, resource_path):
+        self.zk = zk_client
+        self.path = resource_path
+
+    def acquire(self):
+        node = self.zk.create(
+            f"{self.path}/lock-",
+            ephemeral=True, sequence=True
+        )
+        self.token = int(node.split("-")[-1])  # Sequential number as token
+        # ... standard lock recipe: watch predecessor, wait ...
+        return self.token
+
+    def write_with_fence(self, storage_client, key, value):
+        # Token travels with every write — storage validates it
+        storage_client.write(key, value, fencing_token=self.token)
+```
+
+```python
+# Storage side
+class FencedStorage:
+    def __init__(self):
+        self.max_token = {}  # per-key max token
+
+    def write(self, key, value, fencing_token):
+        if fencing_token < self.max_token.get(key, 0):
+            raise StaleTokenError(
+                f"token {fencing_token} < max {self.max_token[key]}"
+            )
+        self.max_token[key] = fencing_token
+        self._persist(key, value)
+```
+
+### When You Can't Add Fencing to Storage
+
+If the storage layer doesn't support fencing token validation (e.g., a managed database you don't control), alternatives include:
+- **Conditional writes:** Use a version column — `UPDATE ... SET val=?, version=? WHERE version=?`
+- **CAS operations:** etcd/Consul support compare-and-swap on revision numbers
+- **Idempotency keys with ordering:** See `08-idempotency.md` for detailed patterns
+
+The key insight: **a lock alone never guarantees mutual exclusion in an asynchronous system.** You need either fencing tokens or a consensus protocol that ties the lock to the write path.
 
 ---
 
