@@ -298,7 +298,7 @@ jobs:
             head: [
               ['link', { rel: 'preconnect', href: 'https://fonts.googleapis.com' }],
               ['link', { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' }],
-              ['link', { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap' }],
+              ['link', { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+JP:wght@400;500;700&display=swap' }],
               // favicon href must include base path (base config is at line ~279)
               ['link', { rel: 'icon', type: 'image/svg+xml', href: '/system-design-patterns/logo.svg' }],
               ['meta', { name: 'theme-color', content: '#E91E63' }],
@@ -354,6 +354,43 @@ jobs:
                   returnToTopLabel: 'Back to top',
                   footer: {
                     message: 'Built with depth by the Babushkai community. Released under the MIT License.',
+                    copyright: 'Copyright 2024-present Babushkai'
+                  },
+                }
+              },
+              ja: {
+                label: '日本語',
+                lang: 'ja',
+                themeConfig: {
+                  nav: [
+                    { text: 'ホーム', link: '/ja/' },
+                    { text: 'ガイド', link: '/ja/01-foundations/01-acid-transactions' },
+                    { text: 'GitHub', link: 'https://github.com/babushkai/system-design-patterns' }
+                  ],
+                  sidebar: {
+                    '/ja/': [
+                      {
+                        text: '1. 基礎',
+                        collapsed: false,
+                        items: [
+                          { text: 'ACIDトランザクション', link: '/ja/01-foundations/01-acid-transactions' },
+                          { text: '分離レベル', link: '/ja/01-foundations/02-isolation-levels' },
+                          { text: 'CAP定理', link: '/ja/01-foundations/03-cap-theorem' },
+                          { text: '整合性モデル', link: '/ja/01-foundations/04-consistency-models' },
+                          { text: '分散時間', link: '/ja/01-foundations/05-distributed-time' },
+                        ]
+                      }
+                    ]
+                  },
+                  editLink: {
+                    pattern: 'https://github.com/babushkai/system-design-patterns/edit/main/:path',
+                    text: 'GitHubでこのページを編集'
+                  },
+                  docFooter: { prev: '前へ', next: '次へ' },
+                  returnToTopLabel: 'トップに戻る',
+                  outlineTitle: 'このページの内容',
+                  footer: {
+                    message: 'MITライセンスの下で公開。Babushkaiコミュニティが構築。',
                     copyright: 'Copyright 2024-present Babushkai'
                   },
                 }
