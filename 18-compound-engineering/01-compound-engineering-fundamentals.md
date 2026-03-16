@@ -42,7 +42,7 @@ Traditional:  output = skill × hours × 1 (single thread)
 Compound:     output = decomposition_quality × agents × review_throughput
 ```
 
-A staff engineer with strong decomposition skills running 5 agents in parallel genuinely produces 10-30x the output of a single engineer on suitable tasks. The catch: "suitable tasks" is doing heavy lifting in that sentence.
+A staff engineer with strong decomposition skills running 5 agents in parallel genuinely produces 10-30x the output of a single engineer on suitable tasks [1]. The catch: "suitable tasks" is doing heavy lifting in that sentence.
 
 ---
 
@@ -231,7 +231,7 @@ func CreateAccount(name string, region string) Account {
 
 ## The Dispatcher Mental Model
 
-In compound engineering, the human operates as a **dispatcher** in a work-stealing scheduler. You are not writing code — you are running a pipeline.
+In compound engineering, the human operates as a **dispatcher** in a work-stealing scheduler [1]. You are not writing code — you are running a pipeline.
 
 ### The Dispatch Loop
 
@@ -311,14 +311,14 @@ Note the dependency ordering: Agents 1 runs first (schema), then 2+3 in parallel
 
 ### The Two-Agent Pattern
 
-For long-running projects that span multiple sessions, Anthropic has converged on a proven two-agent pattern that separates project bootstrapping from incremental progress.
+For long-running projects that span multiple sessions, Anthropic has converged on a proven two-agent pattern that separates project bootstrapping from incremental progress [2].
 
 **Initializer Agent (first session):**
 
 The initializer runs once to establish the project foundation:
 
 - Sets up the project structure (directories, configs, boilerplate)
-- Creates the **feature list** — critically, in JSON, not Markdown. JSON is more resistant to model corruption across sessions:
+- Creates the **feature list** — critically, in JSON, not Markdown [2]. JSON is more resistant to model corruption across sessions:
   ```json
   [
     {"feature": "auth", "status": "failing", "tests": ["test_login", "test_logout"]},
@@ -328,11 +328,11 @@ The initializer runs once to establish the project foundation:
   ```
 - Writes `init.sh` — a bootstrap script that subsequent sessions run to restore environment state
 - Establishes baseline tests that must pass before any new work begins
-- Creates `claude-progress.txt` as the inter-session log file
+- Creates `claude-progress.txt` as the inter-session log file [2]
 
 **Coding Agent (subsequent sessions):**
 
-Each coding session follows a deterministic startup sequence:
+Each coding session follows a deterministic startup sequence [2]:
 
 1. `pwd` — confirm working directory
 2. Read git logs — understand what changed since last session
@@ -348,7 +348,7 @@ Each coding session follows a deterministic startup sequence:
 
 The startup sequence eliminates the "cold start" problem. The agent does not need to re-discover project state — it reads structured artifacts that the previous session left behind. JSON feature lists prevent the drift that occurs when models edit Markdown checklists (checked items get unchecked, ordering shifts, duplicates appear).
 
-**Key anti-pattern: "one-shotting."** Attempting to build an entire application in a single session is the most common failure mode. Complex projects need multiple sessions with compounding progress. The two-agent pattern encodes this reality into the workflow — the initializer sets up for a marathon, not a sprint.
+**Key anti-pattern: "one-shotting."** Attempting to build an entire application in a single session is the most common failure mode [2]. Complex projects need multiple sessions with compounding progress. The two-agent pattern encodes this reality into the workflow — the initializer sets up for a marathon, not a sprint.
 
 **Session continuity through artifacts:**
 
@@ -509,7 +509,7 @@ This does not mean coding skill is irrelevant — far from it. You cannot review
 
 ### The Compound Loop
 
-From Every.to's methodology comes a principle that elevates compound engineering from a productivity technique to a self-improving system: **each unit of engineering work should make subsequent units easier.**
+From Every.to's methodology comes a principle that elevates compound engineering from a productivity technique to a self-improving system: **each unit of engineering work should make subsequent units easier.** [1]
 
 **The loop:**
 
@@ -521,11 +521,11 @@ Plan (80% of effort)
         → Plan (next iteration, now easier)
 ```
 
-The counterintuitive ratio — 80% planning, 20% execution — reflects the reality that agent execution is cheap but misdirected execution is expensive. A well-decomposed, well-specified task takes 10 minutes of agent time. A poorly specified one takes 10 minutes of agent time plus 45 minutes of human correction. The planning investment pays for itself on the first iteration and compounds on every subsequent one.
+The counterintuitive ratio — 80% planning, 20% execution [1] — reflects the reality that agent execution is cheap but misdirected execution is expensive. A well-decomposed, well-specified task takes 10 minutes of agent time. A poorly specified one takes 10 minutes of agent time plus 45 minutes of human correction. The planning investment pays for itself on the first iteration and compounds on every subsequent one.
 
 **Systematic documentation of learnings:**
 
-Every bug, performance issue, and problem-solving insight encountered during agent-assisted work must be captured and fed back into the agent's context for future work. This is not optional documentation — it is the compounding mechanism itself.
+Every bug, performance issue, and problem-solving insight encountered during agent-assisted work must be captured and fed back into the agent's context for future work [1]. This is not optional documentation — it is the compounding mechanism itself.
 
 What to capture:
 
@@ -884,3 +884,10 @@ Most teams plateau at Level 2. The jump to Level 3 requires a mental model shift
 ---
 
 > **Next:** `18-compound-engineering/02-task-decomposition-patterns.md` — Deep dive into decomposition strategies, dependency graphs, and parallelization patterns for compound engineering workflows.
+
+---
+
+## References
+
+1. [Every.to - Compound Engineering: How Every Codes With Agents](https://every.to/chain-of-thought/compound-engineering-how-every-codes-with-agents), 2026
+2. [Anthropic - Effective Harnesses for Long-Running Agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents), 2026

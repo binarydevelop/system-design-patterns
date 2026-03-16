@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-A harness is the totality of configuration, conventions, and tooling that encodes your team's standards so AI agents follow them without re-explanation every session. Project context files are to agents what linting rules are to code: persistent, version-controlled, machine-readable instructions that shape behavior deterministically. The discipline of agent context engineering treats these artifacts as first-class infrastructure — designed, tested, reviewed, and evolved with the same rigor as application code. Get the harness right and every agent session starts at your team's baseline instead of zero.
+A harness is the totality of configuration, conventions, and tooling that encodes your team's standards so AI agents follow them without re-explanation every session [1]. Project context files are to agents what linting rules are to code: persistent, version-controlled, machine-readable instructions that shape behavior deterministically. The discipline of agent context engineering [1] treats these artifacts as first-class infrastructure — designed, tested, reviewed, and evolved with the same rigor as application code. Get the harness right and every agent session starts at your team's baseline instead of zero.
 
 ---
 
@@ -50,9 +50,9 @@ Three pillars compose agent context:
 
 | Source Type | File / Location | Agent | Scope |
 |---|---|---|---|
-| Project context | `CLAUDE.md` | Claude Code | Repo / directory |
-| Project context | `AGENTS.md` | OpenAI Codex | Repo / directory |
-| Tool rules | `.cursorrules` | Cursor | Repo |
+| Project context | `CLAUDE.md` [2] | Claude Code | Repo / directory |
+| Project context | `AGENTS.md` [3] | OpenAI Codex | Repo / directory |
+| Tool rules | `.cursorrules` [4] | Cursor | Repo |
 | Copilot instructions | `.github/copilot-instructions.md` | GitHub Copilot | Repo |
 | Editor config | `.editorconfig` | All editors | Repo |
 | CI/CD hooks | `.github/workflows/*.yml` | CI runners | Repo |
@@ -91,7 +91,7 @@ PROJECT CONTEXT FILE ANATOMY
 8. Known Gotchas           — Non-obvious pitfalls, workarounds
 ```
 
-### CLAUDE.md (Claude Code) — Full Annotated Example
+### CLAUDE.md (Claude Code) — Full Annotated Example [2]
 
 This is a realistic context file for a TypeScript monorepo running a SaaS platform:
 
@@ -157,7 +157,7 @@ This is a realistic context file for a TypeScript monorepo running a SaaS platfo
 - Always create feature branches from latest main
 ```
 
-### .cursorrules (Cursor) — Example
+### .cursorrules (Cursor) — Example [4]
 
 Same content as CLAUDE.md, adapted to Cursor's format. Key difference: Cursor rules are typically more concise and written as direct instructions to the model rather than structured documentation sections.
 
@@ -180,7 +180,7 @@ Rules:
 
 Same conventions, formatted for Copilot. Copilot instructions use a flat markdown structure with short sections: Context, Code Style, Patterns to Follow, Patterns to Avoid, Testing. The content mirrors the CLAUDE.md but is shorter since Copilot instructions have tighter length constraints.
 
-### AGENTS.md (OpenAI Codex)
+### AGENTS.md (OpenAI Codex) [3]
 
 OpenAI Codex uses `AGENTS.md` files — functionally equivalent to `CLAUDE.md` but with a distinct precedence and override model.
 
@@ -333,7 +333,7 @@ Context files compete with the task for token budget. Guidelines: global under 5
 
 Length limits are not just about tokens — they reflect a harder constraint on reliable instruction-following.
 
-Empirical testing across frontier LLMs shows that models can reliably follow approximately **150–200 individual instructions** before compliance degrades. This is the *instruction budget* — the total number of discrete directives the model can track simultaneously.
+Empirical testing across frontier LLMs shows that models can reliably follow approximately **150–200 individual instructions** before compliance degrades [5]. This is the *instruction budget* — the total number of discrete directives the model can track simultaneously.
 
 The catch: your context file does not get the full budget. The agent tool's own system prompt consumes a significant share. Claude Code's system prompt, for example, contains roughly **50 instructions** covering tool use, safety, output formatting, and git behavior. That leaves **100–150 instructions** for your `CLAUDE.md`, directory-level files, and any injected skills or MCP prompts — combined.
 
@@ -348,7 +348,7 @@ The AGENTS.md 32KB hard limit (see above) is one tool's attempt to enforce this.
 
 ### Progressive Disclosure
 
-The instruction budget creates pressure to front-load everything into context files. The progressive disclosure pattern solves this differently: **deliver knowledge only when relevant, not all upfront.**
+The instruction budget creates pressure to front-load everything into context files. The progressive disclosure pattern solves this differently [7]: **deliver knowledge only when relevant, not all upfront.**
 
 Instead of a monolithic context file containing API docs, database schemas, deployment procedures, and testing conventions, structure the harness so the agent discovers and loads specialized knowledge on demand.
 
@@ -362,13 +362,13 @@ Instead of a monolithic context file containing API docs, database schemas, depl
 
 4. **`@file` references:** Claude Code's `@filename` syntax lets engineers inject specific files into context mid-session, rather than embedding their contents permanently in CLAUDE.md.
 
-**The anti-pattern this replaces: the "kitchen sink" context file.** Teams dump every convention, every API doc, every architectural decision into a single CLAUDE.md. The file grows past 500 lines. Performance degrades — research from both Anthropic and independent benchmarks confirms that LLM accuracy on simple tasks drops as context length increases, even when the added context is not adversarial. The model spends capacity processing irrelevant instructions instead of focusing on the task.
+**The anti-pattern this replaces: the "kitchen sink" context file.** Teams dump every convention, every API doc, every architectural decision into a single CLAUDE.md. The file grows past 500 lines. Performance degrades — research from both Anthropic and independent benchmarks confirms that LLM accuracy on simple tasks drops as context length increases, even when the added context is not adversarial [6]. The model spends capacity processing irrelevant instructions instead of focusing on the task.
 
 **Design heuristic:** If a piece of knowledge is relevant to fewer than 30% of agent sessions, it should not be in the root context file. Move it to a skill, MCP resource, or directory-scoped file.
 
 ### Context Firewalling
 
-When a task requires processing large amounts of intermediate data — scanning hundreds of files, comparing API responses, analyzing logs — the parent session's context fills with noise that degrades subsequent work. Context firewalling solves this through **isolated sub-agent workspaces**.
+When a task requires processing large amounts of intermediate data — scanning hundreds of files, comparing API responses, analyzing logs — the parent session's context fills with noise that degrades subsequent work. Context firewalling solves this through **isolated sub-agent workspaces** [7].
 
 **How it works:**
 
@@ -531,7 +531,7 @@ done
 
 ### Back-Pressure Mechanisms
 
-Hooks are most powerful when they create a **tight feedback loop** — the agent makes a change, immediately sees whether it broke something, and self-corrects before moving on. This is back-pressure: the harness pushes back against drift in real time rather than catching it at the end.
+Hooks are most powerful when they create a **tight feedback loop** — the agent makes a change, immediately sees whether it broke something, and self-corrects before moving on. This is back-pressure [8]: the harness pushes back against drift in real time rather than catching it at the end.
 
 **The principle:** Build typechecks, tests, and linting that agents can run immediately after each change. The agent self-corrects rather than drifting through a sequence of compounding errors.
 
@@ -585,13 +585,13 @@ The agent runs `git commit`, the hook fires, failures block the commit, and the 
 
 ### Verification-Driven Design
 
-Back-pressure catches regressions. Verification-driven design goes further: **make verification cheap and immediate so the agent tests proactively, not just reactively.**
+Back-pressure catches regressions. Verification-driven design [10] goes further: **make verification cheap and immediate so the agent tests proactively, not just reactively.**
 
 **The principle:** The harness should make it trivially easy for an agent to verify its own work — the same way a developer would check a UI change in the browser or run a test after a refactor.
 
 **Browser automation for UI verification:**
 
-MCP servers like Puppeteer MCP give agents the ability to test as a human user would — navigating pages, clicking elements, verifying visual output. Instead of hoping the CSS change looks right, the agent can take a screenshot and verify.
+MCP servers like Puppeteer MCP [10] give agents the ability to test as a human user would — navigating pages, clicking elements, verifying visual output. Instead of hoping the CSS change looks right, the agent can take a screenshot and verify.
 
 ```markdown
 <!-- In CLAUDE.md or a /project:verify-ui skill -->
@@ -630,7 +630,7 @@ This pattern — borrowed from TDD but applied to agent workflows — ensures th
 
 ### Model Context Protocol
 
-MCP (Model Context Protocol) is an open standard for extending AI agents with custom tools, resources, and prompts. Instead of telling an agent "run this bash command to check deployment status," you expose a structured tool that the agent can invoke with type-safe parameters and receive structured responses.
+MCP (Model Context Protocol) [9] is an open standard for extending AI agents with custom tools, resources, and prompts. Instead of telling an agent "run this bash command to check deployment status," you expose a structured tool that the agent can invoke with type-safe parameters and receive structured responses.
 
 ### When to Build an MCP Server vs Use Bash
 
@@ -1118,7 +1118,7 @@ node scripts/transform-context.js --input CLAUDE.md --output .github/copilot-ins
 
 9. **One source of truth.** If you maintain multiple tool-specific context files, generate them from a canonical source. Sprawl causes contradictions.
 
-10. **Context files have an instruction budget.** Frontier models reliably follow ~150–200 instructions total. Your agent tool's system prompt already consumes ~50. Every rule you add competes for the remaining slots — prune ruthlessly.
+10. **Context files have an instruction budget [5].** Frontier models reliably follow ~150–200 instructions total. Your agent tool's system prompt already consumes ~50. Every rule you add competes for the remaining slots — prune ruthlessly.
 
 11. **Progressive disclosure beats kitchen-sink files.** Deliver knowledge when relevant via skills, MCP resources, and directory-scoped files. If a rule applies to fewer than 30% of sessions, it does not belong in the root context file.
 
@@ -1131,3 +1131,16 @@ node scripts/transform-context.js --input CLAUDE.md --output .github/copilot-ins
 ---
 
 > Tool-specific details verified as of 2026-Q1. Context file formats and hook systems evolve with each tool release — verify against current documentation for your agent tool.
+
+## References
+
+1. [HumanLayer - Skill Issue: Harness Engineering for Coding Agents](https://www.humanlayer.dev/blog/skill-issue-harness-engineering-for-coding-agents), 2026
+2. [Anthropic - Claude Code Best Practices](https://code.claude.com/docs/en/best-practices), 2026
+3. [OpenAI - Custom Instructions with AGENTS.md](https://developers.openai.com/codex/guides/agents-md/), 2026
+4. [Cursor - Project Rules and Configuration](https://docs.cursor.com/context/rules), 2026
+5. [Anthropic - Building Effective Agents](https://www.anthropic.com/engineering/building-effective-agents), 2025
+6. [Anthropic - Long Context Prompting Tips](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#long-context-tips), 2025
+7. [HumanLayer - Progressive Disclosure and Context Firewalling](https://www.humanlayer.dev/blog/skill-issue-harness-engineering-for-coding-agents), 2026
+8. [HumanLayer - Back-Pressure Mechanisms for Agent Harnesses](https://www.humanlayer.dev/blog/skill-issue-harness-engineering-for-coding-agents), 2026
+9. [Anthropic - Model Context Protocol Specification](https://modelcontextprotocol.io/specification), 2025
+10. [Anthropic - Verification-Driven Design and Puppeteer MCP](https://www.anthropic.com/engineering/claude-code-best-practices), 2026

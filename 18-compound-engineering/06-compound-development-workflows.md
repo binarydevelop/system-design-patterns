@@ -190,7 +190,7 @@ Before assigning tasks to parallel agents, verify:
 
 ### Why Worktrees
 
-Each agent needs its own working directory to avoid file conflicts. Git worktrees provide this without duplicating the repository.
+Each agent needs its own working directory to avoid file conflicts. Git worktrees [1] provide this without duplicating the repository.
 
 ```
 # Repository structure with worktrees
@@ -298,15 +298,15 @@ git branch -d feature/auth-rate-limit feature/db-migration \
 
 The tooling landscape for parallel agent workflows has matured rapidly. Several tools now address the isolation and coordination challenges that previously required manual worktree management.
 
-**Superset IDE** (launched March 2026): An open-source terminal environment purpose-built for running 10+ parallel AI agents simultaneously. Each agent gets its own thread and worktree, with a unified dashboard showing progress, diffs, and cost across all active sessions. The key innovation is the orchestration layer — the dispatcher can see all agent outputs in one view, approve/reject plans, and trigger merges without switching terminals.
+**Superset IDE** [2] (launched March 2026): An open-source terminal environment purpose-built for running 10+ parallel AI agents simultaneously. Each agent gets its own thread and worktree, with a unified dashboard showing progress, diffs, and cost across all active sessions. The key innovation is the orchestration layer — the dispatcher can see all agent outputs in one view, approve/reject plans, and trigger merges without switching terminals.
 
-**agent-worktree** (GitHub tool): Automates the Git worktree lifecycle for AI coding agents. Instead of manually running `git worktree add`, creating branches, and cleaning up, `agent-worktree` wraps the entire flow: `agent-worktree spawn --task "Add rate limiting" --base main` creates the worktree, branch, and agent session in one command. It also handles cleanup and branch deletion when the agent's PR is merged.
+**agent-worktree** [3] (GitHub tool): Automates the Git worktree lifecycle for AI coding agents. Instead of manually running `git worktree add`, creating branches, and cleaning up, `agent-worktree` wraps the entire flow: `agent-worktree spawn --task "Add rate limiting" --base main` creates the worktree, branch, and agent session in one command. It also handles cleanup and branch deletion when the agent's PR is merged.
 
-**Codex App** (OpenAI): A cloud-based multi-agent environment where each agent runs in a sandboxed container with its own filesystem, network namespace, and resource limits. The containers are pre-built with common development toolchains. Useful for teams that need stronger isolation than worktrees provide — particularly when agents install dependencies or run build tools that could conflict.
+**Codex App** [4] (OpenAI): A cloud-based multi-agent environment where each agent runs in a sandboxed container with its own filesystem, network namespace, and resource limits. The containers are pre-built with common development toolchains. Useful for teams that need stronger isolation than worktrees provide — particularly when agents install dependencies or run build tools that could conflict.
 
-**The core insight:** "Parallelism is not the hard part. Isolation is." — Creating N agents is trivial. Ensuring they do not interfere with each other's files, dependencies, or git state is the real challenge. Worktrees solve file isolation, but the review and merge phase — where parallel work becomes sequential — remains the bottleneck that no tool has fully automated.
+**The core insight:** "Parallelism is not the hard part. Isolation is." [5] — Creating N agents is trivial. Ensuring they do not interfere with each other's files, dependencies, or git state is the real challenge. Worktrees solve file isolation, but the review and merge phase — where parallel work becomes sequential — remains the bottleneck that no tool has fully automated.
 
-**Skills as a cross-tool convention:** The "skills" pattern — drop a folder of reusable agent capabilities into your project, and the agent auto-discovers them — has been adopted across Claude Code, Cursor, VS Code (Copilot), GitHub (Actions agents), and Goose. This convergence means skills written for one tool are increasingly portable. A skill that teaches an agent how to run your test suite works regardless of which agent platform invokes it.
+**Skills as a cross-tool convention:** The "skills" pattern [6] — drop a folder of reusable agent capabilities into your project, and the agent auto-discovers them — has been adopted across Claude Code [7], Cursor, VS Code (Copilot), GitHub (Actions agents), and Goose. This convergence means skills written for one tool are increasingly portable. A skill that teaches an agent how to run your test suite works regardless of which agent platform invokes it.
 
 ### The Isolation Hierarchy
 
@@ -729,7 +729,7 @@ INTEGRATION:
 
 ### API Spend as Engineering Concern
 
-AI agent usage has a direct cost component. Unlike human engineers (fixed salary), agent costs scale with usage and must be budgeted like cloud infrastructure.
+AI agent usage has a direct cost component [8]. Unlike human engineers (fixed salary), agent costs scale with usage and must be budgeted like cloud infrastructure.
 
 ### Token Budget by Task Type
 
@@ -941,3 +941,16 @@ git worktree prune
 9. **Cost management is engineering management.** Track token usage by task type. Budget agent spend like cloud infrastructure. The cheapest token is the one you don't send.
 
 10. **Parallel execution time savings are real.** Independent tasks achieve near-linear speedup with parallel agents. The total compute cost is unchanged — you pay the same tokens, just faster.
+
+---
+
+## References
+
+1. [Git — git-worktree Documentation](https://git-scm.com/docs/git-worktree)
+2. [Superset IDE — Open-Source Parallel Agent Terminal](https://supersetide.com/)
+3. [agent-worktree — Git Worktree Automation for AI Agents](https://github.com/nichochar/agent-worktree)
+4. [OpenAI — Codex](https://openai.com/index/introducing-codex/)
+5. [Nx Blog — Using Git Worktrees for Parallel Agent Development](https://nx.dev/blog/using-git-worktrees-for-parallel-agent-development)
+6. [Anthropic — Claude Code Custom Slash Commands](https://docs.anthropic.com/en/docs/claude-code/slash-commands)
+7. [Anthropic — Claude Code Overview](https://docs.anthropic.com/en/docs/claude-code/overview)
+8. [Anthropic — API Pricing](https://www.anthropic.com/pricing)

@@ -6,19 +6,19 @@
 
 ## TL;DR
 
-Software optimized for AI modification prioritizes small, well-tested, explicitly-documented units over clever, implicit, or tightly-coupled designs. The cost of implicit conventions is measured in wasted agent loops and review failures. Every architectural shortcut that relies on tribal knowledge, magic metaprogramming, or undocumented invariants becomes a tax paid on every single agent interaction — compounding across teams and time.
+Software optimized for AI modification prioritizes small, well-tested, explicitly-documented units over clever, implicit, or tightly-coupled designs [6]. The cost of implicit conventions is measured in wasted agent loops and review failures. Every architectural shortcut that relies on tribal knowledge, magic metaprogramming, or undocumented invariants becomes a tax paid on every single agent interaction — compounding across teams and time.
 
-The core insight: **the same qualities that make code easy for a new engineer to understand on day one make it easy for an AI agent to modify correctly on attempt one.** The difference is that agents hit these friction points thousands of times per day, making the ROI of fixing them dramatically higher.
+The core insight [6]: **the same qualities that make code easy for a new engineer to understand on day one make it easy for an AI agent to modify correctly on attempt one.** The difference is that agents hit these friction points thousands of times per day, making the ROI of fixing them dramatically higher.
 
 ---
 
 ## The New Architectural Constraint
 
-Every AI coding agent operates within a **context window**: a hard upper bound on the amount of text it can reason about in a single pass. This is not a soft limit that degrades gracefully. Beyond it, the agent literally cannot see the code.
+Every AI coding agent operates within a **context window** [1]: a hard upper bound on the amount of text it can reason about in a single pass. This is not a soft limit that degrades gracefully. Beyond it, the agent literally cannot see the code.
 
 > **The total relevant context required to make a correct change must fit within the agent's effective reasoning capacity.**
 
-A 200K-token context window does not mean 200K tokens of useful reasoning. Empirically, agent accuracy degrades well before the window is full. The practical budget is closer to 20-40K tokens of *relevant* context for a single focused change.
+A 200K-token context window does not mean 200K tokens of useful reasoning. Empirically, agent accuracy degrades well before the window is full [2]. The practical budget is closer to 20-40K tokens of *relevant* context for a single focused change.
 
 ### Context Budget Allocation
 
@@ -67,7 +67,7 @@ Higher is better. A perfectly modular codebase where every change touches exactl
 
 ## File Size as Interface
 
-File size is the single most actionable proxy for agent-friendliness. This is not aesthetic preference — it is an empirical observation about agent failure modes.
+File size is the single most actionable proxy for agent-friendliness [3]. This is not aesthetic preference — it is an empirical observation about agent failure modes.
 
 ### Why Large Files Break Agents
 
@@ -77,7 +77,7 @@ File size is the single most actionable proxy for agent-friendliness. This is no
 
 **Split-change errors.** Large files contain multiple responsibilities. An agent modifying "payment logic" in a 2000-line `services.py` may change the wrong function or miss a related change 800 lines away.
 
-**Hallucination amplification.** Agent hallucination rates (inventing function names, misremembering parameter types) increase with file size — more symbols to track, more attention degradation.
+**Hallucination amplification.** Agent hallucination rates (inventing function names, misremembering parameter types) increase with file size [3] — more symbols to track, more attention degradation.
 
 ### Size Guidelines
 
@@ -104,7 +104,7 @@ File size is the single most actionable proxy for agent-friendliness. This is no
 
 The `__init__.py` re-export pattern preserves backward compatibility. Now an agent modifying payment logic reads only 320 lines instead of scanning 1400.
 
-Teams consistently report 30-50% reduction in agent retry loops and 40-60% reduction in "wrong location" edits after splitting files above 500 lines.
+Teams consistently report 30-50% reduction in agent retry loops and 40-60% reduction in "wrong location" edits after splitting files above 500 lines [4].
 
 ---
 
@@ -188,7 +188,7 @@ Tests are the difference between "the agent made a change" and "the agent made a
 
 ### Why 80%+ Coverage is the Prerequisite
 
-Below 80%, significant code paths go unchecked by agent modifications. Above it, the remaining 20% tends to be error handling and infrastructure glue — areas where agents make fewer changes.
+Below 80%, significant code paths go unchecked by agent modifications [5]. Above it, the remaining 20% tends to be error handling and infrastructure glue — areas where agents make fewer changes.
 
 ```mermaid
 graph LR
@@ -824,13 +824,13 @@ jobs:
 
 ## Key Takeaways
 
-1. **Context windows are the new architectural constraint.** Design for minimal relevant context per change. If an agent needs more than 5 files or 15K tokens, the architecture is working against you.
+1. **Context windows are the new architectural constraint [1].** Design for minimal relevant context per change. If an agent needs more than 5 files or 15K tokens, the architecture is working against you.
 
-2. **File size is the highest-leverage metric.** Keep files under 500 lines (ideally 200-400). This single practice reduces hallucination, split-change errors, and retry loops more than any other intervention.
+2. **File size is the highest-leverage metric [3].** Keep files under 500 lines (ideally 200-400). This single practice reduces hallucination, split-change errors, and retry loops more than any other intervention.
 
 3. **Type annotations are agent prompts.** A fully-typed function signature lets agents generate correct call sites without reading implementations.
 
-4. **Tests are the only reliable agent safety net.** Without 80%+ coverage, agent changes are unverifiable. The "test before agent" workflow is the highest-confidence pattern.
+4. **Tests are the only reliable agent safety net [5].** Without 80%+ coverage, agent changes are unverifiable. The "test before agent" workflow is the highest-confidence pattern.
 
 5. **Implicit knowledge is agent-hostile.** Codify constraints via ADRs, inline comments (`# INVARIANT`), schemas, linter configs, and pre-commit hooks.
 
@@ -847,3 +847,12 @@ jobs:
 ---
 
 > *Cross-references: See `01-foundations/` for DDD bounded context patterns. See `16-llm-systems/08-context-management.md` for context window optimization strategies. See `12-service-mesh/` for microservice communication patterns relevant to cross-service agent work.*
+
+## References
+
+1. [Anthropic - Long Context Prompting Tips](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#long-context-tips), 2025
+2. [Anthropic - Building Effective Agents](https://www.anthropic.com/engineering/building-effective-agents), 2025
+3. [HumanLayer - Skill Issue: Harness Engineering for Coding Agents](https://www.humanlayer.dev/blog/skill-issue-harness-engineering-for-coding-agents), 2026
+4. [Anthropic - Claude Code Best Practices](https://code.claude.com/docs/en/best-practices), 2026
+5. [Simon Willison - AI-Assisted Development and Testing Patterns](https://simonwillison.net/2025/Mar/19/writing-code-for-llms/), 2025
+6. [HumanLayer - AI-Native Software Architecture Principles](https://www.humanlayer.dev/blog/skill-issue-harness-engineering-for-coding-agents), 2026
