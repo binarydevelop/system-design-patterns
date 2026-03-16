@@ -10,24 +10,15 @@ Orchestration patterns define how agents reason, plan, and execute tasks. ReAct 
 
 ### The Pattern
 
+```mermaid
+graph LR
+    T1["Think<br/>(Reasoning)"] --> A1["Act<br/>(Tool)"]
+    A1 --> O1["Observe<br/>(Result)"]
+    O1 -->|Loop| T1
+    O1 -->|Done| FA["Final Answer"]
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         ReAct Loop                                   │
-│                                                                     │
-│   ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐  │
-│   │  Think   │────►│   Act    │────►│ Observe  │────►│  Think   │  │
-│   │(Reasoning│     │  (Tool)  │     │ (Result) │     │   ...    │  │
-│   └──────────┘     └──────────┘     └──────────┘     └──────────┘  │
-│                                                                     │
-│   Thought: I need to find the current weather in Tokyo              │
-│   Action: weather_api                                               │
-│   Action Input: {"city": "Tokyo"}                                   │
-│   Observation: Temperature: 22°C, Humidity: 65%, Partly cloudy     │
-│   Thought: Now I have the weather info, I can answer the user       │
-│   Final Answer: The weather in Tokyo is 22°C and partly cloudy...  │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
+
+**Example:** Thought: I need to find the current weather in Tokyo -> Action: weather_api({city: "Tokyo"}) -> Observation: 22C, Partly cloudy -> Thought: I can answer -> Final Answer: The weather in Tokyo is 22C and partly cloudy
 
 ### Implementation
 
@@ -129,35 +120,13 @@ Limitations:
 
 ### The Pattern
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      Chain-of-Thought                                │
-│                                                                     │
-│   Question: If a train travels 120 miles in 2 hours, and then      │
-│   180 miles in 3 hours, what is its average speed for the          │
-│   entire journey?                                                   │
-│                                                                     │
-│   ┌─────────────────────────────────────────────────────────────┐  │
-│   │ Step 1: Calculate total distance                             │  │
-│   │         120 miles + 180 miles = 300 miles                    │  │
-│   └─────────────────────────────────────────────────────────────┘  │
-│                           │                                         │
-│                           ▼                                         │
-│   ┌─────────────────────────────────────────────────────────────┐  │
-│   │ Step 2: Calculate total time                                 │  │
-│   │         2 hours + 3 hours = 5 hours                          │  │
-│   └─────────────────────────────────────────────────────────────┘  │
-│                           │                                         │
-│                           ▼                                         │
-│   ┌─────────────────────────────────────────────────────────────┐  │
-│   │ Step 3: Calculate average speed                              │  │
-│   │         300 miles ÷ 5 hours = 60 mph                         │  │
-│   └─────────────────────────────────────────────────────────────┘  │
-│                           │                                         │
-│                           ▼                                         │
-│   Answer: The average speed is 60 miles per hour.                  │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Q["Question: Average speed<br/>for entire journey?"]
+    Q --> S1["Step 1: Total distance<br/>120 + 180 = 300 miles"]
+    S1 --> S2["Step 2: Total time<br/>2 + 3 = 5 hours"]
+    S2 --> S3["Step 3: Average speed<br/>300 / 5 = 60 mph"]
+    S3 --> A["Answer: 60 miles per hour"]
 ```
 
 ### Implementation
@@ -257,28 +226,26 @@ class SelfConsistencyCoT:
 
 ### The Pattern
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                       Tree-of-Thought                                │
-│                                                                     │
-│                         [Problem]                                   │
-│                             │                                       │
-│              ┌──────────────┼──────────────┐                       │
-│              ▼              ▼              ▼                       │
-│         [Thought 1]    [Thought 2]    [Thought 3]                  │
-│         Score: 0.8     Score: 0.6     Score: 0.9  ← Evaluate       │
-│              │              │              │                       │
-│        ┌─────┤              X         ┌────┤   ← Prune low scores  │
-│        ▼     ▼                        ▼    ▼                       │
-│     [T1.1] [T1.2]                  [T3.1] [T3.2]                   │
-│     0.85   0.7                     0.95   0.88                     │
-│        │                              │                            │
-│        ▼                              ▼                            │
-│     [T1.1.1]                      [T3.1.1] ← Best path            │
-│                                       │                            │
-│                                    [Answer]                        │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    P["Problem"] --> T1["Thought 1<br/>Score: 0.8"]
+    P --> T2["Thought 2<br/>Score: 0.6"]
+    P --> T3["Thought 3<br/>Score: 0.9"]
+
+    T1 --> T11["T1.1<br/>Score: 0.85"]
+    T1 --> T12["T1.2<br/>Score: 0.7"]
+    T2 -.-x PRUNED["Pruned"]
+
+    T3 --> T31["T3.1<br/>Score: 0.95"]
+    T3 --> T32["T3.2<br/>Score: 0.88"]
+
+    T11 --> T111["T1.1.1"]
+    T31 --> T311["T3.1.1<br/>Best path"]
+    T311 --> ANS["Answer"]
+
+    style T2 fill:#fcc,stroke:#933
+    style T31 fill:#cfc,stroke:#393
+    style T311 fill:#cfc,stroke:#393
 ```
 
 ### Implementation
@@ -427,42 +394,15 @@ Score (0-1):"""
 
 ### The Pattern
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                       Plan-and-Execute                               │
-│                                                                     │
-│   ┌─────────────────────────────────────────────────────────────┐  │
-│   │                      PLANNER                                 │  │
-│   │                                                              │  │
-│   │  Goal: Book a trip to Paris                                 │  │
-│   │                                                              │  │
-│   │  Plan:                                                       │  │
-│   │  1. Search for flights to Paris                             │  │
-│   │  2. Compare prices and select best option                   │  │
-│   │  3. Search for hotels in Paris                              │  │
-│   │  4. Book the selected flight                                │  │
-│   │  5. Book the selected hotel                                 │  │
-│   │  6. Send confirmation to user                               │  │
-│   └─────────────────────────────────────────────────────────────┘  │
-│                              │                                       │
-│                              ▼                                       │
-│   ┌─────────────────────────────────────────────────────────────┐  │
-│   │                     EXECUTOR                                 │  │
-│   │                                                              │  │
-│   │  Step 1: search_flights("Paris") → [Flight A, B, C]         │  │
-│   │  Step 2: compare_prices([A,B,C]) → Flight B ($450)          │  │
-│   │  Step 3: search_hotels("Paris") → [Hotel X, Y, Z]           │  │
-│   │  ...                                                         │  │
-│   └─────────────────────────────────────────────────────────────┘  │
-│                              │                                       │
-│                              ▼                                       │
-│   ┌─────────────────────────────────────────────────────────────┐  │
-│   │                    RE-PLANNER                                │  │
-│   │                                                              │  │
-│   │  If step fails or new information: Revise remaining plan    │  │
-│   └─────────────────────────────────────────────────────────────┘  │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    PLANNER["PLANNER<br/>Goal: Book a trip to Paris<br/>1. Search flights<br/>2. Compare prices<br/>3. Search hotels<br/>4. Book flight<br/>5. Book hotel<br/>6. Send confirmation"]
+
+    PLANNER --> EXECUTOR["EXECUTOR<br/>Step 1: search_flights -> A, B, C<br/>Step 2: compare_prices -> Flight B<br/>Step 3: search_hotels -> X, Y, Z<br/>..."]
+
+    EXECUTOR -->|Step fails or<br/>new information| REPLANNER["RE-PLANNER<br/>Revise remaining plan"]
+    REPLANNER -->|Revised plan| EXECUTOR
+    EXECUTOR -->|All done| RESULT["Final Result"]
 ```
 
 ### Implementation
@@ -651,30 +591,12 @@ Provide a clear summary of what was accomplished:"""
 
 ### The Pattern
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          Reflexion                                   │
-│                                                                     │
-│   ┌────────────────────────────────────────────────────────────┐   │
-│   │ Episode 1: Initial Attempt                                  │   │
-│   │                                                             │   │
-│   │ Task → Action → Result: FAILED                             │   │
-│   │                                                             │   │
-│   │ Reflection: "I used the wrong API endpoint. I should have  │   │
-│   │ used /api/v2 instead of /api/v1"                           │   │
-│   └────────────────────────────────────────────────────────────┘   │
-│                              │                                       │
-│                              │ Store reflection in memory            │
-│                              ▼                                       │
-│   ┌────────────────────────────────────────────────────────────┐   │
-│   │ Episode 2: Informed Retry                                   │   │
-│   │                                                             │   │
-│   │ Memory: "Use /api/v2 instead of /api/v1"                   │   │
-│   │                                                             │   │
-│   │ Task → Action (informed by reflection) → Result: SUCCESS   │   │
-│   └────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    E1["Episode 1: Initial Attempt<br/>Task -> Action -> FAILED"]
+    E1 --> REF["Reflection:<br/>Used wrong API endpoint.<br/>Should use /api/v2 instead of /api/v1"]
+    REF -.->|Store in memory| MEM[("Memory")]
+    MEM -.->|Inform retry| E2["Episode 2: Informed Retry<br/>Task -> Action (informed) -> SUCCESS"]
 ```
 
 ### Implementation
@@ -763,26 +685,13 @@ Lesson:"""
 
 ## Pattern Comparison
 
-```
-┌────────────────┬─────────────────┬─────────────────┬─────────────────┐
-│ Pattern        │ Strengths       │ Weaknesses      │ Best For        │
-├────────────────┼─────────────────┼─────────────────┼─────────────────┤
-│ ReAct          │ Observable      │ Can get stuck   │ Tool-based      │
-│                │ reasoning       │ in loops        │ tasks           │
-├────────────────┼─────────────────┼─────────────────┼─────────────────┤
-│ CoT            │ Better complex  │ Single path     │ Reasoning       │
-│                │ reasoning       │ exploration     │ problems        │
-├────────────────┼─────────────────┼─────────────────┼─────────────────┤
-│ Tree-of-Thought│ Explores        │ Computationally │ Complex puzzles │
-│                │ alternatives    │ expensive       │ and planning    │
-├────────────────┼─────────────────┼─────────────────┼─────────────────┤
-│ Plan-Execute   │ Structured      │ Rigid plans     │ Multi-step      │
-│                │ approach        │ may need change │ tasks           │
-├────────────────┼─────────────────┼─────────────────┼─────────────────┤
-│ Reflexion      │ Learns from     │ Multiple        │ Trial-error     │
-│                │ mistakes        │ attempts needed │ tasks           │
-└────────────────┴─────────────────┴─────────────────┴─────────────────┘
-```
+| Pattern | Strengths | Weaknesses | Best For |
+|---------|-----------|------------|----------|
+| ReAct | Observable reasoning | Can get stuck in loops | Tool-based tasks |
+| CoT | Better complex reasoning | Single path exploration | Reasoning problems |
+| Tree-of-Thought | Explores alternatives | Computationally expensive | Complex puzzles and planning |
+| Plan-Execute | Structured approach | Rigid plans may need change | Multi-step tasks |
+| Reflexion | Learns from mistakes | Multiple attempts needed | Trial-error tasks |
 
 ---
 
