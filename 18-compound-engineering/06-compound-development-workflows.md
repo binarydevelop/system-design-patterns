@@ -294,6 +294,42 @@ git branch -d feature/auth-rate-limit feature/db-migration \
     feature/api-activity feature/activity-tests
 ```
 
+### Latest Parallel Agent Tooling
+
+The tooling landscape for parallel agent workflows has matured rapidly. Several tools now address the isolation and coordination challenges that previously required manual worktree management.
+
+**Superset IDE** (launched March 2026): An open-source terminal environment purpose-built for running 10+ parallel AI agents simultaneously. Each agent gets its own thread and worktree, with a unified dashboard showing progress, diffs, and cost across all active sessions. The key innovation is the orchestration layer — the dispatcher can see all agent outputs in one view, approve/reject plans, and trigger merges without switching terminals.
+
+**agent-worktree** (GitHub tool): Automates the Git worktree lifecycle for AI coding agents. Instead of manually running `git worktree add`, creating branches, and cleaning up, `agent-worktree` wraps the entire flow: `agent-worktree spawn --task "Add rate limiting" --base main` creates the worktree, branch, and agent session in one command. It also handles cleanup and branch deletion when the agent's PR is merged.
+
+**Codex App** (OpenAI): A cloud-based multi-agent environment where each agent runs in a sandboxed container with its own filesystem, network namespace, and resource limits. The containers are pre-built with common development toolchains. Useful for teams that need stronger isolation than worktrees provide — particularly when agents install dependencies or run build tools that could conflict.
+
+**The core insight:** "Parallelism is not the hard part. Isolation is." — Creating N agents is trivial. Ensuring they do not interfere with each other's files, dependencies, or git state is the real challenge. Worktrees solve file isolation, but the review and merge phase — where parallel work becomes sequential — remains the bottleneck that no tool has fully automated.
+
+**Skills as a cross-tool convention:** The "skills" pattern — drop a folder of reusable agent capabilities into your project, and the agent auto-discovers them — has been adopted across Claude Code, Cursor, VS Code (Copilot), GitHub (Actions agents), and Goose. This convergence means skills written for one tool are increasingly portable. A skill that teaches an agent how to run your test suite works regardless of which agent platform invokes it.
+
+### The Isolation Hierarchy
+
+Not all isolation is equal. The right level depends on the task's risk profile, the team's infrastructure, and the cost budget.
+
+| Level | Mechanism | File Isolation | Dependency Isolation | Cost | Use Case |
+|-------|-----------|---------------|---------------------|------|----------|
+| **Level 0** | Same directory, same branch | None | None | Free | Single agent, sequential work |
+| **Level 1** | Same repo, different branches | Partial (uncommitted changes conflict) | None | Free | Low-parallelism, careful coordination |
+| **Level 2** | Git worktrees | Full (separate working directories) | Shared (same node_modules, etc.) | Free | Most local parallel workflows |
+| **Level 3** | Container sandboxes (Codex App) | Full | Full (each container has own deps) | $0.01-0.10/session | CI/CD agents, untrusted code |
+| **Level 4** | Cloud VMs | Complete | Complete | $0.50-5.00/session | Maximum isolation, compliance requirements |
+
+**Level 0** is where most developers start — one agent, one directory. Agents will conflict the moment you try to run two in the same working tree. File locks, partial writes, and git index corruption are common.
+
+**Level 1** seems like it should work, but uncommitted changes in one branch are visible to `git stash` and `git checkout` operations in another. Merge conflicts are likely when branches diverge significantly.
+
+**Level 2 (worktrees)** is the sweet spot for most teams. Each agent gets a fully independent working directory with its own checked-out branch, but all worktrees share the same `.git` database. No repository duplication, no extra disk cost beyond the working files, and full git history available everywhere.
+
+**Level 3 and 4** add dependency and OS-level isolation. These matter when agents install packages, run build tools, or execute untrusted code. A rogue `npm install` in one container cannot corrupt another agent's `node_modules`.
+
+**Decision heuristic:** Use Level 2 (worktrees) for local development workflows. Use Level 3 (containers) for CI/CD agents and when agents install dependencies. Use Level 4 (cloud VMs) only when compliance or security policies require complete separation.
+
 ---
 
 ## Background Task Patterns
