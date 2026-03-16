@@ -309,6 +309,63 @@ A good decomposition has these properties:
 
 Note the dependency ordering: Agents 1 runs first (schema), then 2+3 in parallel, then 4+5 in parallel. The human sequences the waves.
 
+### The Two-Agent Pattern
+
+For long-running projects that span multiple sessions, Anthropic has converged on a proven two-agent pattern that separates project bootstrapping from incremental progress.
+
+**Initializer Agent (first session):**
+
+The initializer runs once to establish the project foundation:
+
+- Sets up the project structure (directories, configs, boilerplate)
+- Creates the **feature list** — critically, in JSON, not Markdown. JSON is more resistant to model corruption across sessions:
+  ```json
+  [
+    {"feature": "auth", "status": "failing", "tests": ["test_login", "test_logout"]},
+    {"feature": "dashboard", "status": "not_started", "tests": ["test_render", "test_data_fetch"]},
+    {"feature": "notifications", "status": "not_started", "tests": ["test_send", "test_preferences"]}
+  ]
+  ```
+- Writes `init.sh` — a bootstrap script that subsequent sessions run to restore environment state
+- Establishes baseline tests that must pass before any new work begins
+- Creates `claude-progress.txt` as the inter-session log file
+
+**Coding Agent (subsequent sessions):**
+
+Each coding session follows a deterministic startup sequence:
+
+1. `pwd` — confirm working directory
+2. Read git logs — understand what changed since last session
+3. Read `claude-progress.txt` — understand what was accomplished and what failed
+4. Select the next feature from the JSON feature list (pick the first `not_started` or `failing` item)
+5. Run `init.sh` — restore environment, install deps, verify toolchain
+6. Run baseline tests — confirm nothing is broken before starting
+7. Implement the selected feature
+8. Update the feature list JSON and progress file
+9. Commit with a clear message referencing the feature
+
+**Why this works:**
+
+The startup sequence eliminates the "cold start" problem. The agent does not need to re-discover project state — it reads structured artifacts that the previous session left behind. JSON feature lists prevent the drift that occurs when models edit Markdown checklists (checked items get unchecked, ordering shifts, duplicates appear).
+
+**Key anti-pattern: "one-shotting."** Attempting to build an entire application in a single session is the most common failure mode. Complex projects need multiple sessions with compounding progress. The two-agent pattern encodes this reality into the workflow — the initializer sets up for a marathon, not a sprint.
+
+**Session continuity through artifacts:**
+
+```
+claude-progress.txt (append-only):
+  [2026-03-14 09:00] Session started. Selected feature: auth
+  [2026-03-14 09:15] Created auth middleware, login endpoint
+  [2026-03-14 09:30] test_login passing, test_logout failing (session expiry bug)
+  [2026-03-14 09:45] Session ended. Auth feature status: failing
+
+  [2026-03-15 10:00] Session started. Selected feature: auth (retry)
+  [2026-03-15 10:10] Fixed session expiry, both tests passing
+  [2026-03-15 10:15] Updated feature list. Selected next: dashboard
+```
+
+This pattern scales to projects with 20+ features across dozens of sessions. The progress file becomes the project's ground truth — more reliable than git history alone because it captures intent, not just diffs.
+
 ---
 
 ## Cognitive Load Shift
@@ -449,6 +506,46 @@ Key differences:
 | Years of experience writing code | Years of experience reading code |
 
 This does not mean coding skill is irrelevant — far from it. You cannot review code you do not understand. You cannot decompose systems you have never built. Deep implementation experience is a prerequisite for effective compound engineering, not a replacement target.
+
+### The Compound Loop
+
+From Every.to's methodology comes a principle that elevates compound engineering from a productivity technique to a self-improving system: **each unit of engineering work should make subsequent units easier.**
+
+**The loop:**
+
+```
+Plan (80% of effort)
+  → Work (20% of effort)
+    → Review
+      → Compound (feed learning back)
+        → Plan (next iteration, now easier)
+```
+
+The counterintuitive ratio — 80% planning, 20% execution — reflects the reality that agent execution is cheap but misdirected execution is expensive. A well-decomposed, well-specified task takes 10 minutes of agent time. A poorly specified one takes 10 minutes of agent time plus 45 minutes of human correction. The planning investment pays for itself on the first iteration and compounds on every subsequent one.
+
+**Systematic documentation of learnings:**
+
+Every bug, performance issue, and problem-solving insight encountered during agent-assisted work must be captured and fed back into the agent's context for future work. This is not optional documentation — it is the compounding mechanism itself.
+
+What to capture:
+
+- **Failure patterns:** "Agent consistently forgets to add error handling for database timeouts. Add to CLAUDE.md checklist."
+- **Effective prompts:** "Specifying the exact test file path in the prompt reduces iteration count from 3 to 1."
+- **Architecture discoveries:** "The payments module has an undocumented dependency on the user session cache. Add to module dependency map."
+- **Performance insights:** "Batch inserts over 1000 rows must use chunked transactions. Agent will default to single transaction without explicit instruction."
+
+**Post-project retrospectives:**
+
+After every significant project (not just sprints — individual multi-session projects), extract reusable patterns:
+
+1. Which decomposition strategies worked? Which produced integration conflicts?
+2. Which prompt patterns yielded first-try success? Which required iteration?
+3. What context was missing that caused agent errors?
+4. What new conventions emerged that should be codified?
+
+**CLAUDE.md as living documentation:**
+
+This is why project-level instruction files (`.claude/CLAUDE.md`, `.cursorrules`, etc.) should be treated as living documentation, updated after every project — not written once and forgotten. Each retrospective should produce at least one update to the project instructions. Over months, this file becomes a dense encoding of everything the agent needs to know about your codebase, written in the language of past mistakes. The compound loop turns every failure into a permanent improvement.
 
 ---
 

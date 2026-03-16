@@ -24,7 +24,7 @@ Three pillars compose agent context:
 │  │     Project context files, documentation pointers,            │  │
 │  │     codebase conventions, tech stack descriptions             │  │
 │  │     ─────────────────────────────────────────────              │  │
-│  │     Examples: CLAUDE.md, .cursorrules, copilot-instructions   │  │
+│  │     Examples: CLAUDE.md, AGENTS.md, .cursorrules, copilot-instructions │  │
 │  └───────────────────────────────────────────────────────────────┘  │
 │                                                                     │
 │  ┌───────────────────────────────────────────────────────────────┐  │
@@ -51,11 +51,13 @@ Three pillars compose agent context:
 | Source Type | File / Location | Agent | Scope |
 |---|---|---|---|
 | Project context | `CLAUDE.md` | Claude Code | Repo / directory |
+| Project context | `AGENTS.md` | OpenAI Codex | Repo / directory |
 | Tool rules | `.cursorrules` | Cursor | Repo |
 | Copilot instructions | `.github/copilot-instructions.md` | GitHub Copilot | Repo |
 | Editor config | `.editorconfig` | All editors | Repo |
 | CI/CD hooks | `.github/workflows/*.yml` | CI runners | Repo |
 | Global user context | `~/.claude/CLAUDE.md` | Claude Code | All repos for user |
+| Global user context | `~/.codex/AGENTS.override.md` | OpenAI Codex | All repos for user |
 | Global user rules | `~/.cursor/rules` | Cursor | All repos for user |
 | Workspace settings | `.vscode/settings.json` | VS Code extensions | Repo |
 
@@ -178,6 +180,41 @@ Rules:
 
 Same conventions, formatted for Copilot. Copilot instructions use a flat markdown structure with short sections: Context, Code Style, Patterns to Follow, Patterns to Avoid, Testing. The content mirrors the CLAUDE.md but is shorter since Copilot instructions have tighter length constraints.
 
+### AGENTS.md (OpenAI Codex)
+
+OpenAI Codex uses `AGENTS.md` files — functionally equivalent to `CLAUDE.md` but with a distinct precedence and override model.
+
+**Three-tier precedence chain:**
+
+```
+~/.codex/AGENTS.override.md              ← global override (user-level)
+  └── /repo/AGENTS.md                    ← project root
+        └── /repo/src/feature/AGENTS.md  ← current directory (closest wins)
+
+Resolution: files closer to the current working directory take precedence.
+```
+
+**Override mechanism:** Placing an `AGENTS.override.md` at any level *temporarily replaces* the `AGENTS.md` at that level rather than merging with it. This is a hard swap, not additive — useful for experiments or temporary policy changes without editing the canonical file.
+
+**Directory-level scoping** works like CLAUDE.md's hierarchy, but Codex walks from the current directory upward to root, collecting instructions. Files closer to the working directory override earlier ones when rules conflict.
+
+**Size limit:** Codex enforces a hard cap of **32KB combined instruction size** across all merged `AGENTS.md` files (`project_doc_max_bytes` setting). Beyond this, instructions are silently truncated. This is more restrictive than CLAUDE.md's practical limit and demands aggressive pruning.
+
+**Fallback filenames:** If no `AGENTS.md` is found, Codex searches for fallback filenames configured via `project_doc_fallback_filenames` — including `TEAM_GUIDE.md`, `CODEX.md`, and `CONVENTIONS.md`. This allows gradual adoption without renaming existing documentation.
+
+**Cross-tool comparison:**
+
+| Capability | CLAUDE.md | AGENTS.md | .cursorrules |
+|---|---|---|---|
+| Hierarchical scoping | Global → repo → directory | Global → repo → directory | Repo-level only |
+| Override mechanism | Additive merge (top-down) | Hard swap via `.override.md` | Single file, no override |
+| Size limit | Soft (~300 lines practical) | Hard 32KB (`project_doc_max_bytes`) | Soft (~3000 tokens practical) |
+| Fallback filenames | None | `TEAM_GUIDE.md`, etc. configurable | None |
+| Personal overrides | `~/.claude/CLAUDE.md` | `~/.codex/AGENTS.override.md` | `~/.cursor/rules` |
+| Version control friendly | Yes | Yes | Yes |
+
+**Implication for multi-tool teams:** If your team uses both Claude Code and Codex, maintain CLAUDE.md as the canonical source and generate AGENTS.md from it (see the Context Sprawl anti-pattern below). The override semantics differ enough that blindly copying between them causes subtle behavior differences.
+
 ### What Makes a Good Context File
 
 Three principles separate effective context files from noise:
@@ -291,6 +328,81 @@ Force a specific format or structure for recurring tasks:
 ### Anti-Pattern: Context Files Too Long
 
 Context files compete with the task for token budget. Guidelines: global under 50 lines, repo under 200 lines, directory under 50 lines, total merged under 300 lines. If you need more, use MCP servers or slash commands to inject context on demand.
+
+### The Instruction Budget
+
+Length limits are not just about tokens — they reflect a harder constraint on reliable instruction-following.
+
+Empirical testing across frontier LLMs shows that models can reliably follow approximately **150–200 individual instructions** before compliance degrades. This is the *instruction budget* — the total number of discrete directives the model can track simultaneously.
+
+The catch: your context file does not get the full budget. The agent tool's own system prompt consumes a significant share. Claude Code's system prompt, for example, contains roughly **50 instructions** covering tool use, safety, output formatting, and git behavior. That leaves **100–150 instructions** for your `CLAUDE.md`, directory-level files, and any injected skills or MCP prompts — combined.
+
+This has concrete implications:
+
+- **Every instruction you add pushes against the ceiling.** A 200-line CLAUDE.md with 80 rules plus 3 directory-level files with 20 rules each already consumes the full budget.
+- **Low-value rules degrade high-value rules.** When the budget is exceeded, the model does not fail cleanly — it deprioritizes rules unpredictably. A "prefer const over let" rule could cause the model to forget "never use raw SQL."
+- **"Keep it concise" is not stylistic advice — it is engineering necessity.** Prune aggressively. If a rule is not producing measurable improvement in agent output, remove it.
+- **Rules that can be enforced by linters or hooks should not also be instructions.** Let eslint handle `no-console` — do not waste an instruction slot on it.
+
+The AGENTS.md 32KB hard limit (see above) is one tool's attempt to enforce this. But even within that limit, instruction count matters more than byte count. Ten precise rules outperform fifty vague ones.
+
+### Progressive Disclosure
+
+The instruction budget creates pressure to front-load everything into context files. The progressive disclosure pattern solves this differently: **deliver knowledge only when relevant, not all upfront.**
+
+Instead of a monolithic context file containing API docs, database schemas, deployment procedures, and testing conventions, structure the harness so the agent discovers and loads specialized knowledge on demand.
+
+**Implementation mechanisms:**
+
+1. **Skills system:** Slash commands (`.claude/commands/`) are not loaded until invoked. A `/project:migrate-schema` skill injects database migration knowledge only when the engineer triggers a migration task — not during a CSS refactoring session.
+
+2. **MCP resources:** An MCP server exposing internal API documentation (see Tool Extension section) means the agent fetches API schemas only when working on API integration. The knowledge stays out of context during unrelated work.
+
+3. **Directory-scoped context files:** A `packages/db/CLAUDE.md` with database-specific rules only activates when the agent operates in that directory. Frontend work never sees those instructions.
+
+4. **`@file` references:** Claude Code's `@filename` syntax lets engineers inject specific files into context mid-session, rather than embedding their contents permanently in CLAUDE.md.
+
+**The anti-pattern this replaces: the "kitchen sink" context file.** Teams dump every convention, every API doc, every architectural decision into a single CLAUDE.md. The file grows past 500 lines. Performance degrades — research from both Anthropic and independent benchmarks confirms that LLM accuracy on simple tasks drops as context length increases, even when the added context is not adversarial. The model spends capacity processing irrelevant instructions instead of focusing on the task.
+
+**Design heuristic:** If a piece of knowledge is relevant to fewer than 30% of agent sessions, it should not be in the root context file. Move it to a skill, MCP resource, or directory-scoped file.
+
+### Context Firewalling
+
+When a task requires processing large amounts of intermediate data — scanning hundreds of files, comparing API responses, analyzing logs — the parent session's context fills with noise that degrades subsequent work. Context firewalling solves this through **isolated sub-agent workspaces**.
+
+**How it works:**
+
+```
+Parent Session (clean context)
+    │
+    ├── Spawns Sub-Agent A: "Audit all API routes for missing auth"
+    │     ├── Reads 47 route files
+    │     ├── Builds violation table
+    │     └── Returns: summary of 3 violations (not the 47 file contents)
+    │
+    ├── Spawns Sub-Agent B: "Check test coverage for packages/db"
+    │     ├── Runs coverage tool
+    │     ├── Parses coverage report
+    │     └── Returns: 4 uncovered functions (not the full report)
+    │
+    └── Parent continues with clean context + two concise results
+```
+
+**Key properties:**
+
+- **The parent session stays clean.** Intermediate tool calls, file contents, and raw output from sub-agents do not accumulate in the parent's context window.
+- **Each sub-agent gets only relevant context.** The auth audit agent does not need database migration rules. The coverage agent does not need frontend conventions.
+- **Only results flow back.** When the sub-agent completes, a concise summary returns to the parent — not the full trace of tool calls and reasoning.
+
+This is why Claude Code's `Agent` tool is architecturally significant: it implements context firewalling by design. Each `Agent` invocation creates an isolated session with its own context window. The calling session is not polluted by the sub-agent's work.
+
+**When to use firewalling:**
+- Tasks that require scanning many files (audit, migration, refactoring)
+- Tasks that produce large intermediate output (test runs, coverage reports)
+- Parallel independent subtasks where cross-contamination would confuse the model
+- Long-running sessions where context accumulation would degrade later responses
+
+**When NOT to use it:** Simple sequential tasks where the intermediate state is small and useful for subsequent steps. Over-firewalling adds latency and loses useful intermediate context.
 
 ---
 
@@ -416,6 +528,101 @@ done
 | Pre-bash gate | Before shell command | Block destructive operations |
 | Post-write typecheck | After .ts file write | Catch type errors in real time |
 | Pre-write validate | Before file write | Enforce file naming conventions |
+
+### Back-Pressure Mechanisms
+
+Hooks are most powerful when they create a **tight feedback loop** — the agent makes a change, immediately sees whether it broke something, and self-corrects before moving on. This is back-pressure: the harness pushes back against drift in real time rather than catching it at the end.
+
+**The principle:** Build typechecks, tests, and linting that agents can run immediately after each change. The agent self-corrects rather than drifting through a sequence of compounding errors.
+
+**Concrete implementation with `hooks.post_tool_call`:**
+
+```jsonc
+// .claude/settings.json — hooks that fire after every file write
+{
+  "hooks": {
+    "post_tool_call": [
+      {
+        "tool": "write_file",
+        "command": "tsc --noEmit --pretty 2>&1 | head -20"
+      },
+      {
+        "tool": "edit_file",
+        "command": "tsc --noEmit --pretty 2>&1 | head -20"
+      }
+    ]
+  }
+}
+```
+
+After every file write or edit, the TypeScript compiler runs. If the agent introduced a type error, it sees the error immediately in the tool response and fixes it in the next step — before writing more code on top of a broken foundation.
+
+**Design rules for back-pressure hooks:**
+
+1. **Success output should be silent.** Only surface errors. A hook that prints "All checks passed!" after every write wastes context tokens. Return empty output on success, error details on failure.
+
+2. **Keep execution fast.** A hook that takes 30 seconds defeats the purpose. `tsc --noEmit` on a large project can be slow — scope it to the changed file's package: `tsc --noEmit -p packages/db/tsconfig.json`.
+
+3. **Limit output volume.** Pipe through `head -20` or equivalent. A 500-line eslint report floods the context window. The agent needs the first few errors to start fixing, not the complete list.
+
+4. **Layer the checks by cost:**
+   - After every file write: fast checks (typecheck, lint on single file)
+   - After a logical unit of work: medium checks (related test suite)
+   - Before commit: full checks (full test suite, build)
+
+**Pre-commit as the final back-pressure gate:**
+
+```bash
+#!/usr/bin/env bash
+# .git/hooks/pre-commit — comprehensive pre-commit back-pressure
+set -euo pipefail
+pnpm typecheck || { echo "TYPE ERRORS — fix before committing."; exit 1; }
+pnpm lint || { echo "LINT VIOLATIONS — fix before committing."; exit 1; }
+pnpm test --changed || { echo "TEST FAILURES — fix before committing."; exit 1; }
+```
+
+The agent runs `git commit`, the hook fires, failures block the commit, and the agent sees the error output. This creates a natural correction cycle: implement → commit → fail → fix → commit → pass.
+
+### Verification-Driven Design
+
+Back-pressure catches regressions. Verification-driven design goes further: **make verification cheap and immediate so the agent tests proactively, not just reactively.**
+
+**The principle:** The harness should make it trivially easy for an agent to verify its own work — the same way a developer would check a UI change in the browser or run a test after a refactor.
+
+**Browser automation for UI verification:**
+
+MCP servers like Puppeteer MCP give agents the ability to test as a human user would — navigating pages, clicking elements, verifying visual output. Instead of hoping the CSS change looks right, the agent can take a screenshot and verify.
+
+```markdown
+<!-- In CLAUDE.md or a /project:verify-ui skill -->
+After any frontend change:
+1. Run `pnpm dev` if not already running
+2. Use Puppeteer MCP to navigate to the affected page
+3. Take a screenshot and verify the change visually
+4. Check for console errors in the browser
+```
+
+**Screenshot verification for frontend work:**
+
+Claude Code's multimodal capabilities mean agents can literally look at screenshots. A `post_tool_call` hook that captures a screenshot after CSS/component changes creates a visual feedback loop. The agent sees what the user would see.
+
+**The `init.sh` pattern — tests before implementation:**
+
+For new features, write end-to-end tests first, then implement until they pass. This inverts the typical flow:
+
+```markdown
+<!-- .claude/commands/new-feature.md -->
+Implement the feature: $ARGUMENTS
+
+Steps:
+1. Write a failing e2e test that describes the expected behavior
+2. Run the test — confirm it fails for the right reason
+3. Implement the minimum code to make the test pass
+4. Run the full related test suite to confirm no regressions
+5. Run typecheck and lint
+```
+
+This pattern — borrowed from TDD but applied to agent workflows — ensures the agent has a concrete, automated definition of "done" rather than relying on its own judgment about when a feature is complete.
 
 ---
 
@@ -911,7 +1118,15 @@ node scripts/transform-context.js --input CLAUDE.md --output .github/copilot-ins
 
 9. **One source of truth.** If you maintain multiple tool-specific context files, generate them from a canonical source. Sprawl causes contradictions.
 
-10. **Context files have a token budget.** Every line of context competes with codebase content and conversation history. Ruthlessly prune rules that do not measurably improve agent output.
+10. **Context files have an instruction budget.** Frontier models reliably follow ~150–200 instructions total. Your agent tool's system prompt already consumes ~50. Every rule you add competes for the remaining slots — prune ruthlessly.
+
+11. **Progressive disclosure beats kitchen-sink files.** Deliver knowledge when relevant via skills, MCP resources, and directory-scoped files. If a rule applies to fewer than 30% of sessions, it does not belong in the root context file.
+
+12. **Context firewalling keeps sessions clean.** Sub-agents process noisy intermediate work in isolation. Only concise results flow back to the parent session, preserving context quality for subsequent tasks.
+
+13. **Back-pressure mechanisms make agents self-correcting.** Post-tool-call hooks running typechecks and linters create immediate feedback loops. The agent fixes errors in real time rather than compounding them.
+
+14. **Verification-driven design defines "done" concretely.** Browser automation, screenshot verification, and test-first workflows give agents objective success criteria instead of subjective judgment.
 
 ---
 
