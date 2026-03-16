@@ -56,81 +56,35 @@ Non-Functional Requirements:
 
 ### High-Level Design
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Typeahead Architecture                        │
-│                                                                 │
-│   User types: "pyt"                                             │
-│         │                                                       │
-│         ▼                                                       │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │                     Client                               │  │
-│   │  • Debounce (wait 100-200ms after keystroke)            │  │
-│   │  • Local cache (recent suggestions)                      │  │
-│   │  • Abort previous request on new keystroke              │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│         │                                                       │
-│         ▼                                                       │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │                    CDN / Edge Cache                      │  │
-│   │  • Cache popular prefixes ("a", "the", "how")           │  │
-│   │  • < 10ms response for cached prefixes                   │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│         │                                                       │
-│         ▼                                                       │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │                  Suggestion Service                      │  │
-│   │                                                          │  │
-│   │  ┌──────────┐  ┌──────────┐  ┌──────────┐              │  │
-│   │  │ L1 Cache │  │  Trie    │  │Personali-│              │  │
-│   │  │ (Hot)    │  │  Index   │  │zation    │              │  │
-│   │  └──────────┘  └──────────┘  └──────────┘              │  │
-│   │       │              │              │                    │  │
-│   │       └──────────────┼──────────────┘                    │  │
-│   │                      │                                   │  │
-│   │                      ▼                                   │  │
-│   │              ┌──────────────┐                           │  │
-│   │              │   Ranker     │                           │  │
-│   │              │ (blend+sort) │                           │  │
-│   │              └──────────────┘                           │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│         │                                                       │
-│         ▼                                                       │
-│   ["python", "python tutorial", "python download", ...]         │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    User["User types: pyt"] --> Client["Client<br/>Debounce (100-200ms)<br/>Local cache<br/>Abort previous request"]
+    Client --> CDN["CDN / Edge Cache<br/>Popular prefixes cached<br/>< 10ms response"]
+    CDN --> SVC["Suggestion Service"]
+    SVC --> L1["L1 Cache (Hot)"]
+    SVC --> Trie["Trie Index"]
+    SVC --> Pers["Personalization"]
+    L1 --> Ranker["Ranker<br/>(blend + sort)"]
+    Trie --> Ranker
+    Pers --> Ranker
+    Ranker --> Results["python, python tutorial,<br/>python download, ..."]
 ```
 
 ### Data Flow
 
+```mermaid
+graph TD
+    QL["Query Logs"] --> AGG["Aggregation Pipeline<br/>1. Clean queries<br/>2. Filter spam/adult/low-quality<br/>3. Aggregate counts<br/>4. Apply time decay<br/>5. Build/update trie"]
+    AGG --> SS[("Suggestion Store")]
+    AGG --> TI["Trie Index"]
+    AGG --> TC["Trending Cache"]
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Offline Processing                            │
-│                                                                 │
-│   Query Logs                                                    │
-│       │                                                         │
-│       ▼                                                         │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │                  Aggregation Pipeline                    │  │
-│   │                                                          │  │
-│   │  1. Clean queries (lowercase, trim, dedupe)             │  │
-│   │  2. Filter (remove spam, adult, low-quality)            │  │
-│   │  3. Aggregate counts (per query, per prefix)            │  │
-│   │  4. Apply time decay (recent queries weighted more)     │  │
-│   │  5. Build/update trie structure                         │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│       │                                                         │
-│       ▼                                                         │
-│   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
-│   │ Suggestion  │  │  Trie       │  │  Trending   │            │
-│   │ Store       │  │  Index      │  │  Cache      │            │
-│   └─────────────┘  └─────────────┘  └─────────────┘            │
-│                                                                 │
-│   Update frequency:                                             │
-│   • Full rebuild: Daily                                         │
-│   • Incremental: Hourly                                         │
-│   • Trending: Every few minutes                                │
-└─────────────────────────────────────────────────────────────────┘
+
+```
+Update frequency:
+• Full rebuild: Daily
+• Incremental: Hourly
+• Trending: Every few minutes
 ```
 
 ---
@@ -859,46 +813,12 @@ context = {
 
 ### Caching Strategy
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Multi-Layer Caching                           │
-│                                                                 │
-│   Layer 1: Client Cache                                         │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │  • Browser localStorage / sessionStorage                 │  │
-│   │  • Recent suggestions for user's session                │  │
-│   │  • TTL: Session duration                                │  │
-│   │  • Size: ~100 entries                                   │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│   Layer 2: CDN Edge Cache                                       │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │  • Popular prefixes ("a", "the", "how to", etc.)        │  │
-│   │  • Serves 60-80% of traffic                             │  │
-│   │  • TTL: 5-15 minutes                                    │  │
-│   │  • Geo-distributed                                      │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│   Layer 3: Application Cache (Redis/Memcached)                  │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │  • All prefix→suggestions mappings                      │  │
-│   │  • TTL: 1 hour                                          │  │
-│   │  • Size: 10-100GB                                       │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│   Layer 4: Primary Store (Trie / Database)                      │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │  • Source of truth                                      │  │
-│   │  • Updated via batch pipeline                           │  │
-│   │  • Query on cache miss                                  │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│   Cache Hit Rates:                                              │
-│   • L1: 20-30%                                                  │
-│   • L2: 50-70%                                                  │
-│   • L3: 95%+                                                    │
-│   • L4: <5% of total traffic                                   │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    L1["Layer 1: Client Cache<br/>localStorage / sessionStorage<br/>TTL: Session | ~100 entries<br/>Hit rate: 20-30%"]
+    L1 -->|miss| L2["Layer 2: CDN Edge Cache<br/>Popular prefixes cached<br/>TTL: 5-15 min | Geo-distributed<br/>Serves 60-80% of traffic | Hit rate: 50-70%"]
+    L2 -->|miss| L3["Layer 3: Application Cache<br/>Redis / Memcached<br/>TTL: 1 hour | 10-100GB<br/>Hit rate: 95%+"]
+    L3 -->|miss| L4[("Layer 4: Primary Store<br/>Trie / Database<br/>Source of truth<br/>Updated via batch pipeline<br/>< 5% of total traffic")]
 ```
 
 ### Sharding

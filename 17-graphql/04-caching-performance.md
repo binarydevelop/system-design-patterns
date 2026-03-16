@@ -10,27 +10,21 @@ GraphQL caching is more complex than REST because requests go to a single endpoi
 
 ### Why GraphQL Caching is Different
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    REST vs GraphQL Caching                       │
-│                                                                 │
-│   REST                              GraphQL                      │
-│   ────                              ───────                      │
-│   GET /users/123                    POST /graphql                │
-│   GET /users/123/posts              { query: "..." }             │
-│                                                                 │
-│   • Different URLs per resource     • Single endpoint            │
-│   • HTTP caching works              • HTTP caching doesn't work  │
-│   • CDN-friendly by default         • POST = not cacheable       │
-│   • Cache key = URL                 • Cache key = query hash?    │
-│                                                                 │
-│   GraphQL Challenges:                                            │
-│   1. POST requests aren't cached by HTTP                        │
-│   2. Same query can return different data (variables)           │
-│   3. Different queries return overlapping data                  │
-│   4. Field-level cache control needed                           │
-│   5. Query complexity varies wildly                             │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    subgraph REST["REST Caching"]
+        R1["GET /users/123"]
+        R2["GET /users/123/posts"]
+        R3["Different URLs per resource<br/>HTTP caching works<br/>CDN-friendly by default<br/>Cache key = URL"]
+    end
+
+    subgraph GQL["GraphQL Caching"]
+        G1["POST /graphql"]
+        G2["query: '...'"]
+        G3["Single endpoint<br/>HTTP caching doesn't work<br/>POST = not cacheable<br/>Cache key = query hash?"]
+    end
+
+    GQL --> C["Challenges:<br/>1. POST not cached by HTTP<br/>2. Same query, different data (variables)<br/>3. Overlapping data across queries<br/>4. Field-level cache control needed<br/>5. Query complexity varies wildly"]
 ```
 
 ---
@@ -217,40 +211,22 @@ def add_cache_headers(response, cache_hints: CacheHintCollector):
 
 ### How Persisted Queries Work
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Persisted Queries Flow                        │
-│                                                                 │
-│   BUILD TIME (Ahead of time registration)                       │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │ Extract queries from client code                         │  │
-│   │ ↓                                                        │  │
-│   │ Generate hash for each query                             │  │
-│   │ ↓                                                        │  │
-│   │ Register hash → query mapping on server                  │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│   RUNTIME (Query by hash)                                       │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │ Client sends:                                            │  │
-│   │ {                                                        │  │
-│   │   "extensions": {                                        │  │
-│   │     "persistedQuery": {                                  │  │
-│   │       "sha256Hash": "abc123..."                          │  │
-│   │     }                                                    │  │
-│   │   },                                                     │  │
-│   │   "variables": { "id": "123" }                           │  │
-│   │ }                                                        │  │
-│   │                                                          │  │
-│   │ Server looks up query by hash and executes               │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│   Benefits:                                                     │
-│   • Smaller request payloads (hash vs full query)              │
-│   • Server can whitelist allowed queries                       │
-│   • Enables CDN caching (GET with hash as param)               │
-│   • Security: prevent arbitrary query execution                │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph BUILD["BUILD TIME (Ahead of time)"]
+        B1["Extract queries<br/>from client code"] --> B2["Generate hash<br/>for each query"]
+        B2 --> B3["Register hash-to-query<br/>mapping on server"]
+    end
+
+    subgraph RUNTIME["RUNTIME (Query by hash)"]
+        C1["Client sends<br/>sha256Hash: abc123...<br/>variables: {id: 123}"]
+        C1 --> S1["Server looks up<br/>query by hash"]
+        S1 --> S2["Execute query"]
+    end
+
+    BUILD --> RUNTIME
+
+    RUNTIME --> BEN["Benefits:<br/>Smaller payloads<br/>Whitelist allowed queries<br/>CDN caching via GET<br/>Prevent arbitrary execution"]
 ```
 
 ### Server Implementation
@@ -342,31 +318,25 @@ async def handle_graphql_request(request):
 
 ### Automatic Persisted Queries (APQ)
 
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    Note over C,S: First request (query not registered)
+    C->>S: {hash: "abc123"}
+    S->>C: PersistedQueryNotFound
+    C->>S: {hash: "abc123", query: "{ user {...} }"}
+    Note over S: Registers query
+    S->>C: Returns data
+
+    Note over C,S: Subsequent requests
+    C->>S: {hash: "abc123"}
+    Note over S: Looks up query by hash
+    S->>C: Returns data
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    APQ Flow                                      │
-│                                                                 │
-│   First request (query not registered):                         │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │ Client: { hash: "abc123" }                               │  │
-│   │ Server: "PersistedQueryNotFound"                         │  │
-│   │ Client: { hash: "abc123", query: "{ user {...} }" }      │  │
-│   │ Server: Registers query, returns data                    │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│   Subsequent requests:                                          │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │ Client: { hash: "abc123" }                               │  │
-│   │ Server: Looks up query, returns data                     │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│   Benefits:                                                     │
-│   • No build step required                                      │
-│   • Automatic registration on first use                        │
-│   • Only one extra round-trip per unique query                 │
-│   • Works with dynamically generated queries                   │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+Benefits: No build step required, automatic registration on first use, only one extra round-trip per unique query, works with dynamically generated queries
 
 ---
 
@@ -468,41 +438,23 @@ async def resolve_update_post(_, info, id, input):
 
 ### Normalized Cache (Apollo Client)
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Normalized Client Cache                       │
-│                                                                 │
-│   Query Result:                                                 │
-│   {                                                             │
-│     "post": {                                                   │
-│       "id": "1",                                                │
-│       "title": "Hello",                                         │
-│       "author": {                                               │
-│         "id": "100",                                            │
-│         "name": "Alice"                                         │
-│       }                                                         │
-│     }                                                           │
-│   }                                                             │
-│                                                                 │
-│   Normalized Cache:                                             │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │ "Post:1": {                                              │  │
-│   │   "id": "1",                                             │  │
-│   │   "title": "Hello",                                      │  │
-│   │   "author": { "__ref": "User:100" }  ◄─── Reference      │  │
-│   │ }                                                        │  │
-│   │                                                          │  │
-│   │ "User:100": {                                            │  │
-│   │   "id": "100",                                           │  │
-│   │   "name": "Alice"                                        │  │
-│   │ }                                                        │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│   Benefits:                                                     │
-│   • Updates to User:100 reflected everywhere                   │
-│   • Deduplication of data                                      │
-│   • Automatic cache updates on mutations                       │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    subgraph RESULT["Query Result"]
+        QR["post: {id: 1, title: Hello,<br/>author: {id: 100, name: Alice}}"]
+    end
+
+    QR -->|Normalize| CACHE
+
+    subgraph CACHE["Normalized Cache"]
+        P1["Post:1<br/>id: 1<br/>title: Hello<br/>author: __ref User:100"]
+        U1["User:100<br/>id: 100<br/>name: Alice"]
+        P1 -.->|reference| U1
+    end
+
+    CACHE --> B1["Updates to User:100<br/>reflected everywhere"]
+    CACHE --> B2["Deduplication of data"]
+    CACHE --> B3["Automatic cache updates<br/>on mutations"]
 ```
 
 ### Apollo Client Configuration

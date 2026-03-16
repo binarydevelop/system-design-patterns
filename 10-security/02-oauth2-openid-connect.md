@@ -30,23 +30,11 @@ OAuth solution: Delegate limited, revocable access without sharing credentials.
 
 ## OAuth 2.0 Roles
 
-```
-┌─────────────────┐
-│ Resource Owner  │  You (the human user)
-└────────┬────────┘
-         │ Grants permission
-         ▼
-┌─────────────────┐         ┌─────────────────┐
-│     Client      │────────►│    Resource     │
-│ (Photo Print)   │ Access  │     Server      │
-└─────────────────┘ Token   │ (Google Photos) │
-         ▲                  └─────────────────┘
-         │ Issues token
-┌────────┴────────┐
-│ Authorization   │
-│     Server      │
-│ (Google OAuth)  │
-└─────────────────┘
+```mermaid
+graph TD
+    RO[Resource Owner<br/>You - the human user] -->|Grants permission| Client["Client<br/>(Photo Print)"]
+    AuthServer["Authorization Server<br/>(Google OAuth)"] -->|Issues token| Client
+    Client -->|Access Token| RS["Resource Server<br/>(Google Photos)"]
 ```
 
 | Role | Description | Example |
@@ -64,45 +52,24 @@ OAuth solution: Delegate limited, revocable access without sharing credentials.
 
 Most secure for server-side applications with confidential clients.
 
-```
-┌──────┐          ┌──────┐          ┌────────┐          ┌────────┐
-│ User │          │Client│          │  Auth  │          │Resource│
-│      │          │ App  │          │ Server │          │ Server │
-└──┬───┘          └──┬───┘          └───┬────┘          └───┬────┘
-   │                 │                  │                   │
-   │ Click "Login    │                  │                   │
-   │ with Google"    │                  │                   │
-   │────────────────►│                  │                   │
-   │                 │                  │                   │
-   │    Redirect to authorization endpoint                  │
-   │◄────────────────┤                  │                   │
-   │                 │                  │                   │
-   │ Navigate to auth server            │                   │
-   │───────────────────────────────────►│                   │
-   │                 │                  │                   │
-   │         Login + Consent Screen     │                   │
-   │◄──────────────────────────────────►│                   │
-   │                 │                  │                   │
-   │ Redirect with authorization code   │                   │
-   │◄───────────────────────────────────┤                   │
-   │                 │                  │                   │
-   │ Navigate back   │                  │                   │
-   │────────────────►│                  │                   │
-   │                 │                  │                   │
-   │                 │ Exchange code    │                   │
-   │                 │ + client_secret  │                   │
-   │                 │ for tokens       │                   │
-   │                 │─────────────────►│                   │
-   │                 │                  │                   │
-   │                 │ Access Token +   │                   │
-   │                 │ Refresh Token    │                   │
-   │                 │◄─────────────────┤                   │
-   │                 │                  │                   │
-   │                 │           Access API with token      │
-   │                 │─────────────────────────────────────►│
-   │                 │                  │                   │
-   │                 │              Protected Resource      │
-   │                 │◄─────────────────────────────────────│
+```mermaid
+sequenceDiagram
+    participant User
+    participant Client as Client App
+    participant Auth as Auth Server
+    participant RS as Resource Server
+
+    User->>Client: Click "Login with Google"
+    Client-->>User: Redirect to authorization endpoint
+    User->>Auth: Navigate to auth server
+    Auth-->>User: Login + Consent Screen
+    User->>Auth: Approve
+    Auth-->>User: Redirect with authorization code
+    User->>Client: Navigate back with code
+    Client->>Auth: Exchange code + client_secret for tokens
+    Auth-->>Client: Access Token + Refresh Token
+    Client->>RS: Access API with token
+    RS-->>Client: Protected Resource
 ```
 
 **Step 1: Authorization Request**
@@ -120,13 +87,10 @@ GET https://auth.example.com/authorize?
 
 ```
 Authorization Server shows:
-┌─────────────────────────────────────┐
-│  Photo Print App wants to:          │
-│                                     │
-│  ☑ View your photos                 │
-│                                     │
-│  [Allow]  [Deny]                    │
-└─────────────────────────────────────┘
+
+  Photo Print App wants to:
+  ☑ View your photos
+  [Allow]  [Deny]
 ```
 
 **Step 3: Redirect with Code**
@@ -186,29 +150,20 @@ Server verifies: SHA256(code_verifier) == code_challenge
 
 **Why PKCE Matters:**
 
-```
-Without PKCE (vulnerable):
-┌──────────┐                    ┌──────────┐
-│ Attacker │                    │   App    │
-└────┬─────┘                    └────┬─────┘
-     │ Intercept redirect           │
-     │ (malware, URL scheme)        │
-     │◄────────────────────────────►│
-     │                              │
-     │ Exchange intercepted code    │
-     │ for token                    │
-     ▼                              │
- ATTACKER HAS TOKEN                 │
+```mermaid
+sequenceDiagram
+    participant Attacker
+    participant App
 
-With PKCE (secure):
-     │ Intercept redirect           │
-     │◄────────────────────────────►│
-     │                              │
-     │ Exchange code BUT            │
-     │ don't know code_verifier     │
-     │                              │
-     ▼                              │
- EXCHANGE FAILS                     │
+    Note over Attacker, App: Without PKCE (vulnerable)
+    Attacker->>App: Intercept redirect (malware, URL scheme)
+    Attacker->>Attacker: Exchange intercepted code for token
+    Note over Attacker: ATTACKER HAS TOKEN
+
+    Note over Attacker, App: With PKCE (secure)
+    Attacker->>App: Intercept redirect
+    Attacker->>Attacker: Exchange code BUT don't know code_verifier
+    Note over Attacker: EXCHANGE FAILS
 ```
 
 ### Client Credentials Grant (Machine-to-Machine)
@@ -435,27 +390,13 @@ Refresh Token:
 
 ### Backend-for-Frontend (BFF) Pattern
 
-```
-┌──────────────────────────────────────────────────────┐
-│                     Browser                          │
-│  ┌─────────────────────────────────────────────┐    │
-│  │              SPA (React/Vue)                │    │
-│  │  - Only has session cookie                  │    │
-│  │  - No tokens in JavaScript                  │    │
-│  └─────────────────────────────────────────────┘    │
-└────────────────────────┬─────────────────────────────┘
-                         │ Session cookie
-                         ▼
-              ┌─────────────────────┐
-              │   BFF (Backend)     │
-              │  - Holds tokens     │
-              │  - Manages refresh  │
-              └──────────┬──────────┘
-                         │ Access Token
-                         ▼
-              ┌─────────────────────┐
-              │   Resource Server   │
-              └─────────────────────┘
+```mermaid
+graph TD
+    subgraph Browser
+        SPA["SPA (React/Vue)<br/>Only has session cookie<br/>No tokens in JavaScript"]
+    end
+    SPA -->|Session cookie| BFF["BFF (Backend)<br/>Holds tokens<br/>Manages refresh"]
+    BFF -->|Access Token| RS[Resource Server]
 ```
 
 ### Mobile Applications

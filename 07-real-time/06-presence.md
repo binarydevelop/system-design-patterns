@@ -8,52 +8,30 @@ Presence systems track and broadcast user online status, activity state, and rel
 
 ## Presence States
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Presence States                               │
-│                                                                      │
-│   ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐         │
-│   │ Online  │    │  Away   │    │  Busy   │    │ Offline │         │
-│   │   🟢    │    │   🟡    │    │   🔴    │    │   ⚫    │         │
-│   └────┬────┘    └────┬────┘    └────┬────┘    └────┬────┘         │
-│        │              │              │              │               │
-│   Connected       Idle for        User-set      Disconnected       │
-│   and active      5 minutes       status        or timed out       │
-│                                                                      │
-│   Extended States:                                                   │
-│   • In a call   🎧                                                  │
-│   • In a meeting 📅                                                 │
-│   • Presenting  🖥️                                                  │
-│   • Focus mode  🔕                                                  │
-│   • Custom status 💬                                                │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    Online["Online<br/>Connected and active"] -->|idle 5 min| Away["Away<br/>Idle for 5 minutes"]
+    Online -->|user sets| Busy["Busy<br/>User-set status"]
+    Online -->|disconnect / timeout| Offline["Offline<br/>Disconnected or timed out"]
+    Away -->|activity resumes| Online
+    Away -->|timeout| Offline
+    Busy -->|user changes| Online
+    Busy -->|disconnect / timeout| Offline
 ```
 
 ---
 
 ## Basic Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     Presence System                                  │
-│                                                                      │
-│   Clients                    Servers                    Storage      │
-│                                                                      │
-│  ┌────────┐              ┌────────────┐             ┌───────────┐   │
-│  │Client A│──heartbeat──►│  Presence  │───update───►│   Redis   │   │
-│  │        │◄─presence────│   Server   │◄──query─────│  Cluster  │   │
-│  └────────┘              └─────┬──────┘             └───────────┘   │
-│                                │                                     │
-│  ┌────────┐                   │                                     │
-│  │Client B│──subscribe───────►│                                     │
-│  │        │◄─changes──────────│                                     │
-│  └────────┘                   │                                     │
-│                                │                                     │
-│                         ┌──────┴──────┐                             │
-│                         │   Pub/Sub   │                             │
-│                         │   Channel   │                             │
-│                         └─────────────┘                             │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    A[Client A] -->|heartbeat| PS[Presence Server]
+    PS -->|presence| A
+    B[Client B] -->|subscribe| PS
+    PS -->|changes| B
+    PS -->|update| Redis[("Redis Cluster")]
+    Redis -->|query| PS
+    PS --> PubSub[Pub/Sub Channel]
 ```
 
 ---

@@ -62,49 +62,43 @@ This was complex, error-prone, and duplicated effort.
 
 ## Execution Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    MapReduce Execution Flow                              │
-│                                                                          │
-│   ┌─────────────────────────────────────────────────────────────────┐   │
-│   │                      Input Files (GFS)                           │   │
-│   │   ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐   │   │
-│   │   │Split 0 │  │Split 1 │  │Split 2 │  │Split 3 │  │Split 4 │   │   │
-│   │   └────────┘  └────────┘  └────────┘  └────────┘  └────────┘   │   │
-│   └─────────────────────────────────────────────────────────────────┘   │
-│                              │                                          │
-│                              ▼                                          │
-│   ┌─────────────────────────────────────────────────────────────────┐   │
-│   │                      Map Phase                                   │   │
-│   │   ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐   │   │
-│   │   │ Map 0  │  │ Map 1  │  │ Map 2  │  │ Map 3  │  │ Map 4  │   │   │
-│   │   │Worker  │  │Worker  │  │Worker  │  │Worker  │  │Worker  │   │   │
-│   │   └────────┘  └────────┘  └────────┘  └────────┘  └────────┘   │   │
-│   │       │           │           │           │           │         │   │
-│   │       ▼           ▼           ▼           ▼           ▼         │   │
-│   │   ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐   │   │
-│   │   │Local   │  │Local   │  │Local   │  │Local   │  │Local   │   │   │
-│   │   │Disk    │  │Disk    │  │Disk    │  │Disk    │  │Disk    │   │   │
-│   │   │(R parts)│ │(R parts)│ │(R parts)│ │(R parts)│ │(R parts)│  │   │
-│   │   └────────┘  └────────┘  └────────┘  └────────┘  └────────┘   │   │
-│   └─────────────────────────────────────────────────────────────────┘   │
-│                              │                                          │
-│                              │  Shuffle (partition by key hash)         │
-│                              ▼                                          │
-│   ┌─────────────────────────────────────────────────────────────────┐   │
-│   │                      Reduce Phase                                │   │
-│   │   ┌──────────┐  ┌──────────┐  ┌──────────┐                      │   │
-│   │   │ Reduce 0 │  │ Reduce 1 │  │ Reduce 2 │                      │   │
-│   │   │ Worker   │  │ Worker   │  │ Worker   │                      │   │
-│   │   └──────────┘  └──────────┘  └──────────┘                      │   │
-│   │        │              │              │                           │   │
-│   │        ▼              ▼              ▼                           │   │
-│   │   ┌──────────┐  ┌──────────┐  ┌──────────┐                      │   │
-│   │   │Output 0  │  │Output 1  │  │Output 2  │                      │   │
-│   │   │ (GFS)    │  │ (GFS)    │  │ (GFS)    │                      │   │
-│   │   └──────────┘  └──────────┘  └──────────┘                      │   │
-│   └─────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Input["Input Files (GFS)"]
+        S0[Split 0] & S1[Split 1] & S2[Split 2] & S3[Split 3] & S4[Split 4]
+    end
+
+    subgraph Map["Map Phase"]
+        M0[Map 0<br/>Worker] & M1[Map 1<br/>Worker] & M2[Map 2<br/>Worker] & M3[Map 3<br/>Worker] & M4[Map 4<br/>Worker]
+        D0[("Local Disk<br/>(R parts)")] & D1[("Local Disk<br/>(R parts)")] & D2[("Local Disk<br/>(R parts)")] & D3[("Local Disk<br/>(R parts)")] & D4[("Local Disk<br/>(R parts)")]
+    end
+
+    subgraph Reduce["Reduce Phase"]
+        R0[Reduce 0<br/>Worker] & R1[Reduce 1<br/>Worker] & R2[Reduce 2<br/>Worker]
+        O0[("Output 0<br/>GFS")] & O1[("Output 1<br/>GFS")] & O2[("Output 2<br/>GFS")]
+    end
+
+    S0 --> M0
+    S1 --> M1
+    S2 --> M2
+    S3 --> M3
+    S4 --> M4
+
+    M0 --> D0
+    M1 --> D1
+    M2 --> D2
+    M3 --> D3
+    M4 --> D4
+
+    D0 -->|Shuffle<br/>partition by key hash| R0
+    D1 -->|Shuffle| R0
+    D2 -->|Shuffle| R1
+    D3 -->|Shuffle| R1
+    D4 -->|Shuffle| R2
+
+    R0 --> O0
+    R1 --> O1
+    R2 --> O2
 ```
 
 ### Execution Steps

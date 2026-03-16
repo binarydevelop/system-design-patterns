@@ -15,31 +15,27 @@ Symmetric Encryption (AES):
 - Same key encrypts and decrypts
 - Fast, efficient for large data
 - Challenge: How to share the key securely?
+```
 
-┌─────────┐    Key    ┌─────────┐
-│  Alice  │◄─────────►│   Bob   │
-└────┬────┘           └────┬────┘
-     │ Encrypt             │ Decrypt
-     │ with Key            │ with Key
-     ▼                     ▼
-  Ciphertext ──────────► Plaintext
+```mermaid
+graph LR
+    Alice -->|Encrypt with Key| Ciphertext
+    Ciphertext -->|Decrypt with Key| Plaintext
+    Alice ---|Shared Key| Bob
+```
 
-
+```
 Asymmetric Encryption (RSA, ECC):
 - Public key encrypts, private key decrypts
 - Slower, used for key exchange and signatures
 - Anyone can encrypt, only private key holder decrypts
+```
 
-┌─────────┐              ┌─────────┐
-│  Alice  │              │   Bob   │
-│ Public  │              │ Private │
-│   Key   │              │   Key   │
-└────┬────┘              └────┬────┘
-     │                        │
-     ▼ Encrypt with           │ Decrypt with
-       Bob's public           │ Bob's private
-       ▼                      ▼
-    Ciphertext ────────────► Plaintext
+```mermaid
+graph LR
+    Alice["Alice<br/>(Public Key)"] -->|"Encrypt with Bob's public key"| Ciphertext
+    Ciphertext -->|"Decrypt with Bob's private key"| Plaintext
+    Plaintext --- Bob["Bob<br/>(Private Key)"]
 ```
 
 ### Hybrid Encryption (How TLS Works)
@@ -47,22 +43,20 @@ Asymmetric Encryption (RSA, ECC):
 ```
 1. Asymmetric exchange of symmetric key
 2. Symmetric encryption for actual data
+```
 
-Client                              Server
-   │                                   │
-   │ ─────► Request server cert ─────► │
-   │ ◄───── Server public key ◄─────── │
-   │                                   │
-   │  Generate random symmetric key    │
-   │  Encrypt with server's public key │
-   │                                   │
-   │ ─────► Encrypted symmetric key ─► │
-   │                                   │
-   │        Server decrypts with       │
-   │        private key                │
-   │                                   │
-   │ ◄═════ Symmetric encrypted ═════► │
-   │         data exchange             │
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+
+    Client->>Server: Request server cert
+    Server-->>Client: Server public key
+    Client->>Client: Generate random symmetric key
+    Client->>Client: Encrypt with server's public key
+    Client->>Server: Encrypted symmetric key
+    Server->>Server: Decrypt with private key
+    Client<-->Server: Symmetric encrypted data exchange
 ```
 
 ---
@@ -71,28 +65,16 @@ Client                              Server
 
 ### TLS 1.3 Handshake
 
-```
-Client                                          Server
-   │                                               │
-   │  ClientHello                                  │
-   │  - Supported cipher suites                    │
-   │  - Key share (DH public key)                  │
-   │  - Supported versions                         │
-   │ ─────────────────────────────────────────────►│
-   │                                               │
-   │                            ServerHello        │
-   │                  - Selected cipher suite      │
-   │                  - Key share (DH public key)  │
-   │                  - Certificate                │
-   │                  - Finished                   │
-   │ ◄─────────────────────────────────────────────│
-   │                                               │
-   │  (Both derive symmetric keys)                 │
-   │                                               │
-   │  Finished                                     │
-   │ ─────────────────────────────────────────────►│
-   │                                               │
-   │ ◄═══════ Encrypted Application Data ═════════►│
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+
+    Client->>Server: ClientHello (cipher suites, DH key share, versions)
+    Server-->>Client: ServerHello (selected cipher, DH key share, certificate, Finished)
+    Note over Client, Server: Both derive symmetric keys
+    Client->>Server: Finished
+    Client<-->Server: Encrypted Application Data
 ```
 
 ### TLS Configuration Best Practices
@@ -129,26 +111,17 @@ def create_secure_ssl_context():
 
 Both client and server present certificates.
 
-```
-┌─────────┐                          ┌─────────┐
-│ Service │                          │ Service │
-│    A    │                          │    B    │
-│         │                          │         │
-│ Has:    │                          │ Has:    │
-│ - Cert  │                          │ - Cert  │
-│ - Key   │                          │ - Key   │
-│ - CA    │                          │ - CA    │
-└────┬────┘                          └────┬────┘
-     │                                    │
-     │ 1. Present cert, verify B's cert   │
-     │ ──────────────────────────────────►│
-     │                                    │
-     │ 2. Present cert, verify A's cert   │
-     │ ◄──────────────────────────────────│
-     │                                    │
-     │ 3. Encrypted communication         │
-     │ ◄═════════════════════════════════►│
+```mermaid
+sequenceDiagram
+    participant A as Service A<br/>(Cert + Key + CA)
+    participant B as Service B<br/>(Cert + Key + CA)
 
+    A->>B: 1. Present cert, verify B's cert
+    B->>A: 2. Present cert, verify A's cert
+    A<-->B: 3. Encrypted communication
+```
+
+```
 Use cases:
 - Service mesh (Istio, Linkerd)
 - Zero trust architectures
@@ -161,29 +134,13 @@ Use cases:
 
 ### Encryption Layers
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Application Layer                         │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  Field-level encryption                              │    │
-│  │  - Encrypt SSN, credit card before storing          │    │
-│  │  - Application manages keys                          │    │
-│  └─────────────────────────────────────────────────────┘    │
-├─────────────────────────────────────────────────────────────┤
-│                    Database Layer                            │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  Transparent Data Encryption (TDE)                   │    │
-│  │  - Database encrypts data files                      │    │
-│  │  - Transparent to application                        │    │
-│  └─────────────────────────────────────────────────────┘    │
-├─────────────────────────────────────────────────────────────┤
-│                    Storage Layer                             │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  Full Disk Encryption (FDE)                          │    │
-│  │  - Encrypts entire disk/volume                       │    │
-│  │  - Protects against physical theft                   │    │
-│  └─────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    AL["Application Layer<br/>Field-level encryption<br/>Encrypt SSN, credit card before storing<br/>Application manages keys"]
+    DL["Database Layer<br/>Transparent Data Encryption (TDE)<br/>Database encrypts data files<br/>Transparent to application"]
+    SL["Storage Layer<br/>Full Disk Encryption (FDE)<br/>Encrypts entire disk/volume<br/>Protects against physical theft"]
+
+    AL --> DL --> SL
 ```
 
 ### Application-Level Encryption
@@ -283,28 +240,15 @@ class SearchableEncryption:
 
 ### Key Hierarchy
 
-```
-                    ┌─────────────────┐
-                    │   Master Key    │
-                    │  (KEK - Key     │
-                    │   Encrypting    │
-                    │      Key)       │
-                    └────────┬────────┘
-                             │
-                    Encrypts │
-                             │
-         ┌───────────────────┼───────────────────┐
-         ▼                   ▼                   ▼
-┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-│  Data Key 1     │ │  Data Key 2     │ │  Data Key 3     │
-│  (DEK)          │ │  (DEK)          │ │  (DEK)          │
-└────────┬────────┘ └────────┬────────┘ └────────┬────────┘
-         │                   │                   │
-   Encrypts data       Encrypts data       Encrypts data
-         │                   │                   │
-         ▼                   ▼                   ▼
-    Customer A           Customer B          Customer C
-      data                 data                data
+```mermaid
+graph TD
+    MK["Master Key<br/>(KEK - Key Encrypting Key)"]
+    MK -->|Encrypts| DEK1["Data Key 1 (DEK)"]
+    MK -->|Encrypts| DEK2["Data Key 2 (DEK)"]
+    MK -->|Encrypts| DEK3["Data Key 3 (DEK)"]
+    DEK1 -->|Encrypts data| CA[("Customer A<br/>data")]
+    DEK2 -->|Encrypts data| CB[("Customer B<br/>data")]
+    DEK3 -->|Encrypts data| CC[("Customer C<br/>data")]
 ```
 
 ### Envelope Encryption
@@ -578,18 +522,16 @@ def verify_signed_url(url: str, secret_key: bytes) -> bool:
 
 ### 1. ECB Mode (Don't Use)
 
+```mermaid
+graph TD
+    A1[A] -->|Encrypt| X1[X1]
+    B1[B] -->|Encrypt| X2[X2]
+    A2[A] -->|Encrypt| X1b[X1]
+    C1[C] -->|Encrypt| X3[X3]
 ```
-ECB encrypts each block independently:
 
-┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐
-│  A  │ │  B  │ │  A  │ │  C  │  Plaintext blocks
-└──┬──┘ └──┬──┘ └──┬──┘ └──┬──┘
-   │       │       │       │
-   ▼       ▼       ▼       ▼
-┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐
-│ X1  │ │ X2  │ │ X1  │ │ X3  │  Same plaintext = same ciphertext!
-└─────┘ └─────┘ └─────┘ └─────┘
-
+```
+ECB: Same plaintext block = same ciphertext block!
 Problem: Patterns in plaintext visible in ciphertext
 Solution: Use GCM, CBC with random IV, or CTR mode
 ```

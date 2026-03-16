@@ -55,35 +55,16 @@ Raft is a consensus algorithm designed for understandability that provides:
 
 ### Server States
 
+```mermaid
+graph TD
+    F[FOLLOWER] -->|timeout,<br/>start election| C[CANDIDATE]
+    C -->|timeout,<br/>new election| C
+    C -->|receives majority<br/>votes| L[LEADER]
+    L -->|discovers current leader<br/>or new term| F
+    C -->|discovers current leader<br/>or new term| F
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Raft Server States                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│                      ┌──────────────┐                           │
-│                      │   FOLLOWER   │◄──────────────────┐       │
-│                      └──────┬───────┘                   │       │
-│                             │                           │       │
-│                 timeout,    │                           │       │
-│              start election │                           │       │
-│                             ▼                           │       │
-│                      ┌──────────────┐                   │       │
-│      ┌──────────────►│  CANDIDATE   │───────────────────┤       │
-│      │               └──────┬───────┘                   │       │
-│      │                      │                           │       │
-│      │  timeout,            │ receives majority         │       │
-│      │  new election        │ votes                     │       │
-│      │                      ▼                           │       │
-│      │               ┌──────────────┐         discovers │       │
-│      └───────────────│    LEADER    │─────────────────►─┘       │
-│                      └──────────────┘   current leader          │
-│                                         or new term             │
-│                                                                  │
-│  All servers start as followers                                 │
-│  Only one leader per term                                       │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+> All servers start as followers. Only one leader per term.
 
 ### Terms
 

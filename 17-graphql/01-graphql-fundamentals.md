@@ -10,74 +10,49 @@ GraphQL is a query language and runtime for APIs that lets clients request exact
 
 ### REST API Challenges
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    REST API Problems                             │
-│                                                                 │
-│   OVER-FETCHING                                                 │
-│   GET /users/123                                                │
-│   Returns: { id, name, email, avatar, address, phone,           │
-│              preferences, createdAt, updatedAt, ... }           │
-│   Client only needed: { id, name, avatar }                      │
-│   → Wasted bandwidth, slower mobile experience                  │
-│                                                                 │
-│   UNDER-FETCHING (N+1 requests)                                 │
-│   GET /posts           → List of posts with authorId            │
-│   GET /users/1         → Author details                         │
-│   GET /users/2         → Author details                         │
-│   GET /users/3         → Author details                         │
-│   ...                                                           │
-│   → Multiple round trips, high latency                          │
-│                                                                 │
-│   VERSIONING HELL                                               │
-│   /api/v1/users                                                 │
-│   /api/v2/users  (added fields)                                 │
-│   /api/v3/users  (deprecated fields)                            │
-│   → Multiple versions to maintain                               │
-│                                                                 │
-│   DOCUMENTATION DRIFT                                           │
-│   → Swagger/OpenAPI often out of sync with actual API           │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph OVER_FETCHING["OVER-FETCHING"]
+        OF1["GET /users/123<br/>Returns: id, name, email, avatar,<br/>address, phone, preferences..."]
+        OF2["Client only needed:<br/>id, name, avatar"]
+        OF1 --> OF2
+        OF3["Wasted bandwidth,<br/>slower mobile experience"]
+    end
+
+    subgraph UNDER_FETCHING["UNDER-FETCHING (N+1 requests)"]
+        UF1["GET /posts"]
+        UF2["GET /users/1"]
+        UF3["GET /users/2"]
+        UF4["GET /users/3 ..."]
+        UF1 --> UF2
+        UF1 --> UF3
+        UF1 --> UF4
+        UF5["Multiple round trips,<br/>high latency"]
+    end
+
+    subgraph VERSIONING["VERSIONING HELL"]
+        V1["/api/v1/users"]
+        V2["/api/v2/users (added fields)"]
+        V3["/api/v3/users (deprecated fields)"]
+        V4["Multiple versions to maintain"]
+    end
+
+    subgraph DOCS["DOCUMENTATION DRIFT"]
+        D1["Swagger/OpenAPI often<br/>out of sync with actual API"]
+    end
 ```
 
 ### GraphQL Solution
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    GraphQL Approach                              │
-│                                                                 │
-│   SINGLE REQUEST, EXACT DATA                                    │
-│                                                                 │
-│   query {                                                       │
-│     user(id: "123") {                                           │
-│       id                                                        │
-│       name                                                      │
-│       avatar                                                    │
-│       posts(first: 5) {                                         │
-│         title                                                   │
-│         createdAt                                               │
-│       }                                                         │
-│     }                                                           │
-│   }                                                             │
-│                                                                 │
-│   Returns EXACTLY what was requested:                           │
-│   {                                                             │
-│     "user": {                                                   │
-│       "id": "123",                                              │
-│       "name": "Alice",                                          │
-│       "avatar": "https://...",                                  │
-│       "posts": [                                                │
-│         { "title": "Hello World", "createdAt": "2024-01-15" },  │
-│         ...                                                     │
-│       ]                                                         │
-│     }                                                           │
-│   }                                                             │
-│                                                                 │
-│   ✓ No over-fetching                                            │
-│   ✓ No under-fetching (single request)                          │
-│   ✓ Self-documenting schema                                     │
-│   ✓ Backward compatible evolution                               │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    Q["Client Query<br/>user(id: 123)<br/>id, name, avatar,<br/>posts(first: 5)"] -->|Single Request| S["GraphQL Server"]
+    S -->|Exact Data| R["Response<br/>id: 123<br/>name: Alice<br/>avatar: https://...<br/>posts: [...]"]
+
+    R --- B1["No over-fetching"]
+    R --- B2["No under-fetching"]
+    R --- B3["Self-documenting schema"]
+    R --- B4["Backward compatible evolution"]
 ```
 
 ---
@@ -162,34 +137,33 @@ type Subscription {
 
 ### Type System
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    GraphQL Type System                           │
-│                                                                 │
-│   SCALAR TYPES (leaf nodes)                                     │
-│   ├── Int       - 32-bit signed integer                         │
-│   ├── Float     - Double-precision floating point               │
-│   ├── String    - UTF-8 character sequence                      │
-│   ├── Boolean   - true/false                                    │
-│   ├── ID        - Unique identifier (serialized as String)      │
-│   └── Custom    - DateTime, JSON, URL, etc.                     │
-│                                                                 │
-│   OBJECT TYPES                                                  │
-│   ├── User, Post, Comment, etc.                                 │
-│   └── Query, Mutation, Subscription (root types)                │
-│                                                                 │
-│   ABSTRACT TYPES                                                │
-│   ├── Interface - Shared fields, multiple implementations       │
-│   └── Union     - One of several types, no shared fields        │
-│                                                                 │
-│   MODIFIERS                                                     │
-│   ├── [Type]    - List of Type                                  │
-│   ├── Type!     - Non-null Type                                 │
-│   └── [Type!]!  - Non-null list of non-null Types              │
-│                                                                 │
-│   INPUT TYPES                                                   │
-│   └── input TypeInput { ... } - For mutation arguments          │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    TS["GraphQL Type System"]
+    TS --> SCALAR["SCALAR TYPES<br/>(leaf nodes)"]
+    TS --> OBJ["OBJECT TYPES"]
+    TS --> ABS["ABSTRACT TYPES"]
+    TS --> MOD["MODIFIERS"]
+    TS --> INP["INPUT TYPES"]
+
+    SCALAR --> S1["Int - 32-bit signed integer"]
+    SCALAR --> S2["Float - Double-precision"]
+    SCALAR --> S3["String - UTF-8"]
+    SCALAR --> S4["Boolean - true/false"]
+    SCALAR --> S5["ID - Unique identifier"]
+    SCALAR --> S6["Custom - DateTime, JSON, URL"]
+
+    OBJ --> O1["User, Post, Comment, etc."]
+    OBJ --> O2["Query, Mutation, Subscription<br/>(root types)"]
+
+    ABS --> A1["Interface - Shared fields,<br/>multiple implementations"]
+    ABS --> A2["Union - One of several types,<br/>no shared fields"]
+
+    MOD --> M1["Type - List of Type"]
+    MOD --> M2["Type! - Non-null Type"]
+    MOD --> M3["Type!! - Non-null list<br/>of non-null Types"]
+
+    INP --> I1["input TypeInput -<br/>For mutation arguments"]
 ```
 
 ### Interfaces and Unions
@@ -399,44 +373,17 @@ subscription OnCommentAdded($postId: ID!) {
 
 ### Request/Response Flow
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    GraphQL Request Flow                          │
-│                                                                 │
-│   Client                                                        │
-│     │                                                           │
-│     │  POST /graphql                                            │
-│     │  {                                                        │
-│     │    "query": "query { user(id: \"123\") { name } }",       │
-│     │    "variables": {},                                       │
-│     │    "operationName": "GetUser"                             │
-│     │  }                                                        │
-│     │                                                           │
-│     ▼                                                           │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │                  GraphQL Server                          │  │
-│   │                                                          │  │
-│   │  1. Parse      - Convert query string to AST             │  │
-│   │       │                                                  │  │
-│   │       ▼                                                  │  │
-│   │  2. Validate   - Check against schema                    │  │
-│   │       │                                                  │  │
-│   │       ▼                                                  │  │
-│   │  3. Execute    - Run resolvers, fetch data              │  │
-│   │       │                                                  │  │
-│   │       ▼                                                  │  │
-│   │  4. Format     - Build response JSON                     │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│     │                                                           │
-│     │  Response:                                                │
-│     │  {                                                        │
-│     │    "data": { "user": { "name": "Alice" } },              │
-│     │    "errors": null                                         │
-│     │  }                                                        │
-│     │                                                           │
-│     ▼                                                           │
-│   Client                                                        │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as GraphQL Server
+
+    C->>S: POST /graphql<br/>{query, variables, operationName}
+    Note over S: 1. Parse - Convert query string to AST
+    Note over S: 2. Validate - Check against schema
+    Note over S: 3. Execute - Run resolvers, fetch data
+    Note over S: 4. Format - Build response JSON
+    S->>C: {data: {user: {name: "Alice"}}, errors: null}
 ```
 
 ### Server Implementation
@@ -577,40 +524,23 @@ const { url } = await startStandaloneServer(server, {
 
 ### Comparison
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    GraphQL vs REST                               │
-│                                                                 │
-│   Aspect              REST                GraphQL               │
-│   ──────────────────────────────────────────────────────────── │
-│   Endpoints           Multiple            Single (/graphql)     │
-│   Data fetching       Fixed structure     Client-specified      │
-│   Over-fetching       Common              Eliminated            │
-│   Under-fetching      Common (N+1)        Eliminated            │
-│   Versioning          URL-based (/v1)     Schema evolution      │
-│   Caching             HTTP caching        Custom solutions      │
-│   File uploads        Native support      Spec extension        │
-│   Error handling      HTTP status codes   errors array          │
-│   Documentation       External (Swagger)  Introspection         │
-│   Learning curve      Lower               Higher                │
-│   Tooling             Mature              Growing rapidly       │
-│                                                                 │
-│   BEST USE CASES                                                │
-│                                                                 │
-│   REST:                                                         │
-│   • Simple CRUD APIs                                            │
-│   • Public APIs with diverse clients                            │
-│   • File-heavy operations                                       │
-│   • When HTTP caching is critical                               │
-│                                                                 │
-│   GraphQL:                                                      │
-│   • Complex data requirements                                   │
-│   • Mobile apps (bandwidth sensitive)                           │
-│   • Rapid frontend iteration                                    │
-│   • Aggregating multiple services                               │
-│   • Real-time features needed                                   │
-└─────────────────────────────────────────────────────────────────┘
-```
+| Aspect | REST | GraphQL |
+|--------|------|---------|
+| Endpoints | Multiple | Single (/graphql) |
+| Data fetching | Fixed structure | Client-specified |
+| Over-fetching | Common | Eliminated |
+| Under-fetching | Common (N+1) | Eliminated |
+| Versioning | URL-based (/v1) | Schema evolution |
+| Caching | HTTP caching | Custom solutions |
+| File uploads | Native support | Spec extension |
+| Error handling | HTTP status codes | errors array |
+| Documentation | External (Swagger) | Introspection |
+| Learning curve | Lower | Higher |
+| Tooling | Mature | Growing rapidly |
+
+**REST best for:** Simple CRUD APIs, public APIs with diverse clients, file-heavy operations, when HTTP caching is critical
+
+**GraphQL best for:** Complex data requirements, mobile apps (bandwidth sensitive), rapid frontend iteration, aggregating multiple services, real-time features needed
 
 ### When NOT to Use GraphQL
 

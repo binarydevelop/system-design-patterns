@@ -464,71 +464,34 @@ Costs:
 
 ### Sharding Strategies
 
-```
-Document-based sharding (Elasticsearch default):
-┌─────────────────────────────────────────────────────────────────┐
-│                           Index                                  │
-│                                                                 │
-│    Shard 0          Shard 1          Shard 2                   │
-│  ┌──────────┐     ┌──────────┐     ┌──────────┐                │
-│  │ Doc1     │     │ Doc4     │     │ Doc7     │                │
-│  │ Doc2     │     │ Doc5     │     │ Doc8     │                │
-│  │ Doc3     │     │ Doc6     │     │ Doc9     │                │
-│  └──────────┘     └──────────┘     └──────────┘                │
-│                                                                 │
-│  Query goes to ALL shards, results merged                       │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph "Document-based sharding (Elasticsearch default)"
+        IDX1[Index] --> S0["Shard 0<br/>Doc1, Doc2, Doc3"]
+        IDX1 --> S1["Shard 1<br/>Doc4, Doc5, Doc6"]
+        IDX1 --> S2["Shard 2<br/>Doc7, Doc8, Doc9"]
+    end
+    N1["Query goes to ALL shards, results merged"]
 
-Term-based sharding (less common):
-┌─────────────────────────────────────────────────────────────────┐
-│                           Index                                  │
-│                                                                 │
-│    Shard 0 (A-H)    Shard 1 (I-P)    Shard 2 (Q-Z)            │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
-│  │ apple → ...  │  │ index → ...  │  │ query → ...  │         │
-│  │ banana → ... │  │ java → ...   │  │ search → ... │         │
-│  │ cat → ...    │  │ python → ... │  │ zebra → ...  │         │
-│  └──────────────┘  └──────────────┘  └──────────────┘         │
-│                                                                 │
-│  Query goes to specific shard(s) based on query terms          │
-└─────────────────────────────────────────────────────────────────┘
+    subgraph "Term-based sharding (less common)"
+        IDX2[Index] --> T0["Shard 0 (A-H)<br/>apple, banana, cat"]
+        IDX2 --> T1["Shard 1 (I-P)<br/>index, java, python"]
+        IDX2 --> T2["Shard 2 (Q-Z)<br/>query, search, zebra"]
+    end
+    N2["Query goes to specific shard(s) based on query terms"]
 ```
 
 ### Query Execution
 
-```
-Client Query: "search engine"
-         │
-         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Coordinating Node                             │
-│                                                                 │
-│  1. Parse query                                                 │
-│  2. Determine which shards to query                            │
-│  3. Scatter request to shards                                   │
-└─────────────────────┬──────────────────────┬───────────────────┘
-                      │                      │
-         ┌────────────┴──────────┐ ┌────────┴────────────┐
-         ▼                       ▼ ▼                      ▼
-    ┌─────────┐            ┌─────────┐            ┌─────────┐
-    │ Shard 0 │            │ Shard 1 │            │ Shard 2 │
-    │         │            │         │            │         │
-    │ Local   │            │ Local   │            │ Local   │
-    │ search  │            │ search  │            │ search  │
-    └────┬────┘            └────┬────┘            └────┬────┘
-         │                      │                      │
-         │ Top 10 results       │ Top 10 results       │
-         └──────────────────────┼──────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Coordinating Node                             │
-│                                                                 │
-│  4. Gather results from all shards                             │
-│  5. Merge and re-rank (global top 10)                          │
-│  6. Fetch documents for top results                            │
-│  7. Return to client                                           │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Q["Client Query: search engine"] --> C1["Coordinating Node<br/>1. Parse query<br/>2. Determine shards<br/>3. Scatter request"]
+    C1 --> SH0["Shard 0<br/>Local search"]
+    C1 --> SH1["Shard 1<br/>Local search"]
+    C1 --> SH2["Shard 2<br/>Local search"]
+    SH0 -->|Top 10 results| C2["Coordinating Node<br/>4. Gather results<br/>5. Merge and re-rank (global top 10)<br/>6. Fetch documents<br/>7. Return to client"]
+    SH1 -->|Top 10 results| C2
+    SH2 -->|Top 10 results| C2
 ```
 
 ---

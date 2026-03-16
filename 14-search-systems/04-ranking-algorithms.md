@@ -79,34 +79,11 @@ Better ranking considers ALL these signals:
 
 ### Overview
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Learning to Rank Pipeline                     │
-│                                                                 │
-│   TRAINING DATA                                                 │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │ Query: "python tutorial"                                 │  │
-│   │ Doc1: features=[45.2, 10M, 0.85, ...], label=PERFECT    │  │
-│   │ Doc2: features=[44.8, 5M, 0.72, ...], label=EXCELLENT   │  │
-│   │ Doc3: features=[42.1, 1K, 0.45, ...], label=FAIR        │  │
-│   │ Doc4: features=[41.5, 500, 0.12, ...], label=BAD        │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                              │                                  │
-│                              ▼                                  │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │                    LTR MODEL                             │  │
-│   │  • Gradient Boosted Trees (LambdaMART)                  │  │
-│   │  • Neural Networks (RankNet, ListNet)                   │  │
-│   │  • Linear models (RankSVM)                              │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                              │                                  │
-│                              ▼                                  │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │                    INFERENCE                             │  │
-│   │  Query → Candidate docs → Feature extraction → Model    │  │
-│   │  → Ranked results                                       │  │
-│   └─────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    TD["TRAINING DATA<br/>Query: python tutorial<br/>Doc1: features=..., label=PERFECT<br/>Doc2: features=..., label=EXCELLENT<br/>Doc3: features=..., label=FAIR<br/>Doc4: features=..., label=BAD"]
+    TD --> LTR["LTR MODEL<br/>Gradient Boosted Trees (LambdaMART)<br/>Neural Networks (RankNet, ListNet)<br/>Linear models (RankSVM)"]
+    LTR --> INF["INFERENCE<br/>Query → Candidate docs → Feature extraction<br/>→ Model → Ranked results"]
 ```
 
 ### Relevance Labels
@@ -374,39 +351,11 @@ class CrossEncoder(nn.Module):
 
 ### Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Two-Stage Ranking                             │
-│                                                                 │
-│   Query: "python tutorial"                                      │
-│                │                                                │
-│                ▼                                                │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │  STAGE 1: RETRIEVAL (fast, recall-focused)              │  │
-│   │                                                          │  │
-│   │  • BM25 / TF-IDF                                        │  │
-│   │  • Vector search (ANN)                                   │  │
-│   │  • Inverted index lookup                                │  │
-│   │                                                          │  │
-│   │  Latency: ~10ms                                         │  │
-│   │  Output: 1000 candidates                                │  │
-│   └────────────────────────┬────────────────────────────────┘  │
-│                            │                                    │
-│                            ▼                                    │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │  STAGE 2: RANKING (slower, precision-focused)           │  │
-│   │                                                          │  │
-│   │  • LambdaMART with 100+ features                        │  │
-│   │  • Neural cross-encoder                                 │  │
-│   │  • Personalization                                      │  │
-│   │                                                          │  │
-│   │  Latency: ~50ms                                         │  │
-│   │  Output: Top 10 results                                 │  │
-│   └────────────────────────┬────────────────────────────────┘  │
-│                            │                                    │
-│                            ▼                                    │
-│                     Final Results                               │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Q["Query: python tutorial"] --> S1["STAGE 1: RETRIEVAL (fast, recall-focused)<br/>BM25 / TF-IDF<br/>Vector search (ANN)<br/>Inverted index lookup<br/>Latency: ~10ms → 1000 candidates"]
+    S1 --> S2["STAGE 2: RANKING (slower, precision-focused)<br/>LambdaMART with 100+ features<br/>Neural cross-encoder<br/>Personalization<br/>Latency: ~50ms → Top 10 results"]
+    S2 --> FR[Final Results]
 ```
 
 ### Implementation

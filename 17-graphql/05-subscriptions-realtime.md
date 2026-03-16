@@ -10,39 +10,23 @@ GraphQL subscriptions enable real-time data streaming from server to client over
 
 ### How Subscriptions Work
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Subscription Flow                             │
-│                                                                 │
-│   Client                          Server                         │
-│     │                               │                           │
-│     │ ──── WebSocket Connect ────►  │                           │
-│     │                               │                           │
-│     │ ──── Subscribe ────────────►  │                           │
-│     │      { subscription {         │                           │
-│     │          messageAdded {       │                           │
-│     │            id text            │  Register subscription    │
-│     │          }                    │                           │
-│     │      }}                       │                           │
-│     │                               │                           │
-│     │                               │  (Event occurs)           │
-│     │                               │                           │
-│     │ ◄──── Data Push ───────────  │                           │
-│     │       { data: {               │                           │
-│     │         messageAdded: {       │                           │
-│     │           id: "1",            │                           │
-│     │           text: "Hello"       │                           │
-│     │         }                     │                           │
-│     │       }}                      │                           │
-│     │                               │                           │
-│     │                               │  (Another event)          │
-│     │ ◄──── Data Push ───────────  │                           │
-│     │                               │                           │
-│     │ ──── Unsubscribe ──────────►  │                           │
-│     │                               │                           │
-│     │ ──── Close Connection ─────►  │                           │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+
+    C->>S: WebSocket Connect
+    C->>S: Subscribe {messageAdded {id text}}
+    Note over S: Register subscription
+
+    Note over S: Event occurs
+    S->>C: Data Push {messageAdded: {id: "1", text: "Hello"}}
+
+    Note over S: Another event
+    S->>C: Data Push {messageAdded: {id: "2", text: "World"}}
+
+    C->>S: Unsubscribe
+    C->>S: Close Connection
 ```
 
 ### Schema Definition
@@ -371,47 +355,23 @@ async def message_added_source(_, info, channelId: str):
 
 ### Architecture for Scale
 
+```mermaid
+graph TD
+    C1["Clients"] -->|WebSocket| LB["Load Balancer<br/>(sticky sessions)"]
+    LB --> S1["Server 1<br/>WS Conns: c1, c2"]
+    LB --> S2["Server 2<br/>WS Conns: c3, c4"]
+    LB --> S3["Server 3<br/>WS Conns: c5, c6"]
+
+    S1 & S2 & S3 --> REDIS[("Redis Pub/Sub<br/>(Message Bus)")]
+
+    API["API Servers<br/>(Stateless)"] -->|Mutations publish events| REDIS
+
+    REDIS -.->|Broadcast| S1
+    REDIS -.->|Broadcast| S2
+    REDIS -.->|Broadcast| S3
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Scaled Subscription Architecture              │
-│                                                                 │
-│   Clients                                                       │
-│     │ │ │                                                       │
-│     │ │ │  WebSocket connections                                │
-│     ▼ ▼ ▼                                                       │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │                  Load Balancer                           │  │
-│   │            (sticky sessions for WebSocket)               │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│           │              │              │                       │
-│           ▼              ▼              ▼                       │
-│   ┌───────────┐  ┌───────────┐  ┌───────────┐                  │
-│   │  Server 1 │  │  Server 2 │  │  Server 3 │                  │
-│   │           │  │           │  │           │                  │
-│   │ WS Conns  │  │ WS Conns  │  │ WS Conns  │                  │
-│   │ [c1,c2]   │  │ [c3,c4]   │  │ [c5,c6]   │                  │
-│   └─────┬─────┘  └─────┬─────┘  └─────┬─────┘                  │
-│         │              │              │                         │
-│         └──────────────┼──────────────┘                         │
-│                        │                                        │
-│                        ▼                                        │
-│              ┌───────────────────┐                              │
-│              │   Redis Pub/Sub   │                              │
-│              │   (Message Bus)   │                              │
-│              └───────────────────┘                              │
-│                        ▲                                        │
-│                        │                                        │
-│              ┌───────────────────┐                              │
-│              │   API Servers     │  (Mutations publish events)  │
-│              │   (Stateless)     │                              │
-│              └───────────────────┘                              │
-│                                                                 │
-│   Flow:                                                         │
-│   1. Mutation on any API server publishes to Redis             │
-│   2. Redis broadcasts to all subscription servers              │
-│   3. Each server pushes to its connected clients               │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+**Flow:** 1. Mutation on any API server publishes to Redis. 2. Redis broadcasts to all subscription servers. 3. Each server pushes to its connected clients.
 
 ### Connection Management
 
@@ -790,35 +750,13 @@ function useReconnectingSubscription(subscription, options) {
 
 ### Concept
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Subscriptions vs Live Queries                 │
-│                                                                 │
-│   SUBSCRIPTIONS                     LIVE QUERIES                │
-│   ─────────────                     ────────────                │
-│   Client subscribes to events       Client subscribes to query  │
-│   Server pushes event data          Server re-runs query on     │
-│   Client updates cache              change and pushes result    │
-│                                                                 │
-│   subscription {                    @live                       │
-│     messageAdded {                  query GetMessages {         │
-│       id                              messages {                │
-│       text                              id                      │
-│     }                                   text                    │
-│   }                                   }                         │
-│                                     }                           │
-│                                                                 │
-│   Pros:                             Pros:                       │
-│   • Fine-grained control            • Simpler client code       │
-│   • Lower bandwidth                 • Automatic cache sync      │
-│   • Standard GraphQL spec           • Query result always fresh │
-│                                                                 │
-│   Cons:                             Cons:                       │
-│   • Client manages cache            • Higher server load        │
-│   • Complex client logic            • Not standard spec         │
-│   • Event design overhead           • Bandwidth intensive       │
-└─────────────────────────────────────────────────────────────────┘
-```
+| | Subscriptions | Live Queries |
+|---|---|---|
+| Approach | Client subscribes to events | Client subscribes to query |
+| Data flow | Server pushes event data | Server re-runs query on change |
+| Cache | Client manages cache | Automatic cache sync |
+| **Pros** | Fine-grained control, lower bandwidth, standard spec | Simpler client code, automatic cache sync, always fresh |
+| **Cons** | Client manages cache, complex logic, event design overhead | Higher server load, not standard spec, bandwidth intensive |
 
 ### Simple Live Query Implementation
 

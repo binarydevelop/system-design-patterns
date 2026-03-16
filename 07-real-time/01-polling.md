@@ -8,23 +8,22 @@ Polling is the simplest real-time communication pattern where clients periodical
 
 ## How Polling Works
 
-```
-Client                                Server
-  │                                      │
-  │──── GET /api/messages ──────────────►│
-  │◄─── { messages: [...] } ────────────│
-  │                                      │
-  │  (wait 5 seconds)                    │
-  │                                      │
-  │──── GET /api/messages ──────────────►│
-  │◄─── { messages: [...] } ────────────│
-  │                                      │
-  │  (wait 5 seconds)                    │
-  │                                      │
-  │──── GET /api/messages ──────────────►│
-  │◄─── { messages: [...] } ────────────│
-  │                                      │
-  │            ...                       │
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+
+    Client->>Server: GET /api/messages
+    Server-->>Client: { messages: [...] }
+    Note over Client: wait 5 seconds
+
+    Client->>Server: GET /api/messages
+    Server-->>Client: { messages: [...] }
+    Note over Client: wait 5 seconds
+
+    Client->>Server: GET /api/messages
+    Server-->>Client: { messages: [...] }
+    Note over Client: ...
 ```
 
 ---
@@ -196,27 +195,22 @@ def get_data(resource_id):
     return response
 ```
 
-```
-ETag Flow:
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
 
-Request 1:
-Client: GET /api/data/123
-Server: 200 OK
-        ETag: "abc123"
-        { data: {...} }
+    Note over Client,Server: Request 1
+    Client->>Server: GET /api/data/123
+    Server-->>Client: 200 OK<br/>ETag: "abc123"<br/>{ data: {...} }
 
-Request 2 (data unchanged):
-Client: GET /api/data/123
-        If-None-Match: "abc123"
-Server: 304 Not Modified
-        (no body - saves bandwidth)
+    Note over Client,Server: Request 2 (data unchanged)
+    Client->>Server: GET /api/data/123<br/>If-None-Match: "abc123"
+    Server-->>Client: 304 Not Modified<br/>(no body — saves bandwidth)
 
-Request 3 (data changed):
-Client: GET /api/data/123
-        If-None-Match: "abc123"
-Server: 200 OK
-        ETag: "def456"
-        { data: {...new...} }
+    Note over Client,Server: Request 3 (data changed)
+    Client->>Server: GET /api/data/123<br/>If-None-Match: "abc123"
+    Server-->>Client: 200 OK<br/>ETag: "def456"<br/>{ data: {...new...} }
 ```
 
 ### Adaptive Polling Interval

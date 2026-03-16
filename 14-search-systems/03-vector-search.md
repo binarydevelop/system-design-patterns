@@ -48,48 +48,20 @@ Vector search finds ALL of these because it understands meaning.
 
 ### End-to-End Pipeline
 
-```
-                    INDEXING TIME
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│   Document: "The hotel is near the beach with ocean views"      │
-│                              │                                  │
-│                              ▼                                  │
-│                    ┌─────────────────┐                          │
-│                    │  Embedding      │                          │
-│                    │  Model          │                          │
-│                    │  (e.g., BERT)   │                          │
-│                    └────────┬────────┘                          │
-│                             │                                   │
-│                             ▼                                   │
-│        Vector: [0.12, -0.45, 0.78, ..., 0.23]  (768 dims)      │
-│                             │                                   │
-│                             ▼                                   │
-│                    ┌─────────────────┐                          │
-│                    │  Vector Index   │                          │
-│                    │  (HNSW, IVF)    │                          │
-│                    └─────────────────┘                          │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph INDEXING TIME
+        DOC["Document:<br/>The hotel is near the beach with ocean views"] --> EM1["Embedding Model<br/>(e.g., BERT)"]
+        EM1 --> VEC["Vector: [0.12, -0.45, 0.78, ..., 0.23]<br/>(768 dims)"]
+        VEC --> VI[("Vector Index<br/>(HNSW, IVF)")]
+    end
 
-                      QUERY TIME
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│   Query: "seaside lodging"                                      │
-│                              │                                  │
-│                              ▼                                  │
-│                    ┌─────────────────┐                          │
-│                    │  Same Embedding │                          │
-│                    │  Model          │                          │
-│                    └────────┬────────┘                          │
-│                             │                                   │
-│                             ▼                                   │
-│        Query Vector: [0.15, -0.42, 0.81, ..., 0.19]            │
-│                             │                                   │
-│                             ▼                                   │
-│                    ┌─────────────────┐                          │
-│                    │  ANN Search     │───► Top K similar docs   │
-│                    └─────────────────┘                          │
-└─────────────────────────────────────────────────────────────────┘
+    subgraph QUERY TIME
+        QRY["Query: seaside lodging"] --> EM2["Same Embedding Model"]
+        EM2 --> QVEC["Query Vector: [0.15, -0.42, 0.81, ..., 0.19]"]
+        QVEC --> ANN["ANN Search"]
+        ANN --> TOPK["Top K similar docs"]
+    end
 ```
 
 ### Distance Metrics
@@ -410,39 +382,12 @@ print(f"Flat: {flat_memory:.1f} GB, PQ: {pq_memory:.1f} GB")
 
 ### Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Vector Database Architecture                  │
-│                                                                 │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │                     API Layer                            │  │
-│   │  • REST/gRPC endpoints                                   │  │
-│   │  • Query parsing, validation                             │  │
-│   │  • Authentication, rate limiting                         │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                              │                                  │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │                    Query Engine                          │  │
-│   │  • Vector similarity search (ANN)                        │  │
-│   │  • Metadata filtering                                    │  │
-│   │  • Hybrid search (vector + keyword)                      │  │
-│   │  • Re-ranking                                            │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                              │                                  │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │                    Index Layer                           │  │
-│   │  • HNSW / IVF / PQ indexes                              │  │
-│   │  • Sharding and replication                             │  │
-│   │  • Index updates, compaction                            │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                              │                                  │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │                    Storage Layer                         │  │
-│   │  • Vector data (raw or compressed)                       │  │
-│   │  • Metadata storage                                      │  │
-│   │  • WAL for durability                                   │  │
-│   └─────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    API["API Layer<br/>REST/gRPC endpoints<br/>Query parsing, validation<br/>Authentication, rate limiting"]
+    API --> QE["Query Engine<br/>Vector similarity search (ANN)<br/>Metadata filtering<br/>Hybrid search (vector + keyword)<br/>Re-ranking"]
+    QE --> IL["Index Layer<br/>HNSW / IVF / PQ indexes<br/>Sharding and replication<br/>Index updates, compaction"]
+    IL --> SL[("Storage Layer<br/>Vector data (raw or compressed)<br/>Metadata storage<br/>WAL for durability")]
 ```
 
 ### Pinecone Example
@@ -691,31 +636,31 @@ def hybrid_search(query, bm25_index, vector_index, alpha=0.5):
 
 ### Sharding Strategies
 
+```mermaid
+graph TD
+    subgraph "Option 1: Random/Hash Sharding"
+        Q1[Query] --> RS0["Shard 0<br/>Doc 0, 3"]
+        Q1 --> RS1["Shard 1<br/>Doc 1, 4"]
+        Q1 --> RS2["Shard 2<br/>Doc 2, 5"]
+    end
+
+    subgraph "Option 2: Cluster-based Sharding"
+        Q2[Query] -.-> CS0["Shard 0<br/>Tech Cluster"]
+        Q2 -.-> CS1["Shard 1<br/>Sports Cluster"]
+        Q2 -.-> CS2["Shard 2<br/>Travel Cluster"]
+    end
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Sharding for Vector Search                    │
-│                                                                 │
-│   Option 1: Random/Hash Sharding                                │
-│   ┌─────────┐ ┌─────────┐ ┌─────────┐                          │
-│   │ Shard 0 │ │ Shard 1 │ │ Shard 2 │                          │
-│   │ Doc 0,3 │ │ Doc 1,4 │ │ Doc 2,5 │                          │
-│   └─────────┘ └─────────┘ └─────────┘                          │
-│   Query goes to ALL shards, merge results                       │
-│   ✓ Even distribution                                           │
-│   ✗ Every query hits every shard                               │
-│                                                                 │
-│   Option 2: Cluster-based Sharding                              │
-│   ┌─────────┐ ┌─────────┐ ┌─────────┐                          │
-│   │ Shard 0 │ │ Shard 1 │ │ Shard 2 │                          │
-│   │ Tech    │ │ Sports  │ │ Travel  │                          │
-│   │ Cluster │ │ Cluster │ │ Cluster │                          │
-│   └─────────┘ └─────────┘ └─────────┘                          │
-│   Query routed to relevant shards only                          │
-│   ✓ Fewer shards per query                                      │
-│   ✗ Uneven distribution, cross-cluster queries slow            │
-│                                                                 │
-│   Recommendation: Start with random, optimize later             │
-└─────────────────────────────────────────────────────────────────┘
+
+```
+Random: Query goes to ALL shards, merge results
+  ✓ Even distribution
+  ✗ Every query hits every shard
+
+Cluster: Query routed to relevant shards only
+  ✓ Fewer shards per query
+  ✗ Uneven distribution, cross-cluster queries slow
+
+Recommendation: Start with random, optimize later
 ```
 
 ### GPU Acceleration

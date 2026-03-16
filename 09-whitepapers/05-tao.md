@@ -46,25 +46,18 @@ TAO is a geographically distributed, read-optimized data store that provides:
 
 ### Why Not Just Memcached + MySQL?
 
+```mermaid
+graph LR
+    Client --> |cache miss| Memcache
+    Client --> |must query DB| MySQL
+    Memcache --> |fill cache| MySQL
 ```
-Problem: Lookaside Cache Pattern
 
-┌─────────┐    cache miss    ┌─────────┐
-│  Client │ ───────────────> │ Memcache│
-└────┬────┘                  └────┬────┘
-     │                            │
-     │ must query DB              │
-     ▼                            │
-┌─────────┐                       │
-│  MySQL  │ <─────────────────────┘
-└─────────┘    fill cache
-
-Issues:
-1. Clients must handle cache misses
-2. Thundering herd on popular items
-3. No graph-aware operations
-4. Stale data after writes
-```
+> **Lookaside Cache Issues:**
+> 1. Clients must handle cache misses
+> 2. Thundering herd on popular items
+> 3. No graph-aware operations
+> 4. Stale data after writes
 
 ## TAO Data Model
 
@@ -165,53 +158,25 @@ class TaoAPI:
 
 ### Two-Tier Caching
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    TAO Architecture                             │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                     Web Servers                          │    │
-│  │              (PHP, Product Code)                         │    │
-│  └─────────────────────────┬───────────────────────────────┘    │
-│                            │                                     │
-│                            ▼                                     │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                   Follower Tier                          │    │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐    │    │
-│  │  │Follower │  │Follower │  │Follower │  │Follower │    │    │
-│  │  │ Cache   │  │ Cache   │  │ Cache   │  │ Cache   │    │    │
-│  │  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘    │    │
-│  │       │            │            │            │          │    │
-│  │       └────────────┴─────┬──────┴────────────┘          │    │
-│  └──────────────────────────┼──────────────────────────────┘    │
-│                             │                                    │
-│                             ▼                                    │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                    Leader Tier                           │    │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐    │    │
-│  │  │ Leader  │  │ Leader  │  │ Leader  │  │ Leader  │    │    │
-│  │  │ Cache   │  │ Cache   │  │ Cache   │  │ Cache   │    │    │
-│  │  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘    │    │
-│  │       │            │            │            │          │    │
-│  │       └────────────┴─────┬──────┴────────────┘          │    │
-│  └──────────────────────────┼──────────────────────────────┘    │
-│                             │                                    │
-│                             ▼                                    │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │                      MySQL                               │    │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐    │    │
-│  │  │  Shard  │  │  Shard  │  │  Shard  │  │  Shard  │    │    │
-│  │  │    1    │  │    2    │  │    3    │  │    N    │    │    │
-│  │  └─────────┘  └─────────┘  └─────────┘  └─────────┘    │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    WS[Web Servers<br/>PHP, Product Code]
 
-Key Points:
-- Followers: Read-only caches, handle read traffic
-- Leaders: Write-through caches, coordinate updates
-- MySQL: Persistent storage, sharded by object ID
+    subgraph Followers["Follower Tier (read-only caches)"]
+        F1[Follower Cache] & F2[Follower Cache] & F3[Follower Cache] & F4[Follower Cache]
+    end
+
+    subgraph Leaders["Leader Tier (write-through caches)"]
+        L1[Leader Cache] & L2[Leader Cache] & L3[Leader Cache] & L4[Leader Cache]
+    end
+
+    subgraph Storage["MySQL (persistent, sharded by object ID)"]
+        S1[("Shard 1")] & S2[("Shard 2")] & S3[("Shard 3")] & SN[("Shard N")]
+    end
+
+    WS --> F1 & F2 & F3 & F4
+    F1 & F2 & F3 & F4 --> L1 & L2 & L3 & L4
+    L1 & L2 & L3 & L4 --> S1 & S2 & S3 & SN
 ```
 
 ### Read Path
@@ -344,42 +309,30 @@ class TaoLeader(TaoCache):
 
 ### Geographic Distribution
 
+```mermaid
+graph TD
+    subgraph RegionA["Region A (Master Region)"]
+        FA1[Follower] & FA2[Follower]
+        LA1[Leader] & LA2[Leader]
+        MySQL[("MySQL<br/>Primary")]
+
+        FA1 & FA2 --> LA1 & LA2
+        LA1 & LA2 --> MySQL
+    end
+
+    subgraph RegionB["Region B (Slave Region)"]
+        FB1[Follower] & FB2[Follower]
+        SL1[Slave Leader] & SL2[Slave Leader]
+
+        FB1 & FB2 --> SL1 & SL2
+    end
+
+    LA1 -.->|async replication| SL1
+    LA2 -.->|async replication| SL2
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Multi-Region TAO                             │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Region A (Master Region)          Region B (Slave Region)      │
-│  ┌──────────────────────┐          ┌──────────────────────┐    │
-│  │                      │          │                      │    │
-│  │  ┌────────────────┐  │          │  ┌────────────────┐  │    │
-│  │  │   Followers    │  │          │  │   Followers    │  │    │
-│  │  │  ┌───┐ ┌───┐   │  │          │  │  ┌───┐ ┌───┐   │  │    │
-│  │  │  │ F │ │ F │   │  │          │  │  │ F │ │ F │   │  │    │
-│  │  │  └─┬─┘ └─┬─┘   │  │          │  │  └─┬─┘ └─┬─┘   │  │    │
-│  │  └────┼─────┼─────┘  │          │  └────┼─────┼─────┘  │    │
-│  │       │     │        │          │       │     │        │    │
-│  │       ▼     ▼        │          │       ▼     ▼        │    │
-│  │  ┌────────────────┐  │          │  ┌────────────────┐  │    │
-│  │  │    Leaders     │  │   ───>   │  │ Slave Leaders  │  │    │
-│  │  │  ┌───┐ ┌───┐   │  │  async   │  │  ┌───┐ ┌───┐   │  │    │
-│  │  │  │ L │ │ L │   │  │  repl.   │  │  │ L │ │ L │   │  │    │
-│  │  │  └─┬─┘ └─┬─┘   │  │          │  │  └───┘ └───┘   │  │    │
-│  │  └────┼─────┼─────┘  │          │  └────────────────┘  │    │
-│  │       │     │        │          │                      │    │
-│  │       ▼     ▼        │          │   (No local MySQL)   │    │
-│  │  ┌────────────────┐  │          │                      │    │
-│  │  │     MySQL      │  │          │                      │    │
-│  │  │  (Primary)     │  │          │                      │    │
-│  │  └────────────────┘  │          │                      │    │
-│  │                      │          │                      │    │
-│  └──────────────────────┘          └──────────────────────┘    │
-│                                                                  │
-│  Writes: Always go to master region leaders                     │
-│  Reads: Served locally from followers/slave leaders             │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+> **Writes:** Always go to master region leaders.
+> **Reads:** Served locally from followers/slave leaders.
 
 ### Read-After-Write Consistency
 

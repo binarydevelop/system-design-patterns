@@ -159,29 +159,13 @@ Signature = HMAC-SHA256(SigningKey, StringToSign)
 
 ### Validation Layers
 
-```
-┌─────────────────────────────────────────┐
-│           API Gateway                    │
-│  - Schema validation                     │
-│  - Size limits                          │
-│  - Basic type checking                  │
-└─────────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────┐
-│         Application Layer                │
-│  - Business rule validation              │
-│  - Authorization checks                  │
-│  - Sanitization                         │
-└─────────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────┐
-│          Database Layer                  │
-│  - Parameterized queries                │
-│  - Type constraints                     │
-│  - Foreign key validation               │
-└─────────────────────────────────────────┘
+```mermaid
+graph TD
+    GW["API Gateway<br/>Schema validation<br/>Size limits<br/>Basic type checking"]
+    APP["Application Layer<br/>Business rule validation<br/>Authorization checks<br/>Sanitization"]
+    DB["Database Layer<br/>Parameterized queries<br/>Type constraints<br/>Foreign key validation"]
+
+    GW --> APP --> DB
 ```
 
 ### Schema Validation
@@ -356,20 +340,15 @@ def authorize_resource(user, resource_type, resource_id, action):
 
 ### Why HTTPS is Non-Negotiable
 
-```
-Without HTTPS:
-┌──────┐                    ┌──────┐
-│Client│                    │Server│
-└──┬───┘                    └──┬───┘
-   │                           │
-   │ GET /api/users           │
-   │ Cookie: session=abc123    │
-   │──────────────────────────►│
-   │                           │
-   │      ▲                    │
-   │      │ Attacker           │
-   │      │ sees everything    │
-   │                           │
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Attacker
+    participant Server
+
+    Note over Client, Server: Without HTTPS
+    Client->>Server: GET /api/users Cookie: session=abc123
+    Attacker-->>Client: Sees everything (man-in-the-middle)
 ```
 
 ### TLS Configuration Best Practices

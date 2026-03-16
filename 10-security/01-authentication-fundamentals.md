@@ -20,19 +20,15 @@ In a monolithic application, authentication is simple:
 
 In distributed systems, this breaks down:
 
+```mermaid
+graph TD
+    User --> LB[Load Balancer]
+    LB --> S1["Server1<br/>(Session)"]
+    LB --> S2["Server2<br/>(???)"]
+    LB --> S3["Server3<br/>(???)"]
 ```
-                    ┌─────────────┐
-                    │   Load      │
-     User ─────────►│  Balancer   │
-                    └──────┬──────┘
-                           │
-           ┌───────────────┼───────────────┐
-           ▼               ▼               ▼
-      ┌─────────┐    ┌─────────┐    ┌─────────┐
-      │ Server1 │    │ Server2 │    │ Server3 │
-      │ Session │    │   ???   │    │   ???   │
-      └─────────┘    └─────────┘    └─────────┘
 
+```
 Problem: Session created on Server1, but next
 request goes to Server2 which has no session
 ```
@@ -62,21 +58,11 @@ Cons:
 
 All servers share a session store (Redis, Memcached).
 
-```
-┌─────────────┐
-│   Client    │
-└──────┬──────┘
-       │ session_id cookie
-       ▼
-┌─────────────┐
-│   Server    │ ◄────┐
-└──────┬──────┘      │
-       │             │ Session data
-       ▼             │
-┌─────────────┐      │
-│   Redis     │ ─────┘
-│   Cluster   │
-└─────────────┘
+```mermaid
+graph TD
+    Client -->|session_id cookie| Server
+    Server -->|lookup| Redis[("Redis<br/>Cluster")]
+    Redis -->|Session data| Server
 ```
 
 ```python
@@ -104,15 +90,9 @@ def authenticate_request(request):
 
 Encode session data in the token itself. Server validates without storage lookup.
 
-```
-┌─────────────┐
-│   Client    │
-└──────┬──────┘
-       │ Authorization: Bearer <JWT>
-       ▼
-┌─────────────┐
-│   Server    │ Validates signature locally
-└─────────────┘ No external lookup needed
+```mermaid
+graph TD
+    Client -->|"Authorization: Bearer JWT"| Server["Server<br/>Validates signature locally<br/>No external lookup needed"]
 ```
 
 **Trade-offs:**
@@ -410,26 +390,21 @@ def generate_fingerprint(request):
 
 ### Standard Login Flow
 
-```
-┌──────┐      ┌──────┐      ┌──────┐      ┌──────┐
-│Client│      │Server│      │ Auth │      │  DB  │
-└──┬───┘      └──┬───┘      │ Svc  │      └──┬───┘
-   │             │          └──┬───┘         │
-   │ POST /login │             │             │
-   │ (user,pass) │             │             │
-   │────────────►│             │             │
-   │             │ Verify      │             │
-   │             │────────────►│             │
-   │             │             │ Get user    │
-   │             │             │────────────►│
-   │             │             │◄────────────│
-   │             │             │ bcrypt      │
-   │             │             │ verify      │
-   │             │◄────────────│             │
-   │             │ Create      │             │
-   │             │ session     │             │
-   │ Set-Cookie  │             │             │
-   │◄────────────│             │             │
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+    participant Auth as Auth Svc
+    participant DB
+
+    Client->>Server: POST /login (user, pass)
+    Server->>Auth: Verify
+    Auth->>DB: Get user
+    DB-->>Auth: User record
+    Auth->>Auth: bcrypt verify
+    Auth-->>Server: Result
+    Server->>Server: Create session
+    Server-->>Client: Set-Cookie
 ```
 
 ### Token Refresh Flow
@@ -437,26 +412,20 @@ def generate_fingerprint(request):
 ```
 Access Token:  Short-lived (15 min)
 Refresh Token: Long-lived (7 days), stored securely
+```
 
-┌──────┐                      ┌──────┐
-│Client│                      │Server│
-└──┬───┘                      └──┬───┘
-   │                             │
-   │ Request + expired token     │
-   │────────────────────────────►│
-   │         401 Unauthorized    │
-   │◄────────────────────────────│
-   │                             │
-   │ POST /refresh               │
-   │ + refresh_token             │
-   │────────────────────────────►│
-   │                             │ Validate refresh token
-   │                             │ Generate new access token
-   │    New access token         │
-   │◄────────────────────────────│
-   │                             │
-   │ Retry original request      │
-   │────────────────────────────►│
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+
+    Client->>Server: Request + expired token
+    Server-->>Client: 401 Unauthorized
+    Client->>Server: POST /refresh + refresh_token
+    Server->>Server: Validate refresh token
+    Server->>Server: Generate new access token
+    Server-->>Client: New access token
+    Client->>Server: Retry original request
 ```
 
 ---
