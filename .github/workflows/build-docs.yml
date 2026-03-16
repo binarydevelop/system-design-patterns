@@ -271,6 +271,18 @@ jobs:
                 { text: 'Federation', link: '/17-graphql/06-federation' },
               ]
             },
+            {
+              text: '18. Compound Engineering',
+              collapsed: true,
+              items: [
+                { text: 'Fundamentals', link: '/18-compound-engineering/01-compound-engineering-fundamentals' },
+                { text: 'Coding Agent Tool Design', link: '/18-compound-engineering/02-coding-agent-tool-design' },
+                { text: 'Agent Context Engineering', link: '/18-compound-engineering/03-agent-context-engineering' },
+                { text: 'AI-Native Architecture', link: '/18-compound-engineering/04-ai-native-software-architecture' },
+                { text: 'Quality Engineering', link: '/18-compound-engineering/05-quality-engineering-with-ai-agents' },
+                { text: 'Compound Workflows', link: '/18-compound-engineering/06-compound-development-workflows' },
+              ]
+            },
           ]
 
           export default withMermaid({
@@ -325,6 +337,7 @@ jobs:
                         { text: 'Deployment', link: '/15-deployment/01-deployment-strategies' },
                         { text: 'LLM Systems', link: '/16-llm-systems/01-agent-fundamentals' },
                         { text: 'GraphQL', link: '/17-graphql/01-graphql-fundamentals' },
+                        { text: 'Compound Engineering', link: '/18-compound-engineering/01-compound-engineering-fundamentals' },
                       ]
                     },
                     { text: 'GitHub', link: 'https://github.com/babushkai/system-design-patterns' }
@@ -403,7 +416,7 @@ jobs:
           hero:
             name: "Babushk<span class='ai-accent'>a<span class='doll-i'>i</span></span>"
             text: "System Design Patterns"
-            tagline: 17 sections · 112 articles · patterns used at Netflix, Uber, Stripe & Discord
+            tagline: 18 sections · 118 articles · patterns used at Netflix, Uber, Stripe & Discord
             image:
               src: /logo.svg
               alt: Babushkai
@@ -505,11 +518,11 @@ jobs:
 
           <div class="home-stats-bar">
             <div class="home-stat">
-              <span class="home-stat-num">17</span>
+              <span class="home-stat-num">18</span>
               <span class="home-stat-label">Sections</span>
             </div>
             <div class="home-stat">
-              <span class="home-stat-num">112</span>
+              <span class="home-stat-num">118</span>
               <span class="home-stat-label">Articles</span>
             </div>
             <div class="home-stat">
@@ -522,7 +535,7 @@ jobs:
             </div>
           </div>
 
-          <p class="home-about">Like the layers of a Matryoshka doll, great systems are built layer by layer. 112 articles covering distributed systems fundamentals through production-ready architectures used at Netflix, Uber, Stripe, and Discord.</p>
+          <p class="home-about">Like the layers of a Matryoshka doll, great systems are built layer by layer. 118 articles covering distributed systems fundamentals through production-ready architectures used at Netflix, Uber, Stripe, and Discord.</p>
 
           <div class="home-download">
             <a href="https://github.com/babushkai/system-design-patterns/releases/latest" class="download-btn" target="_blank">
