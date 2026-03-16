@@ -96,29 +96,35 @@ Kafka is a distributed commit log that provides:
 
 ### Message Flow
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Message Flow                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Producers                  Kafka Cluster               Consumers│
-│  ┌───────┐                  ┌─────────────┐            ┌───────┐│
-│  │ App 1 │──────────────────│             │────────────│ App A ││
-│  └───────┘                  │             │            └───────┘│
-│  ┌───────┐     publish      │   Broker    │   consume  ┌───────┐│
-│  │ App 2 │──────────────────│   Cluster   │────────────│ App B ││
-│  └───────┘                  │             │            └───────┘│
-│  ┌───────┐                  │             │            ┌───────┐│
-│  │ App 3 │──────────────────│             │────────────│ App C ││
-│  └───────┘                  └─────────────┘            └───────┘│
-│                                    │                            │
-│                                    │                            │
-│                              ┌─────┴─────┐                      │
-│                              │ ZooKeeper │                      │
-│                              │ (metadata)│                      │
-│                              └───────────┘                      │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    subgraph Producers
+        P1[App 1]
+        P2[App 2]
+        P3[App 3]
+    end
+
+    subgraph Kafka["Kafka Broker Cluster"]
+        BC[Broker Cluster]
+    end
+
+    subgraph Consumers
+        CA[App A]
+        CB[App B]
+        CC[App C]
+    end
+
+    ZK[ZooKeeper<br/>metadata]
+
+    P1 -->|publish| BC
+    P2 -->|publish| BC
+    P3 -->|publish| BC
+
+    BC -->|consume| CA
+    BC -->|consume| CB
+    BC -->|consume| CC
+
+    BC --- ZK
 ```
 
 ## Log-Based Storage

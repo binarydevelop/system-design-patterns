@@ -8,32 +8,28 @@ Long polling is an evolution of traditional polling where the server holds the r
 
 ## How Long Polling Works
 
-```
-Traditional Polling:
-Client                                Server
-  │──── GET /updates ────────────────►│
-  │◄─── { } (no updates) ────────────│
-  │  (wait 5 seconds)                 │
-  │──── GET /updates ────────────────►│
-  │◄─── { } (no updates) ────────────│
-  │  (wait 5 seconds)                 │
-  │──── GET /updates ────────────────►│
-  │◄─── { message: "Hi" } ───────────│
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
 
-  6 round trips for 1 message!
+    Note over Client,Server: Traditional Polling (6 round trips for 1 message)
+    Client->>Server: GET /updates
+    Server-->>Client: { } (no updates)
+    Note over Client: wait 5 seconds
+    Client->>Server: GET /updates
+    Server-->>Client: { } (no updates)
+    Note over Client: wait 5 seconds
+    Client->>Server: GET /updates
+    Server-->>Client: { message: "Hi" }
 
-
-Long Polling:
-Client                                Server
-  │──── GET /updates ────────────────►│
-  │                                   │ (waits for data...)
-  │      (connection held open)       │
-  │                                   │ (event occurs!)
-  │◄─── { message: "Hi" } ───────────│
-  │──── GET /updates ────────────────►│ (immediately reconnect)
-  │                                   │
-
-  1 round trip for 1 message!
+    Note over Client,Server: Long Polling (1 round trip for 1 message)
+    Client->>Server: GET /updates
+    Note over Server: waits for data...
+    Note over Client,Server: connection held open
+    Note over Server: event occurs!
+    Server-->>Client: { message: "Hi" }
+    Client->>Server: GET /updates (immediately reconnect)
 ```
 
 ---
@@ -331,34 +327,14 @@ class RedisLongPollingManager:
         self.redis.publish(channel, json.dumps(message))
 ```
 
-```
-Scaled Architecture:
-
-                    ┌─────────────────────────────────┐
-                    │         Load Balancer           │
-                    └─────────────────┬───────────────┘
-                                      │
-          ┌───────────────────────────┼───────────────────────────┐
-          │                           │                           │
-          ▼                           ▼                           ▼
-    ┌───────────┐               ┌───────────┐               ┌───────────┐
-    │  Server 1 │               │  Server 2 │               │  Server 3 │
-    │           │               │           │               │           │
-    │  Waiters: │               │  Waiters: │               │  Waiters: │
-    │  [A, B]   │               │  [C, D]   │               │  [E, F]   │
-    └─────┬─────┘               └─────┬─────┘               └─────┬─────┘
-          │                           │                           │
-          └───────────────────────────┼───────────────────────────┘
-                                      │
-                                      ▼
-                            ┌─────────────────┐
-                            │  Redis Pub/Sub  │
-                            │                 │
-                            │  publish("ch")  │
-                            │       ↓         │
-                            │  broadcast to   │
-                            │  all servers    │
-                            └─────────────────┘
+```mermaid
+graph TD
+    LB[Load Balancer] --> S1["Server 1<br/>Waiters: [A, B]"]
+    LB --> S2["Server 2<br/>Waiters: [C, D]"]
+    LB --> S3["Server 3<br/>Waiters: [E, F]"]
+    S1 --> Redis[("Redis Pub/Sub<br/>publish(ch)<br/>broadcast to all servers")]
+    S2 --> Redis
+    S3 --> Redis
 ```
 
 ### Connection Limits and Timeouts

@@ -8,28 +8,15 @@ Production LLM infrastructure encompasses model serving (batching, GPU optimizat
 
 ## The Infrastructure Challenge
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                  LLM INFRASTRUCTURE CHALLENGES                   │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
-│  │     LATENCY     │  │      COST       │  │   RELIABILITY   │  │
-│  │                 │  │                 │  │                 │  │
-│  │ • Model loading │  │ • Token costs   │  │ • Rate limits   │  │
-│  │ • Inference     │  │ • GPU compute   │  │ • API failures  │  │
-│  │ • Network       │  │ • Overprovisioning  • Model updates │  │
-│  └─────────────────┘  └─────────────────┘  └─────────────────┘  │
-│                                                                  │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
-│  │     SAFETY      │  │   EVALUATION    │  │     SCALE       │  │
-│  │                 │  │                 │  │                 │  │
-│  │ • Harmful output│  │ • Quality drift │  │ • Traffic spikes│  │
-│  │ • Prompt inject │  │ • Regressions   │  │ • Multi-region  │  │
-│  │ • Data leakage  │  │ • A/B testing   │  │ • Concurrency   │  │
-│  └─────────────────┘  └─────────────────┘  └─────────────────┘  │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    CH["LLM INFRASTRUCTURE CHALLENGES"]
+    CH --> LAT["LATENCY<br/>Model loading<br/>Inference<br/>Network"]
+    CH --> COST["COST<br/>Token costs<br/>GPU compute<br/>Overprovisioning"]
+    CH --> REL["RELIABILITY<br/>Rate limits<br/>API failures<br/>Model updates"]
+    CH --> SAF["SAFETY<br/>Harmful output<br/>Prompt injection<br/>Data leakage"]
+    CH --> EVAL["EVALUATION<br/>Quality drift<br/>Regressions<br/>A/B testing"]
+    CH --> SC["SCALE<br/>Traffic spikes<br/>Multi-region<br/>Concurrency"]
 ```
 
 ---
@@ -38,45 +25,18 @@ Production LLM infrastructure encompasses model serving (batching, GPU optimizat
 
 ### Basic Serving Infrastructure
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    MODEL SERVING ARCHITECTURE                    │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│                    ┌──────────────────┐                          │
-│                    │   Load Balancer  │                          │
-│                    └────────┬─────────┘                          │
-│                             │                                    │
-│         ┌───────────────────┼───────────────────┐                │
-│         │                   │                   │                │
-│         ▼                   ▼                   ▼                │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐       │
-│  │   Gateway    │    │   Gateway    │    │   Gateway    │       │
-│  │   Server     │    │   Server     │    │   Server     │       │
-│  │  (FastAPI)   │    │  (FastAPI)   │    │  (FastAPI)   │       │
-│  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘       │
-│         │                   │                   │                │
-│         └───────────────────┼───────────────────┘                │
-│                             │                                    │
-│                    ┌────────┴─────────┐                          │
-│                    │   Request Queue  │                          │
-│                    │     (Redis)      │                          │
-│                    └────────┬─────────┘                          │
-│                             │                                    │
-│         ┌───────────────────┼───────────────────┐                │
-│         ▼                   ▼                   ▼                │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐       │
-│  │  Inference   │    │  Inference   │    │  Inference   │       │
-│  │   Worker     │    │   Worker     │    │   Worker     │       │
-│  │  (GPU Node)  │    │  (GPU Node)  │    │  (GPU Node)  │       │
-│  │              │    │              │    │              │       │
-│  │ ┌──────────┐ │    │ ┌──────────┐ │    │ ┌──────────┐ │       │
-│  │ │ vLLM /   │ │    │ │ vLLM /   │ │    │ │ vLLM /   │ │       │
-│  │ │ TGI      │ │    │ │ TGI      │ │    │ │ TGI      │ │       │
-│  │ └──────────┘ │    │ └──────────┘ │    │ └──────────┘ │       │
-│  └──────────────┘    └──────────────┘    └──────────────┘       │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    LB["Load Balancer"]
+    LB --> GW1["Gateway Server<br/>(FastAPI)"]
+    LB --> GW2["Gateway Server<br/>(FastAPI)"]
+    LB --> GW3["Gateway Server<br/>(FastAPI)"]
+
+    GW1 & GW2 & GW3 --> RQ["Request Queue<br/>(Redis)"]
+
+    RQ --> W1["Inference Worker<br/>(GPU Node)<br/>vLLM / TGI"]
+    RQ --> W2["Inference Worker<br/>(GPU Node)<br/>vLLM / TGI"]
+    RQ --> W3["Inference Worker<br/>(GPU Node)<br/>vLLM / TGI"]
 ```
 
 ```python
@@ -409,34 +369,15 @@ class ModelCascade:
 
 ### Semantic Cache
 
+```mermaid
+graph LR
+    Q["Query:<br/>What's the capital<br/>of France?"] --> EMB["Embed<br/>Query"]
+    EMB --> VS["Vector<br/>Search"]
+    VS --> SIM["Similar query found:<br/>France's capital?<br/>similarity: 0.95"]
+    SIM --> RET["Return Cached Response:<br/>The capital of France<br/>is Paris."]
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      SEMANTIC CACHE                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Query: "What's the capital of France?"                          │
-│                                                                  │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐  │
-│  │   Embed     │───►│   Vector    │───►│ Similar query found │  │
-│  │   Query     │    │   Search    │    │ "France's capital?" │  │
-│  └─────────────┘    └─────────────┘    │ similarity: 0.95    │  │
-│                                        └──────────┬──────────┘  │
-│                                                   │              │
-│                            ┌──────────────────────┘              │
-│                            ▼                                     │
-│                     ┌─────────────┐                              │
-│                     │ Return      │                              │
-│                     │ Cached      │◄─── "The capital of France  │
-│                     │ Response    │      is Paris."             │
-│                     └─────────────┘                              │
-│                                                                  │
-│  Benefits:                                                       │
-│  • Handles paraphrased queries                                   │
-│  • Reduces API costs significantly                               │
-│  • Sub-millisecond response for cache hits                       │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+Benefits: handles paraphrased queries, reduces API costs significantly, sub-millisecond response for cache hits
 
 ```python
 import hashlib
@@ -645,33 +586,13 @@ class PrefixCache:
 
 ### Automated Evaluation Pipeline
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                  EVALUATION PIPELINE                             │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐          │
-│  │   Test      │───►│   Run       │───►│   Score     │          │
-│  │   Cases     │    │   Model     │    │   Outputs   │          │
-│  └─────────────┘    └─────────────┘    └─────────────┘          │
-│        │                                      │                  │
-│        │            ┌─────────────┐           │                  │
-│        └───────────►│  Compare to │◄──────────┘                  │
-│                     │  Baseline   │                              │
-│                     └──────┬──────┘                              │
-│                            │                                     │
-│                     ┌──────┴──────┐                              │
-│                     │   Report    │                              │
-│                     │   Results   │                              │
-│                     └─────────────┘                              │
-│                                                                  │
-│  Metrics:                                                        │
-│  • Accuracy on benchmarks                                        │
-│  • Regression detection                                          │
-│  • Latency percentiles                                           │
-│  • Cost per request                                              │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    TC["Test Cases"] --> RM["Run Model"]
+    RM --> SO["Score Outputs"]
+    TC --> CB["Compare to<br/>Baseline"]
+    SO --> CB
+    CB --> RR["Report Results<br/>Accuracy, Regressions,<br/>Latency, Cost"]
 ```
 
 ```python
@@ -1000,26 +921,12 @@ class CostOptimizedPipeline:
 
 ### Input/Output Filtering
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      GUARDRAILS PIPELINE                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Input ──►┌─────────┐──►┌─────────┐──►┌─────────┐──► Output     │
-│           │  INPUT  │   │   LLM   │   │ OUTPUT  │               │
-│           │ GUARDS  │   │ PROCESS │   │ GUARDS  │               │
-│           └────┬────┘   └─────────┘   └────┬────┘               │
-│                │                           │                     │
-│                ▼                           ▼                     │
-│  ┌─────────────────────────┐  ┌─────────────────────────────┐   │
-│  │ • Prompt injection      │  │ • PII detection             │   │
-│  │ • Jailbreak detection   │  │ • Harmful content filter    │   │
-│  │ • Topic blocking        │  │ • Factuality check          │   │
-│  │ • Rate limiting         │  │ • Format validation         │   │
-│  │ • PII redaction         │  │ • Confidence threshold      │   │
-│  └─────────────────────────┘  └─────────────────────────────┘   │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    IN["Input"] --> IG["INPUT GUARDS<br/>Prompt injection<br/>Jailbreak detection<br/>Topic blocking<br/>Rate limiting<br/>PII redaction"]
+    IG --> LLM["LLM<br/>PROCESS"]
+    LLM --> OG["OUTPUT GUARDS<br/>PII detection<br/>Harmful content filter<br/>Factuality check<br/>Format validation<br/>Confidence threshold"]
+    OG --> OUT["Output"]
 ```
 
 ```python

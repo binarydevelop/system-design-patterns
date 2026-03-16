@@ -126,50 +126,23 @@ class TrueTime:
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Spanner Architecture                                  │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                        Universe                                   │  │
-│   │   (A Spanner deployment - e.g., "production")                    │  │
-│   │                                                                   │  │
-│   │   ┌────────────────────────────────────────────────────────────┐ │  │
-│   │   │                         Zone                                │ │  │
-│   │   │   (Unit of physical isolation - typically a datacenter)    │ │  │
-│   │   │                                                             │ │  │
-│   │   │   ┌─────────────────────────────────────────────────────┐  │ │  │
-│   │   │   │              Spanserver                              │  │ │  │
-│   │   │   │                                                      │  │ │  │
-│   │   │   │   ┌─────────┐  ┌─────────┐  ┌─────────┐            │  │ │  │
-│   │   │   │   │ Tablet  │  │ Tablet  │  │ Tablet  │ ...        │  │ │  │
-│   │   │   │   └─────────┘  └─────────┘  └─────────┘            │  │ │  │
-│   │   │   │                                                      │  │ │  │
-│   │   │   │   Each tablet: 100-1000 directories (row ranges)    │  │ │  │
-│   │   │   └─────────────────────────────────────────────────────┘  │ │  │
-│   │   │                                                             │ │  │
-│   │   │   ┌─────────────────────────────────────────────────────┐  │ │  │
-│   │   │   │              Zonemaster                              │  │ │  │
-│   │   │   │   Assigns data to spanservers                       │  │ │  │
-│   │   │   └─────────────────────────────────────────────────────┘  │ │  │
-│   │   │                                                             │ │  │
-│   │   │   ┌─────────────────────────────────────────────────────┐  │ │  │
-│   │   │   │           Location Proxies                           │  │ │  │
-│   │   │   │   Help clients find data                            │  │ │  │
-│   │   │   └─────────────────────────────────────────────────────┘  │ │  │
-│   │   └────────────────────────────────────────────────────────────┘ │  │
-│   │                                                                   │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │                Universe Master                           │    │  │
-│   │   │   Debugging console, status monitoring                   │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │                                                                   │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │                Placement Driver                          │    │  │
-│   │   │   Moves data across zones for load balancing            │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Universe["Universe (Spanner deployment)"]
+        subgraph Zone["Zone (datacenter)"]
+            subgraph SS["Spanserver"]
+                T1[Tablet] & T2[Tablet] & T3[Tablet ...]
+            end
+            ZM[Zonemaster<br/>Assigns data to spanservers]
+            LP[Location Proxies<br/>Help clients find data]
+        end
+
+        UM[Universe Master<br/>Debugging console, status monitoring]
+        PD[Placement Driver<br/>Moves data across zones for load balancing]
+    end
+
+    ZM --> SS
+    LP --> SS
 ```
 
 ---
@@ -222,37 +195,26 @@ class TrueTime:
 
 ## Replication with Paxos
 
+```mermaid
+graph LR
+    subgraph ZA["Zone A"]
+        LA["Tablet Replica<br/>(Leader)"]
+    end
+    subgraph ZB["Zone B"]
+        FB["Tablet Replica<br/>(Follower)"]
+    end
+    subgraph ZC["Zone C"]
+        FC["Tablet Replica<br/>(Follower)"]
+    end
+
+    LA <-->|Paxos| FB
+    FB <-->|Paxos| FC
+    LA <-->|Paxos| FC
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Paxos-Based Replication                               │
-│                                                                          │
-│   Each tablet is replicated across multiple zones using Paxos           │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                                                                   │  │
-│   │   Zone A              Zone B              Zone C                 │  │
-│   │   ┌─────────┐        ┌─────────┐        ┌─────────┐             │  │
-│   │   │ Tablet  │        │ Tablet  │        │ Tablet  │             │  │
-│   │   │ Replica │◀──────▶│ Replica │◀──────▶│ Replica │             │  │
-│   │   │ (Leader)│ Paxos  │(Follower)│ Paxos │(Follower)│            │  │
-│   │   └─────────┘        └─────────┘        └─────────┘             │  │
-│   │                                                                   │  │
-│   │   Leader responsibilities:                                       │  │
-│   │   - Coordinates Paxos                                           │  │
-│   │   - Assigns timestamps to transactions                          │  │
-│   │   - Maintains lock table for pessimistic concurrency            │  │
-│   │                                                                   │  │
-│   │   Leader election:                                               │  │
-│   │   - 10-second lease (refreshed by Paxos)                        │  │
-│   │   - Must wait for lease to expire before new leader             │  │
-│   │                                                                   │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│   Paxos group per tablet = unit of replication                          │
-│   Typically 3 or 5 replicas                                             │
-│   Majority must agree for writes                                        │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+
+> **Leader responsibilities:** Coordinates Paxos, assigns timestamps to transactions, maintains lock table for pessimistic concurrency.
+> **Leader election:** 10-second lease (refreshed by Paxos); must wait for lease to expire before new leader.
+> Paxos group per tablet = unit of replication. Typically 3 or 5 replicas. Majority must agree for writes.
 
 ---
 
@@ -260,45 +222,28 @@ class TrueTime:
 
 ### Read-Write Transactions
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Read-Write Transaction Flow                           │
-│                                                                          │
-│   1. Client acquires locks (pessimistic, two-phase locking)             │
-│   2. Execute reads/writes with locks held                               │
-│   3. Prepare all participant Paxos groups                               │
-│   4. Coordinator chooses commit timestamp s                             │
-│   5. Wait until TT.after(s) is true (commit-wait)                      │
-│   6. Commit and release locks                                           │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │   Transaction: Transfer $100 from Account A to Account B         │  │
-│   │                                                                   │  │
-│   │   Client          Paxos Group 1        Paxos Group 2             │  │
-│   │     │             (Account A)          (Account B)                │  │
-│   │     │                  │                    │                     │  │
-│   │     │── Acquire Lock ──▶                   │                     │  │
-│   │     │                  │                    │                     │  │
-│   │     │── Acquire Lock ──┼───────────────────▶                     │  │
-│   │     │                  │                    │                     │  │
-│   │     │── Read A ────────▶                   │                     │  │
-│   │     │◀── A = $500 ─────│                   │                     │  │
-│   │     │                  │                    │                     │  │
-│   │     │── Buffer Write ──▶ (A = $400)        │                     │  │
-│   │     │── Buffer Write ──┼───────────────────▶ (B = B + $100)      │  │
-│   │     │                  │                    │                     │  │
-│   │     │── Prepare ───────▶                   │                     │  │
-│   │     │── Prepare ───────┼───────────────────▶                     │  │
-│   │     │                  │                    │                     │  │
-│   │     │  (choose commit timestamp s)         │                     │  │
-│   │     │                  │                    │                     │  │
-│   │     │  (COMMIT-WAIT: sleep until TT.after(s))                    │  │
-│   │     │                  │                    │                     │  │
-│   │     │── Commit(s) ─────▶                   │                     │  │
-│   │     │── Commit(s) ─────┼───────────────────▶                     │  │
-│   │     │                  │                    │                     │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant PG1 as Paxos Group 1<br/>(Account A)
+    participant PG2 as Paxos Group 2<br/>(Account B)
+
+    Note over C,PG2: Transfer $100 from Account A to Account B
+
+    C->>PG1: Acquire Lock
+    C->>PG2: Acquire Lock
+    C->>PG1: Read A
+    PG1-->>C: A = $500
+    C->>PG1: Buffer Write (A = $400)
+    C->>PG2: Buffer Write (B = B + $100)
+    C->>PG1: Prepare
+    C->>PG2: Prepare
+
+    Note over C: Choose commit timestamp s
+    Note over C: COMMIT-WAIT: sleep until TT.after(s)
+
+    C->>PG1: Commit(s)
+    C->>PG2: Commit(s)
 ```
 
 ### Commit Wait

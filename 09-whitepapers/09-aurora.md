@@ -19,116 +19,65 @@ Aurora is a cloud-native relational database that provides:
 
 ### Traditional Database Limitations in the Cloud
 
+```mermaid
+graph TD
+    subgraph Primary["Primary Instance"]
+        BP[Buffer Pool] --> LB[Log Buffer]
+        BP --> DP[("Data Pages<br/>EBS")]
+        LB --> RL[("Redo Log<br/>EBS")]
+    end
+
+    Primary -->|synchronous<br/>replication| Standby["Standby Instance<br/>(Full Copy)"]
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│              Traditional Database Architecture                   │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Primary Instance                                               │
-│  ┌────────────────────────────────────────────────────────┐     │
-│  │                                                         │     │
-│  │   ┌─────────────┐    ┌─────────────┐                   │     │
-│  │   │   Buffer    │───>│    Log      │                   │     │
-│  │   │    Pool     │    │   Buffer    │                   │     │
-│  │   └─────────────┘    └──────┬──────┘                   │     │
-│  │         │                   │                          │     │
-│  │         │                   │                          │     │
-│  │         ▼                   ▼                          │     │
-│  │   ┌─────────────┐    ┌─────────────┐                   │     │
-│  │   │  Data Pages │    │  Redo Log   │                   │     │
-│  │   │   (EBS)     │    │   (EBS)     │                   │     │
-│  │   └─────────────┘    └─────────────┘                   │     │
-│  │                                                         │     │
-│  └────────────────────────────────────────────────────────┘     │
-│                           │                                      │
-│           synchronous     │                                      │
-│           replication     ▼                                      │
-│  ┌────────────────────────────────────────────────────────┐     │
-│  │            Standby Instance (Full Copy)                │     │
-│  └────────────────────────────────────────────────────────┘     │
-│                                                                  │
-│  Problems:                                                      │
-│  1. Network I/O amplification (4x for mirrored EBS)            │
-│  2. Synchronous replication adds latency                        │
-│  3. Crash recovery replays entire redo log                      │
-│  4. Failover takes minutes                                      │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+> **Problems:** 1) Network I/O amplification (4x for mirrored EBS). 2) Synchronous replication adds latency. 3) Crash recovery replays entire redo log. 4) Failover takes minutes.
 
 ### Aurora's Insight
 
+```mermaid
+graph LR
+    subgraph Compute["Database Instance"]
+        BP2[Buffer Pool]
+    end
+
+    subgraph Storage["Storage Service"]
+        SN[("Storage Nodes<br/>apply logs to generate pages")]
+    end
+
+    BP2 -->|redo logs| SN
+    SN -->|pages| BP2
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Aurora's Key Insight                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  "The log is the database"                                      │
-│                                                                  │
-│  Traditional: Write pages + Write logs (2x writes)              │
-│  Aurora:      Write logs only (storage applies them)            │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │                                                           │   │
-│  │   Database Instance        Storage Service               │   │
-│  │   ┌──────────────┐         ┌──────────────────────┐      │   │
-│  │   │              │  logs   │                      │      │   │
-│  │   │   Buffer     │────────>│   Storage Nodes      │      │   │
-│  │   │    Pool      │         │                      │      │   │
-│  │   │              │<────────│   (apply logs to     │      │   │
-│  │   │              │  pages  │    generate pages)   │      │   │
-│  │   └──────────────┘         └──────────────────────┘      │   │
-│  │                                                           │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  Benefits:                                                      │
-│  - Network traffic reduced to just redo logs                    │
-│  - Storage handles durability and replication                   │
-│  - Crash recovery is just storage reconstruction                │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+> **"The log is the database."** Traditional: Write pages + Write logs (2x writes). Aurora: Write logs only (storage applies them).
+> **Benefits:** Network traffic reduced to just redo logs. Storage handles durability and replication. Crash recovery is just storage reconstruction.
 
 ## Architecture
 
 ### Overall System Design
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Aurora Architecture                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │                     Compute Layer                           │ │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │ │
-│  │  │   Writer    │  │   Reader    │  │   Reader    │         │ │
-│  │  │  Instance   │  │  Instance   │  │  Instance   │         │ │
-│  │  │             │  │             │  │             │         │ │
-│  │  │  - Query    │  │  - Query    │  │  - Query    │         │ │
-│  │  │  - Buffer   │  │  - Buffer   │  │  - Buffer   │         │ │
-│  │  │  - Txn Mgmt │  │  - Cache    │  │  - Cache    │         │ │
-│  │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘         │ │
-│  └─────────┼────────────────┼────────────────┼────────────────┘ │
-│            │                │                │                   │
-│            │   redo logs    │   page reads   │                   │
-│            ▼                ▼                ▼                   │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │                     Storage Layer                           │ │
-│  │                                                              │ │
-│  │   AZ-A              AZ-B              AZ-C                  │ │
-│  │  ┌──────┐          ┌──────┐          ┌──────┐               │ │
-│  │  │ Node │          │ Node │          │ Node │               │ │
-│  │  │  1   │          │  3   │          │  5   │               │ │
-│  │  └──────┘          └──────┘          └──────┘               │ │
-│  │  ┌──────┐          ┌──────┐          ┌──────┐               │ │
-│  │  │ Node │          │ Node │          │ Node │               │ │
-│  │  │  2   │          │  4   │          │  6   │               │ │
-│  │  └──────┘          └──────┘          └──────┘               │ │
-│  │                                                              │ │
-│  │  6 copies across 3 AZs = Survives AZ+1 failure              │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph ComputeLayer["Compute Layer"]
+        W["Writer Instance<br/>Query, Buffer, Txn Mgmt"]
+        R1["Reader Instance<br/>Query, Buffer, Cache"]
+        R2["Reader Instance<br/>Query, Buffer, Cache"]
+    end
+
+    subgraph StorageLayer["Storage Layer — 6 copies across 3 AZs"]
+        subgraph AZA["AZ-A"]
+            N1[("Node 1")] & N2[("Node 2")]
+        end
+        subgraph AZB["AZ-B"]
+            N3[("Node 3")] & N4[("Node 4")]
+        end
+        subgraph AZC["AZ-C"]
+            N5[("Node 5")] & N6[("Node 6")]
+        end
+    end
+
+    W -->|redo logs| StorageLayer
+    R1 -->|page reads| StorageLayer
+    R2 -->|page reads| StorageLayer
 ```
 
 ### Storage Segmentation
@@ -599,39 +548,24 @@ class FastFailover:
 
 ### Replica Architecture
 
+```mermaid
+graph TD
+    subgraph Writer
+        WBP[Buffer Pool + Pages]
+    end
+
+    subgraph Reader["Reader(s)"]
+        RBP[Buffer Pool + Pages]
+    end
+
+    SS[("Shared Storage<br/>All replicas share the same volume")]
+
+    WBP -.->|redo logs<br/>async| RBP
+    WBP -->|read pages| SS
+    RBP -->|read pages| SS
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                  Aurora Read Replicas                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Writer                          Readers                        │
-│  ┌──────────────┐               ┌──────────────┐                │
-│  │              │               │              │                │
-│  │  Buffer Pool │               │  Buffer Pool │                │
-│  │              │               │              │                │
-│  │  ┌────────┐  │    redo       │  ┌────────┐  │                │
-│  │  │ Pages  │  │    logs       │  │ Pages  │  │                │
-│  │  │        │──┼───────────────┼─>│        │  │                │
-│  │  └────────┘  │    (async)    │  └────────┘  │                │
-│  │              │               │              │                │
-│  └──────┬───────┘               └──────┬───────┘                │
-│         │                              │                         │
-│         │                              │                         │
-│         │  read pages                  │  read pages             │
-│         │                              │                         │
-│         ▼                              ▼                         │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │                    Shared Storage                         │   │
-│  │                                                           │   │
-│  │   All replicas share the same storage volume!            │   │
-│  │   No data copying between writer and readers.            │   │
-│  │                                                           │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  Replica Lag: Typically < 20ms (log shipping latency)          │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+> **Replica Lag:** Typically less than 20ms (log shipping latency). No data copying between writer and readers.
 
 ### Replica Log Application
 

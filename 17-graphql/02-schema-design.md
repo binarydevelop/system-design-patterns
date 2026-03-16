@@ -10,28 +10,27 @@ Good GraphQL schema design is crucial for API usability, performance, and evolva
 
 ### Think in Graphs, Not Endpoints
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    REST vs GraphQL Thinking                      │
-│                                                                 │
-│   REST (Resource-oriented)          GraphQL (Graph-oriented)    │
-│                                                                 │
-│   /users                            type User {                 │
-│   /users/:id                          id: ID!                   │
-│   /users/:id/posts                    posts: [Post!]!           │
-│   /users/:id/followers                followers: [User!]!       │
-│   /posts                              followersCount: Int!      │
-│   /posts/:id                        }                           │
-│   /posts/:id/comments                                           │
-│   /posts/:id/author                 type Post {                 │
-│                                       id: ID!                   │
-│   Each endpoint = separate           author: User!              │
-│   decision                           comments: [Comment!]!      │
-│                                     }                           │
-│                                                                 │
-│                                     Everything connected,       │
-│                                     traverse as needed          │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    subgraph REST["REST (Resource-oriented)"]
+        R1["/users"]
+        R2["/users/:id"]
+        R3["/users/:id/posts"]
+        R4["/users/:id/followers"]
+        R5["/posts"]
+        R6["/posts/:id"]
+        R7["/posts/:id/comments"]
+        R8["/posts/:id/author"]
+        R9["Each endpoint =<br/>separate decision"]
+    end
+
+    subgraph GQL["GraphQL (Graph-oriented)"]
+        User["User"] -->|posts| Post["Post"]
+        User -->|followers| User
+        Post -->|author| User
+        Post -->|comments| Comment["Comment"]
+        G1["Everything connected,<br/>traverse as needed"]
+    end
 ```
 
 ### Design for Use Cases
@@ -104,31 +103,12 @@ type User {
 
 ### When to Use Nullable
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Nullability Decision Tree                     │
-│                                                                 │
-│   Can this field ever legitimately not have a value?            │
-│                    │                                            │
-│           ┌───────┴───────┐                                     │
-│           │               │                                     │
-│          YES             NO                                     │
-│           │               │                                     │
-│           ▼               ▼                                     │
-│      NULLABLE        NON-NULL (!)                               │
-│                                                                 │
-│   Examples:                                                     │
-│                                                                 │
-│   NULLABLE                        NON-NULL                      │
-│   • avatar (not all users)        • id (always exists)          │
-│   • deletedAt (only if deleted)   • name (required)             │
-│   • parentCategory (root=null)    • createdAt (always set)      │
-│   • nickname (optional)           • posts (empty list ok)       │
-│   • resolverMightFail             • type (known entity type)    │
-│                                                                 │
-│   IMPORTANT: Non-null fields that fail cause partial response   │
-│   nullability. If User.name fails, entire User becomes null.    │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Q{"Can this field ever<br/>legitimately not<br/>have a value?"}
+    Q -->|YES| NUL["NULLABLE<br/>avatar, deletedAt,<br/>parentCategory,<br/>nickname, resolverMightFail"]
+    Q -->|NO| NON["NON-NULL (!)<br/>id, name, createdAt,<br/>posts (empty list ok),<br/>type"]
+    NON --> WARN["Non-null fields that fail<br/>cause partial response nullability.<br/>If User.name fails,<br/>entire User becomes null."]
 ```
 
 ### Error Propagation
@@ -311,33 +291,15 @@ async def resolve_users_connection(
 
 ### Offset vs Cursor Pagination
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Pagination Comparison                         │
-│                                                                 │
-│   OFFSET-BASED (AVOID)                                          │
-│   users(limit: 10, offset: 20)                                  │
-│                                                                 │
-│   Problems:                                                     │
-│   • Expensive for large offsets (DB scans all rows)             │
-│   • Inconsistent with real-time data                            │
-│   • Items can be skipped or duplicated when data changes        │
-│                                                                 │
-│   CURSOR-BASED (RECOMMENDED)                                    │
-│   users(first: 10, after: "xyz")                                │
-│                                                                 │
-│   Benefits:                                                     │
-│   • Consistent pagination (no skips/duplicates)                 │
-│   • Efficient (DB uses index)                                   │
-│   • Works with real-time data                                   │
-│   • Opaque cursors hide implementation                          │
-│                                                                 │
-│   When offset is OK:                                            │
-│   • Small datasets                                              │
-│   • "Jump to page N" requirement                                │
-│   • Admin dashboards with stable data                           │
-└─────────────────────────────────────────────────────────────────┘
-```
+| | Offset-Based (AVOID) | Cursor-Based (RECOMMENDED) |
+|---|---|---|
+| API | `users(limit: 10, offset: 20)` | `users(first: 10, after: "xyz")` |
+| Performance | Expensive for large offsets | Efficient (DB uses index) |
+| Consistency | Items skipped/duplicated on change | No skips/duplicates |
+| Real-time | Inconsistent | Works with real-time data |
+| Implementation | Transparent | Opaque cursors hide implementation |
+
+**When offset is OK:** Small datasets, "Jump to page N" requirement, admin dashboards with stable data
 
 ---
 
@@ -529,26 +491,13 @@ type PostLikedNotification {
 
 ### Interface vs Union Decision
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Interface vs Union                            │
-│                                                                 │
-│   Use INTERFACE when:                                           │
-│   • Types share common fields                                   │
-│   • You want to query common fields without fragments           │
-│   • Types are conceptually similar (is-a relationship)          │
-│   • Example: Article, BlogPost are both Content                 │
-│                                                                 │
-│   Use UNION when:                                               │
-│   • Types have no shared fields                                 │
-│   • Types are conceptually different                            │
-│   • Grouping is for convenience, not inheritance                │
-│   • Example: SearchResult can be User, Post, or Tag            │
-│                                                                 │
-│   Key difference:                                               │
-│   • Interface: "These types ARE this thing"                     │
-│   • Union: "Result could be ANY OF these things"               │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Q{"Do types share<br/>common fields?"}
+    Q -->|YES| INT["Use INTERFACE<br/>Types are conceptually similar<br/>(is-a relationship)<br/>Query common fields without fragments<br/>e.g. Article, BlogPost are both Content"]
+    Q -->|NO| UNI["Use UNION<br/>Types are conceptually different<br/>Grouping for convenience, not inheritance<br/>e.g. SearchResult = User | Post | Tag"]
+    INT --> KI["These types ARE this thing"]
+    UNI --> KU["Result could be ANY OF these things"]
 ```
 
 ---
@@ -679,33 +628,31 @@ type User {
 
 ### Breaking Changes (Avoid)
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Breaking vs Non-Breaking Changes              │
-│                                                                 │
-│   NON-BREAKING (SAFE)                                           │
-│   ✓ Adding new types                                            │
-│   ✓ Adding new fields to existing types                         │
-│   ✓ Adding new enum values                                      │
-│   ✓ Adding new arguments with defaults                          │
-│   ✓ Deprecating fields (they still work)                        │
-│   ✓ Making nullable field non-null (if always had value)        │
-│                                                                 │
-│   BREAKING (AVOID)                                              │
-│   ✗ Removing types                                              │
-│   ✗ Removing fields                                             │
-│   ✗ Removing enum values                                        │
-│   ✗ Renaming types or fields                                    │
-│   ✗ Changing field types                                        │
-│   ✗ Making non-null field nullable                              │
-│   ✗ Adding required arguments without defaults                   │
-│                                                                 │
-│   If breaking change needed:                                    │
-│   1. Add new field with new behavior                            │
-│   2. Deprecate old field                                        │
-│   3. Monitor usage until deprecated field unused                │
-│   4. Remove in future version                                   │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    subgraph SAFE["NON-BREAKING (SAFE)"]
+        S1["Adding new types"]
+        S2["Adding new fields"]
+        S3["Adding new enum values"]
+        S4["Adding args with defaults"]
+        S5["Deprecating fields"]
+        S6["Nullable to non-null<br/>(if always had value)"]
+    end
+
+    subgraph AVOID["BREAKING (AVOID)"]
+        A1["Removing types/fields"]
+        A2["Removing enum values"]
+        A3["Renaming types or fields"]
+        A4["Changing field types"]
+        A5["Non-null to nullable"]
+        A6["Required args without defaults"]
+    end
+
+    AVOID --> MIG["Migration Path"]
+    MIG --> M1["1. Add new field with new behavior"]
+    M1 --> M2["2. Deprecate old field"]
+    M2 --> M3["3. Monitor until unused"]
+    M3 --> M4["4. Remove in future version"]
 ```
 
 ---

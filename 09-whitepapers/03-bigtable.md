@@ -94,45 +94,33 @@ Requirements:
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Bigtable Architecture                                 │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                        Clients                                    │  │
-│   │                          │                                        │  │
-│   │        ┌─────────────────┴─────────────────┐                     │  │
-│   │        ▼                                   ▼                     │  │
-│   │   ┌─────────────┐                    ┌─────────────┐            │  │
-│   │   │  Bigtable   │                    │  Bigtable   │            │  │
-│   │   │  Library    │                    │  Library    │            │  │
-│   │   └─────────────┘                    └─────────────┘            │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                          │                                              │
-│         ┌────────────────┼────────────────┐                            │
-│         ▼                ▼                ▼                            │
-│   ┌──────────────────────────────────────────────────────────────────┐ │
-│   │                    Tablet Servers                                 │ │
-│   │                                                                   │ │
-│   │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │ │
-│   │   │   Tablet    │  │   Tablet    │  │   Tablet    │ ...         │ │
-│   │   │   Server    │  │   Server    │  │   Server    │             │ │
-│   │   └─────────────┘  └─────────────┘  └─────────────┘             │ │
-│   │         │                │                │                       │ │
-│   │         └────────────────┼────────────────┘                       │ │
-│   │                          │                                        │ │
-│   │   Each tablet server manages 10-1000 tablets                     │ │
-│   │   Each tablet: 100-200 MB of data                                │ │
-│   └──────────────────────────────────────────────────────────────────┘ │
-│                          │                                              │
-│         ┌────────────────┼────────────────┐                            │
-│         ▼                ▼                ▼                            │
-│   ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────────┐   │
-│   │   Chubby    │  │   Master    │  │           GFS               │   │
-│   │  (Locking)  │  │  (Tablet    │  │   (Persistent Storage)      │   │
-│   │             │  │  Assignment)│  │                             │   │
-│   └─────────────┘  └─────────────┘  └─────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Clients
+        C1[Client +<br/>Bigtable Library]
+        C2[Client +<br/>Bigtable Library]
+    end
+
+    subgraph TabletServers["Tablet Servers<br/>Each manages 10-1000 tablets, each tablet 100-200 MB"]
+        TS1[Tablet Server]
+        TS2[Tablet Server]
+        TS3[Tablet Server ...]
+    end
+
+    C1 --> TS1
+    C1 --> TS2
+    C2 --> TS2
+    C2 --> TS3
+
+    TS1 --> Chubby[Chubby<br/>Locking]
+    TS1 --> Master[Master<br/>Tablet Assignment]
+    TS1 --> GFS[("GFS<br/>Persistent Storage")]
+    TS2 --> Chubby
+    TS2 --> Master
+    TS2 --> GFS
+    TS3 --> Chubby
+    TS3 --> Master
+    TS3 --> GFS
 ```
 
 ---
@@ -170,47 +158,20 @@ Requirements:
 
 ### Tablet Location
 
+```mermaid
+graph TD
+    L0["Level 0: Chubby File<br/>/bigtable/root_tablet_location"]
+    L1["Level 1: Root Tablet<br/>(METADATA table)<br/>Points to all METADATA tablets"]
+    L2["Level 2: Other METADATA Tablets<br/>Row: table name + end row key<br/>Value: tablet server location"]
+    L3["Level 3: User Tablets<br/>Actual user data"]
+
+    L0 --> L1
+    L1 --> L2
+    L2 --> L3
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Three-Level Tablet Location Hierarchy                 │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                                                                   │  │
-│   │   Level 0: Chubby File                                           │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │ /bigtable/root_tablet_location → Tablet Server X        │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │                          │                                        │  │
-│   │                          ▼                                        │  │
-│   │   Level 1: Root Tablet (part of METADATA table)                  │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │ Row: METADATA tablet key                                 │    │  │
-│   │   │ Value: Location of METADATA tablet                       │    │  │
-│   │   │                                                          │    │  │
-│   │   │ Points to all other METADATA tablets                     │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │                          │                                        │  │
-│   │                          ▼                                        │  │
-│   │   Level 2: Other METADATA Tablets                                │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │ Row: Table name + end row key                            │    │  │
-│   │   │ Value: Tablet server location                            │    │  │
-│   │   │                                                          │    │  │
-│   │   │ Contains location of all user tablets                    │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │                          │                                        │  │
-│   │                          ▼                                        │  │
-│   │   Level 3: User Tablets                                          │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │ Actual user data                                         │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │                                                                   │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│   Client caches tablet locations; cache invalidated on miss            │
-│   3 network round trips for cold cache, 0 for warm cache               │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+
+> Client caches tablet locations; cache invalidated on miss.
+> 3 network round trips for cold cache, 0 for warm cache.
 
 ---
 
@@ -265,49 +226,22 @@ Requirements:
 
 ## Tablet Serving
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Tablet Server Internals                               │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                     Write Path                                    │  │
-│   │                                                                   │  │
-│   │   1. Check authorization (tablet server handles)                 │  │
-│   │   2. Write to commit log (append to GFS)                        │  │
-│   │   3. Insert into memtable (sorted in-memory buffer)             │  │
-│   │                                                                   │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │                    Memtable                              │    │  │
-│   │   │   - Red-black tree or skip list                         │    │  │
-│   │   │   - Recently written data                                │    │  │
-│   │   │   - When full, frozen and flushed to SSTable            │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │                                                                   │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                     Read Path                                     │  │
-│   │                                                                   │  │
-│   │   Merge view of:                                                 │  │
-│   │   1. Memtable (newest data)                                     │  │
-│   │   2. Immutable memtable (being flushed)                         │  │
-│   │   3. SSTables on disk (older data)                              │  │
-│   │                                                                   │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │                                                          │    │  │
-│   │   │    Memtable ──┐                                         │    │  │
-│   │   │               │                                         │    │  │
-│   │   │  Immutable ───┼───▶ Merge Iterator ───▶ Result         │    │  │
-│   │   │  Memtable     │                                         │    │  │
-│   │   │               │                                         │    │  │
-│   │   │  SSTable 1 ───┤                                         │    │  │
-│   │   │  SSTable 2 ───┤                                         │    │  │
-│   │   │  SSTable 3 ───┘                                         │    │  │
-│   │   │                                                          │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │                                                                   │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph WritePath["Write Path"]
+        W1[1. Check authorization] --> W2[2. Write to commit log<br/>append to GFS]
+        W2 --> W3[3. Insert into memtable<br/>sorted in-memory buffer]
+        W3 --> Mem["Memtable<br/>Red-black tree or skip list<br/>When full, frozen and flushed to SSTable"]
+    end
+
+    subgraph ReadPath["Read Path — Merge View"]
+        MemR[Memtable] --> MI[Merge Iterator]
+        ImmMem[Immutable Memtable] --> MI
+        SST1[("SSTable 1")] --> MI
+        SST2[("SSTable 2")] --> MI
+        SST3[("SSTable 3")] --> MI
+        MI --> Result[Result]
+    end
 ```
 
 ### Implementation

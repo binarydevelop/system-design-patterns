@@ -60,44 +60,22 @@ Chubby is a distributed lock service that provides:
 
 ### System Overview
 
+```mermaid
+graph TD
+    subgraph Apps["Client Applications"]
+        GFS[GFS] & BT[BigTable] & MR[MapReduce] & Borg[Borg] & Etc[...]
+    end
+
+    subgraph Cell["Chubby Cell (5 servers, different failure domains)"]
+        Master[Server<br/>Master]
+        R1[Server<br/>Replica] & R2[Server<br/>Replica] & R3[Server<br/>Replica] & R4[Server<br/>Replica]
+        Master <-->|Paxos Consensus| R1 & R2 & R3 & R4
+    end
+
+    GFS & BT & MR & Borg & Etc --> Master
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Chubby Architecture                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Client Applications                                            │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  ┌───────┐  ┌───────┐  ┌───────┐  ┌───────┐  ┌───────┐ │    │
-│  │  │ GFS   │  │BigTable│ │MapReduc│ │ Borg  │  │ ...   │ │    │
-│  │  └───┬───┘  └───┬───┘  └───┬───┘  └───┬───┘  └───┬───┘ │    │
-│  └──────┼──────────┼──────────┼──────────┼──────────┼─────┘    │
-│         │          │          │          │          │           │
-│         └──────────┴──────────┴──────────┴──────────┘           │
-│                              │                                   │
-│                              ▼                                   │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │                    Chubby Cell                            │   │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐                │   │
-│  │  │  Server  │  │  Server  │  │  Server  │                │   │
-│  │  │ (Master) │  │ (Replica)│  │ (Replica)│                │   │
-│  │  └────┬─────┘  └────┬─────┘  └────┬─────┘                │   │
-│  │       │             │             │                       │   │
-│  │       └─────────────┴─────────────┘                       │   │
-│  │                     │                                     │   │
-│  │                 Paxos                                     │   │
-│  │               Consensus                                   │   │
-│  │                                                           │   │
-│  │  ┌──────────┐  ┌──────────┐                              │   │
-│  │  │  Server  │  │  Server  │                              │   │
-│  │  │ (Replica)│  │ (Replica)│  (5 replicas typically)      │   │
-│  │  └──────────┘  └──────────┘                              │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  Chubby Cell = 5 servers in different failure domains           │
-│  One master elected via Paxos, handles all reads/writes         │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+> One master elected via Paxos, handles all reads/writes.
 
 ### Client Library
 
@@ -443,45 +421,24 @@ class Lock:
 
 ### Session Management
 
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant M as Master
+
+    C->>M: KeepAlive
+    M-->>C: Extends lease (lease_timeout)
+    C->>M: KeepAlive
+    M-->>C: Extends lease
+
+    Note over C,M: ... repeated ...
+
+    Note over C: Network partition
+    Note over M: Master waits local_lease<br/>before expiring session
+    Note over M: Session expired,<br/>ephemeral files deleted,<br/>locks released
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                   Chubby Sessions                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Session Lifecycle:                                             │
-│                                                                  │
-│  Client              Master                                     │
-│    │                   │                                        │
-│    │───KeepAlive──────>│                                        │
-│    │                   │ Extends lease                          │
-│    │<──────────────────│                                        │
-│    │     lease_timeout │                                        │
-│    │                   │                                        │
-│    │───KeepAlive──────>│                                        │
-│    │                   │ Extends lease                          │
-│    │<──────────────────│                                        │
-│    │                   │                                        │
-│    │         ...       │                                        │
-│    │                   │                                        │
-│    │     (network      │                                        │
-│    │      partition)   │                                        │
-│    │                   │                                        │
-│    │                   │ Master waits local_lease               │
-│    │                   │ before expiring session                │
-│    │                   │                                        │
-│    │                   │ Session expired,                       │
-│    │                   │ ephemeral files deleted,               │
-│    │                   │ locks released                         │
-│                                                                  │
-│  Lease Timing:                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  Default session lease: 12 seconds                      │    │
-│  │  Client sends KeepAlive well before expiry              │    │
-│  │  Master extends by another lease period                 │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+> **Lease Timing:** Default session lease is 12 seconds. Client sends KeepAlive well before expiry. Master extends by another lease period.
 
 ### KeepAlive Protocol
 
@@ -871,38 +828,24 @@ class ServiceRegistry:
 
 ### Consensus Layer
 
+```mermaid
+sequenceDiagram
+    participant M as Master
+    participant R1 as Replica 1
+    participant R2 as Replica 2
+
+    M->>R1: Prepare(n)
+    M->>R2: Prepare(n)
+    R1-->>M: Promise(n)
+    R2-->>M: Promise(n)
+    M->>R1: Accept(n,v)
+    M->>R2: Accept(n,v)
+    R1-->>M: Accepted(n)
+    R2-->>M: Accepted(n)
+    Note over M: Committed!
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                   Chubby Paxos Layer                            │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Multi-Paxos for Log Replication:                               │
-│                                                                  │
-│  Master               Replica 1           Replica 2             │
-│    │                     │                    │                 │
-│    │───Prepare(n)───────>│                    │                 │
-│    │───Prepare(n)────────┼───────────────────>│                 │
-│    │                     │                    │                 │
-│    │<──Promise(n)────────│                    │                 │
-│    │<──Promise(n)────────┼────────────────────│                 │
-│    │                     │                    │                 │
-│    │───Accept(n,v)──────>│                    │                 │
-│    │───Accept(n,v)───────┼───────────────────>│                 │
-│    │                     │                    │                 │
-│    │<──Accepted(n)───────│                    │                 │
-│    │<──Accepted(n)───────┼────────────────────│                 │
-│    │                     │                    │                 │
-│    │  Committed!         │                    │                 │
-│                                                                  │
-│  Optimizations:                                                 │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  - Stable master skips Prepare phase                    │    │
-│  │  - Batching of operations                               │    │
-│  │  - Pipelining of log entries                            │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+> **Optimizations:** Stable master skips Prepare phase. Batching of operations. Pipelining of log entries.
 
 ### Replication Implementation
 
@@ -1010,40 +953,26 @@ class ChubbyPaxos:
 
 ### Proxy Servers
 
+```mermaid
+graph LR
+    subgraph Clients
+        C1[Client] & C2[Client] & C3[Client] & C4[Client] & C5[Client]
+    end
+
+    subgraph Proxies
+        P1[Proxy]
+        P2[Proxy]
+    end
+
+    CM[Chubby Master]
+
+    C1 & C2 & C3 --> P1
+    C4 & C5 --> P2
+    P1 --> CM
+    P2 --> CM
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Scaling Chubby                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Problem: Thousands of clients hitting 5 servers                │
-│                                                                  │
-│  Solution: Chubby Proxies                                       │
-│                                                                  │
-│  Clients           Proxies              Chubby Cell             │
-│  ┌─────┐          ┌───────┐                                     │
-│  │  C  │─────────>│       │                                     │
-│  ├─────┤          │       │          ┌───────────────────┐      │
-│  │  C  │─────────>│ Proxy │─────────>│                   │      │
-│  ├─────┤          │       │          │   Chubby Master   │      │
-│  │  C  │─────────>│       │          │                   │      │
-│  └─────┘          └───────┘          └───────────────────┘      │
-│                                                                  │
-│  ┌─────┐          ┌───────┐                                     │
-│  │  C  │─────────>│       │                                     │
-│  ├─────┤          │ Proxy │─────────────────────────────────┘   │
-│  │  C  │─────────>│       │                                     │
-│  └─────┘          └───────┘                                     │
-│                                                                  │
-│  Proxy Functionality:                                           │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │  - Aggregate KeepAlives from many clients               │    │
-│  │  - Cache commonly accessed data                         │    │
-│  │  - Handle read requests locally                         │    │
-│  │  - Forward writes to master                             │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+> **Proxy Functionality:** Aggregate KeepAlives from many clients. Cache commonly accessed data. Handle read requests locally. Forward writes to master.
 
 ### Partitioning
 

@@ -58,48 +58,25 @@ Traditional RDBMS couldn't meet these requirements:
 
 ## System Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Dynamo Architecture                                   │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                     Client Request                                │  │
-│   │                          │                                        │  │
-│   │                          ▼                                        │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │              Request Coordinator                         │    │  │
-│   │   │   (Any node can coordinate any request)                 │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   │                          │                                        │  │
-│   │                          ▼                                        │  │
-│   │   ┌─────────────────────────────────────────────────────────┐    │  │
-│   │   │              Consistent Hash Ring                        │    │  │
-│   │   │                                                          │    │  │
-│   │   │        Node A            Node B            Node C        │    │  │
-│   │   │          ●─────────────────●─────────────────●           │    │  │
-│   │   │         ╱                   ╲               ╱            │    │  │
-│   │   │        ╱                     ╲             ╱             │    │  │
-│   │   │       ●───────────────────────●───────────●              │    │  │
-│   │   │    Node F                 Node E       Node D            │    │  │
-│   │   │                                                          │    │  │
-│   │   │    Key maps to position → stored on next N nodes         │    │  │
-│   │   └─────────────────────────────────────────────────────────┘    │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │                     Per-Node Components                           │  │
-│   │                                                                   │  │
-│   │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │  │
-│   │   │  Request    │  │  Membership │  │  Failure    │             │  │
-│   │   │  Handler    │  │  (Gossip)   │  │  Detection  │             │  │
-│   │   └─────────────┘  └─────────────┘  └─────────────┘             │  │
-│   │                                                                   │  │
-│   │   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │  │
-│   │   │  Storage    │  │  Vector     │  │  Merkle     │             │  │
-│   │   │  Engine     │  │  Clocks     │  │  Trees      │             │  │
-│   │   └─────────────┘  └─────────────┘  └─────────────┘             │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Client[Client Request]
+    Client --> Coord[Request Coordinator<br/>Any node can coordinate any request]
+    Coord --> Ring[Consistent Hash Ring<br/>Key maps to position, stored on next N nodes]
+
+    Ring --> A[Node A]
+    Ring --> B[Node B]
+    Ring --> C[Node C]
+    Ring --> D[Node D]
+    Ring --> E[Node E]
+    Ring --> F[Node F]
+
+    subgraph PerNode["Per-Node Components"]
+        RH[Request Handler] & Mem[Membership<br/>Gossip] & FD[Failure Detection]
+        SE[("Storage Engine")] & VC[Vector Clocks] & MT[Merkle Trees]
+    end
+
+    A --- PerNode
 ```
 
 ---

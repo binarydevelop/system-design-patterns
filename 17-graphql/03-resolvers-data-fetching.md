@@ -10,33 +10,24 @@ Resolvers are functions that fetch data for GraphQL fields. The key challenge is
 
 ### How Resolvers Work
 
+```mermaid
+graph TD
+    QU["Query.user(id: '1')"] --> UN["User.name<br/>(default resolver)"]
+    QU --> UP["User.posts<br/>(fetches posts)"]
+    UP --> PT["Post.title<br/>(default resolver)"]
+    UP --> PA["Post.author<br/>(fetches user)"]
+    PA --> UN2["User.name<br/>(default resolver)"]
+
+    style QU fill:#f9f,stroke:#333
+    style UP fill:#bbf,stroke:#333
+    style PA fill:#bbf,stroke:#333
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Resolver Execution                            │
-│                                                                 │
-│   Query:                                                        │
-│   {                                                             │
-│     user(id: "1") {       ◄─── Query.user resolver              │
-│       name                ◄─── User.name resolver (default)     │
-│       posts {             ◄─── User.posts resolver              │
-│         title             ◄─── Post.title resolver (default)    │
-│         author {          ◄─── Post.author resolver             │
-│           name            ◄─── User.name resolver (default)     │
-│         }                                                       │
-│       }                                                         │
-│     }                                                           │
-│   }                                                             │
-│                                                                 │
-│   Execution order (depth-first):                                │
-│   1. Query.user(id: "1")                                        │
-│   2. User.name (uses parent object)                             │
-│   3. User.posts (fetches posts)                                 │
-│   4. For each post:                                             │
-│      - Post.title (uses parent)                                 │
-│      - Post.author (fetches user)                               │
-│      - User.name (uses parent)                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+**Execution order (depth-first):**
+1. `Query.user(id: "1")`
+2. `User.name` (uses parent object)
+3. `User.posts` (fetches posts)
+4. For each post: `Post.title` (uses parent), `Post.author` (fetches user), `User.name` (uses parent)
 
 ### Resolver Function Signature
 
@@ -107,39 +98,21 @@ async def resolve_full_name(user, info):
 
 ### Understanding the Problem
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    N+1 Problem Illustrated                       │
-│                                                                 │
-│   Query:                                                        │
-│   {                                                             │
-│     posts(first: 10) {                                          │
-│       title                                                     │
-│       author {                                                  │
-│         name                                                    │
-│       }                                                         │
-│     }                                                           │
-│   }                                                             │
-│                                                                 │
-│   Without batching - 11 queries:                                │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │ 1. SELECT * FROM posts LIMIT 10                          │  │
-│   │ 2. SELECT * FROM users WHERE id = 1  ─┐                  │  │
-│   │ 3. SELECT * FROM users WHERE id = 2   │                  │  │
-│   │ 4. SELECT * FROM users WHERE id = 3   │ N queries        │  │
-│   │ 5. SELECT * FROM users WHERE id = 1   │ (duplicates!)    │  │
-│   │ 6. SELECT * FROM users WHERE id = 4   │                  │  │
-│   │ 7. SELECT * FROM users WHERE id = 2   │                  │  │
-│   │ 8. SELECT * FROM users WHERE id = 5  ─┘                  │  │
-│   │ ...                                                      │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│   With DataLoader - 2 queries:                                  │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │ 1. SELECT * FROM posts LIMIT 10                          │  │
-│   │ 2. SELECT * FROM users WHERE id IN (1, 2, 3, 4, 5)       │  │
-│   └─────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph WITHOUT["Without Batching - 11 queries"]
+        W1["1. SELECT * FROM posts LIMIT 10"]
+        W1 --> W2["2. SELECT * FROM users WHERE id = 1"]
+        W1 --> W3["3. SELECT * FROM users WHERE id = 2"]
+        W1 --> W4["4. SELECT * FROM users WHERE id = 3"]
+        W1 --> W5["5. SELECT * FROM users WHERE id = 1<br/>(duplicate!)"]
+        W1 --> W6["... N queries with duplicates"]
+    end
+
+    subgraph WITH["With DataLoader - 2 queries"]
+        D1["1. SELECT * FROM posts LIMIT 10"]
+        D1 --> D2["2. SELECT * FROM users<br/>WHERE id IN (1, 2, 3, 4, 5)"]
+    end
 ```
 
 ### Naive Implementation (Problem)
@@ -173,35 +146,24 @@ const resolvers = {
 
 ### How DataLoader Works
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    DataLoader Execution                          │
-│                                                                 │
-│   Resolver calls during single tick:                            │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │ userLoader.load(1)  ───┐                                 │  │
-│   │ userLoader.load(2)  ───┤                                 │  │
-│   │ userLoader.load(3)  ───┼──► Collected in queue           │  │
-│   │ userLoader.load(1)  ───┤    (deduplicated)               │  │
-│   │ userLoader.load(4)  ───┘                                 │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                              │                                  │
-│                              ▼                                  │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │ End of tick: Batch function called                       │  │
-│   │ batchLoadUsers([1, 2, 3, 4])  // Single query            │  │
-│   └─────────────────────────────────────────────────────────┘  │
-│                              │                                  │
-│                              ▼                                  │
-│   ┌─────────────────────────────────────────────────────────┐  │
-│   │ Results distributed to waiting promises                  │  │
-│   │ load(1) → User 1                                        │  │
-│   │ load(2) → User 2                                        │  │
-│   │ load(3) → User 3                                        │  │
-│   │ load(1) → User 1  (from cache)                          │  │
-│   │ load(4) → User 4                                        │  │
-│   └─────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph COLLECT["Resolver calls during single tick"]
+        L1["userLoader.load(1)"]
+        L2["userLoader.load(2)"]
+        L3["userLoader.load(3)"]
+        L4["userLoader.load(1)"]
+        L5["userLoader.load(4)"]
+    end
+
+    L1 & L2 & L3 & L4 & L5 --> Q["Collected in queue<br/>(deduplicated)"]
+    Q --> BATCH["End of tick: Batch function called<br/>batchLoadUsers([1, 2, 3, 4])<br/>Single query"]
+
+    BATCH --> R1["load(1) -> User 1"]
+    BATCH --> R2["load(2) -> User 2"]
+    BATCH --> R3["load(3) -> User 3"]
+    BATCH --> R4["load(1) -> User 1 (from cache)"]
+    BATCH --> R5["load(4) -> User 4"]
 ```
 
 ### JavaScript Implementation

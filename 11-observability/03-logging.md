@@ -28,36 +28,24 @@ Problem: Doesn't scale, logs lost when containers die
 
 ### After: Centralized Logging
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Applications                              │
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐            │
-│  │Service A│  │Service A│  │Service B│  │Service C│            │
-│  │ Node 1  │  │ Node 2  │  │ Node 1  │  │ Node 1  │            │
-│  └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘            │
-│       │            │            │            │                   │
-└───────┼────────────┼────────────┼────────────┼───────────────────┘
-        │            │            │            │
-        └────────────┼────────────┼────────────┘
-                     │            │
-                     ▼            ▼
-              ┌─────────────────────────┐
-              │     Log Aggregator      │
-              │   (Fluentd, Logstash)   │
-              └───────────┬─────────────┘
-                          │
-                          ▼
-              ┌─────────────────────────┐
-              │     Search/Storage      │
-              │ (Elasticsearch, Loki)   │
-              └───────────┬─────────────┘
-                          │
-                          ▼
-              ┌─────────────────────────┐
-              │      Visualization      │
-              │   (Kibana, Grafana)     │
-              └─────────────────────────┘
+```mermaid
+graph TD
+    subgraph Applications
+        SA1[Service A<br/>Node 1]
+        SA2[Service A<br/>Node 2]
+        SB1[Service B<br/>Node 1]
+        SC1[Service C<br/>Node 1]
+    end
 
+    SA1 --> Agg["Log Aggregator<br/>(Fluentd, Logstash)"]
+    SA2 --> Agg
+    SB1 --> Agg
+    SC1 --> Agg
+    Agg --> Store[("Search/Storage<br/>(Elasticsearch, Loki)")]
+    Store --> Viz["Visualization<br/>(Kibana, Grafana)"]
+```
+
+```
 Now: Single pane of glass for all logs
 ```
 
@@ -387,77 +375,30 @@ structlog.configure(
 
 ### ELK Stack (Elasticsearch, Logstash, Kibana)
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Applications                              │
-│                                                                 │
-│  stdout/stderr → Container Runtime → Log Files                  │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                         Filebeat                                │
-│  - Tails log files                                              │
-│  - Adds metadata (host, container)                              │
-│  - Handles backpressure                                         │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                         Logstash                                │
-│  - Parse/transform                                              │
-│  - Enrich (GeoIP, etc.)                                         │
-│  - Route to destinations                                        │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Elasticsearch                              │
-│  - Index and store                                              │
-│  - Full-text search                                             │
-│  - Aggregations                                                 │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                          Kibana                                 │
-│  - Search UI                                                    │
-│  - Dashboards                                                   │
-│  - Alerting                                                     │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Apps["Applications<br/>stdout/stderr → Container Runtime → Log Files"]
+    FB["Filebeat<br/>Tails log files<br/>Adds metadata (host, container)<br/>Handles backpressure"]
+    LS["Logstash<br/>Parse/transform<br/>Enrich (GeoIP, etc.)<br/>Route to destinations"]
+    ES[("Elasticsearch<br/>Index and store<br/>Full-text search<br/>Aggregations")]
+    KB["Kibana<br/>Search UI<br/>Dashboards<br/>Alerting"]
+
+    Apps --> FB --> LS --> ES --> KB
 ```
 
 ### Grafana Loki (Lightweight Alternative)
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Applications                              │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                         Promtail                                │
-│  - Discovers targets (like Prometheus)                          │
-│  - Extracts labels                                              │
-│  - Ships to Loki                                                │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                           Loki                                  │
-│  - Indexes only labels (not full text)                          │
-│  - Stores compressed log chunks                                 │
-│  - Much cheaper than Elasticsearch                              │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                         Grafana                                 │
-│  - LogQL queries                                                │
-│  - Correlate with metrics                                       │
-│  - Unified observability                                        │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Apps[Applications]
+    PT["Promtail<br/>Discovers targets<br/>Extracts labels<br/>Ships to Loki"]
+    Loki[("Loki<br/>Indexes only labels<br/>Stores compressed log chunks<br/>Much cheaper than Elasticsearch")]
+    Grafana["Grafana<br/>LogQL queries<br/>Correlate with metrics<br/>Unified observability"]
 
+    Apps --> PT --> Loki --> Grafana
+```
+
+```
 Loki vs Elasticsearch:
 - Loki: Lower cost, simpler, label-based queries
 - Elasticsearch: Full-text search, more powerful queries
@@ -469,36 +410,16 @@ Loki vs Elasticsearch:
 
 ### Tiered Storage
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│  Hot Storage (SSD)                                              │
-│  - Last 3 days                                                  │
-│  - Fast queries                                                 │
-│  - Expensive                                                    │
-└────────────────────────────────────────────────────────────────┘
-                              │
-                              │ Automatic migration
-                              ▼
-┌────────────────────────────────────────────────────────────────┐
-│  Warm Storage (HDD)                                             │
-│  - 3-30 days                                                    │
-│  - Slower queries                                               │
-│  - Moderate cost                                                │
-└────────────────────────────────────────────────────────────────┘
-                              │
-                              │ Automatic migration
-                              ▼
-┌────────────────────────────────────────────────────────────────┐
-│  Cold Storage (S3/Glacier)                                      │
-│  - 30 days - 1 year                                             │
-│  - Very slow retrieval                                          │
-│  - Cheapest                                                     │
-│  - Compliance/audit purposes                                    │
-└────────────────────────────────────────────────────────────────┘
-                              │
-                              │ Delete after retention period
-                              ▼
-                           🗑️ Deleted
+```mermaid
+graph TD
+    Hot["Hot Storage (SSD)<br/>Last 3 days<br/>Fast queries<br/>Expensive"]
+    Warm["Warm Storage (HDD)<br/>3-30 days<br/>Slower queries<br/>Moderate cost"]
+    Cold[("Cold Storage (S3/Glacier)<br/>30 days - 1 year<br/>Very slow retrieval<br/>Cheapest<br/>Compliance/audit")]
+    Del[Deleted]
+
+    Hot -->|Automatic migration| Warm
+    Warm -->|Automatic migration| Cold
+    Cold -->|Delete after retention period| Del
 ```
 
 ### Retention Policies

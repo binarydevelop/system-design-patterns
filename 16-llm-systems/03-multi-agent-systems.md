@@ -10,22 +10,15 @@ Multi-agent systems coordinate multiple specialized LLM agents to solve complex 
 
 Single agents hit fundamental limits when facing complex, multi-faceted tasks:
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    SINGLE AGENT LIMITATIONS                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Context Window Limits     Expertise Breadth      Task Complexity│
-│  ┌─────────────────┐      ┌─────────────────┐    ┌─────────────┐│
-│  │ ████████████████│      │ Shallow across  │    │ Sequential  ││
-│  │ ████████████████│      │ many domains    │    │ bottleneck  ││
-│  │ █████ FULL █████│      │ vs. deep in few │    │ on complex  ││
-│  │ ████████████████│      │                 │    │ workflows   ││
-│  └─────────────────┘      └─────────────────┘    └─────────────┘│
-│                                                                  │
-│  Solution: Divide and conquer with specialized agents            │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    subgraph LIMITS["SINGLE AGENT LIMITATIONS"]
+        CW["Context Window<br/>Limits<br/>(FULL)"]
+        EB["Expertise Breadth<br/>Shallow across many<br/>vs. deep in few"]
+        TC["Task Complexity<br/>Sequential bottleneck<br/>on complex workflows"]
+    end
+
+    LIMITS -->|Solution| SOL["Divide and conquer<br/>with specialized agents"]
 ```
 
 ---
@@ -36,36 +29,14 @@ Single agents hit fundamental limits when facing complex, multi-faceted tasks:
 
 A supervisor agent coordinates specialized worker agents:
 
-```
-                    ┌──────────────────┐
-                    │   SUPERVISOR     │
-                    │   AGENT          │
-                    │  ┌────────────┐  │
-                    │  │ Task       │  │
-                    │  │ Decomposer │  │
-                    │  │ + Router   │  │
-                    │  └────────────┘  │
-                    └────────┬─────────┘
-                             │
-           ┌─────────────────┼─────────────────┐
-           │                 │                 │
-           ▼                 ▼                 ▼
-    ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-    │   RESEARCH   │  │    CODE      │  │   REVIEW     │
-    │   AGENT      │  │    AGENT     │  │   AGENT      │
-    │              │  │              │  │              │
-    │ - Web search │  │ - Write code │  │ - Code review│
-    │ - Summarize  │  │ - Debug      │  │ - Security   │
-    │ - Cite       │  │ - Test       │  │ - Best practs│
-    └──────────────┘  └──────────────┘  └──────────────┘
-           │                 │                 │
-           └─────────────────┼─────────────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │   AGGREGATED     │
-                    │   RESULT         │
-                    └──────────────────┘
+```mermaid
+graph TD
+    SUP["SUPERVISOR AGENT<br/>Task Decomposer + Router"]
+    SUP --> RES["RESEARCH AGENT<br/>Web search, Summarize, Cite"]
+    SUP --> CODE["CODE AGENT<br/>Write code, Debug, Test"]
+    SUP --> REV["REVIEW AGENT<br/>Code review, Security, Best practices"]
+
+    RES & CODE & REV --> AGG["AGGREGATED RESULT"]
 ```
 
 ```python
@@ -177,32 +148,15 @@ class ResearchAgent:
 
 Agents communicate directly without central coordination:
 
+```mermaid
+graph TD
+    PLAN["PLANNER AGENT"] <-->|direct| EXEC["EXECUTOR AGENT"]
+    CRITIC["CRITIC AGENT"] <-->|direct| MEM["MEMORY AGENT"]
+
+    PLAN & EXEC & CRITIC & MEM <-->|MESSAGE BUS| BUS["Message Bus"]
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                  PEER-TO-PEER MULTI-AGENT                        │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│     ┌──────────────┐◄────────────────►┌──────────────┐          │
-│     │   PLANNER    │                  │   EXECUTOR   │          │
-│     │   AGENT      │                  │   AGENT      │          │
-│     └──────┬───────┘                  └──────┬───────┘          │
-│            │                                  │                  │
-│            │         MESSAGE BUS              │                  │
-│     ═══════╪══════════════════════════════════╪═══════          │
-│            │                                  │                  │
-│     ┌──────┴───────┐                  ┌──────┴───────┐          │
-│     │   CRITIC     │◄────────────────►│   MEMORY     │          │
-│     │   AGENT      │                  │   AGENT      │          │
-│     └──────────────┘                  └──────────────┘          │
-│                                                                  │
-│  Each agent can:                                                 │
-│  • Broadcast messages to all agents                              │
-│  • Send direct messages to specific agents                       │
-│  • Request help from other agents                                │
-│  • Vote on decisions                                             │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+Each agent can: broadcast messages to all, send direct messages, request help, vote on decisions
 
 ```python
 import asyncio
@@ -349,36 +303,26 @@ class CriticAgent(PeerAgent):
 
 Multiple agents debate to improve output quality:
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    ADVERSARIAL DEBATE                            │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Round 1:                                                        │
-│  ┌──────────────┐         ┌──────────────┐                      │
-│  │  PROPOSER    │────────►│  CHALLENGER  │                      │
-│  │  "Solution A │         │  "But what   │                      │
-│  │   is best"   │◄────────│   about X?"  │                      │
-│  └──────────────┘         └──────────────┘                      │
-│         │                        │                               │
-│         ▼                        ▼                               │
-│  Round 2:                                                        │
-│  ┌──────────────┐         ┌──────────────┐                      │
-│  │  "Good point,│         │  "Still, Y   │                      │
-│  │   refined    │◄───────►│   remains    │                      │
-│  │   solution"  │         │   unsolved"  │                      │
-│  └──────────────┘         └──────────────┘                      │
-│         │                        │                               │
-│         └──────────┬─────────────┘                               │
-│                    ▼                                             │
-│            ┌──────────────┐                                      │
-│            │    JUDGE     │                                      │
-│            │   AGENT      │                                      │
-│            │  (decides    │                                      │
-│            │   winner)    │                                      │
-│            └──────────────┘                                      │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant P as Proposer
+    participant CH as Challenger
+    participant J as Judge
+
+    Note over P,CH: Round 1
+    P->>CH: Solution A is best
+    CH->>P: But what about X?
+
+    Note over P,CH: Round 2
+    P->>CH: Good point, refined solution
+    CH->>P: Still, Y remains unsolved
+
+    Note over P,CH: ... more rounds ...
+
+    P->>J: Final positions
+    CH->>J: Final positions
+    Note over J: Evaluates and decides winner
+    J->>P: Synthesized answer
 ```
 
 ```python
@@ -490,29 +434,19 @@ class JudgeAgent:
 
 Sequential processing with specialized stages:
 
+```mermaid
+graph LR
+    IN["Input"] --> INTAKE["INTAKE AGENT<br/>Parse & validate"]
+    INTAKE --> PROCESS["PROCESS AGENT<br/>Core transform"]
+    PROCESS --> REFINE["REFINE AGENT<br/>Polish & format"]
+    REFINE --> QUALITY["QUALITY AGENT<br/>Verify & check"]
+    QUALITY --> OUT["Output"]
+
+    QUALITY -.->|reject| REFINE
+    REFINE -.->|reject| PROCESS
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    ASSEMBLY LINE PIPELINE                        │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Input ──►┌─────────┐──►┌─────────┐──►┌─────────┐──►┌─────────┐ │
-│           │ INTAKE  │   │ PROCESS │   │ REFINE  │   │ QUALITY │ │
-│           │ AGENT   │   │ AGENT   │   │ AGENT   │   │ AGENT   │ │
-│           │         │   │         │   │         │   │         │ │
-│           │ Parse & │   │ Core    │   │ Polish  │   │ Verify  │ │
-│           │ validate│   │ transform   │ & format│   │ & check │ │
-│           └─────────┘   └─────────┘   └─────────┘   └────┬────┘ │
-│                                                          │      │
-│                                                          ▼      │
-│                                                       Output    │
-│                                                                  │
-│  Each stage:                                                     │
-│  • Has specific responsibility                                   │
-│  • Can reject/return to previous stage                          │
-│  • Adds metadata for next stage                                  │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+Each stage: has specific responsibility, can reject/return to previous stage, adds metadata for next stage
 
 ```python
 from abc import ABC, abstractmethod
@@ -676,31 +610,13 @@ class ConversationProtocol:
 
 ### Shared Memory / Blackboard Pattern
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     BLACKBOARD PATTERN                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│                    ┌─────────────────────┐                       │
-│                    │     BLACKBOARD      │                       │
-│                    │  (Shared Memory)    │                       │
-│                    │                     │                       │
-│                    │  ┌───────────────┐  │                       │
-│                    │  │ Problem State │  │                       │
-│                    │  ├───────────────┤  │                       │
-│                    │  │ Partial Solns │  │                       │
-│                    │  ├───────────────┤  │                       │
-│                    │  │ Control Data  │  │                       │
-│                    │  └───────────────┘  │                       │
-│                    └──────────┬──────────┘                       │
-│           ┌───────────────────┼───────────────────┐              │
-│           │          read/write                   │              │
-│     ┌─────┴─────┐     ┌─────┴─────┐     ┌───────┴───────┐       │
-│     │  AGENT A  │     │  AGENT B  │     │    AGENT C    │       │
-│     │ Specialist│     │ Specialist│     │   Specialist  │       │
-│     └───────────┘     └───────────┘     └───────────────┘       │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    BB[("BLACKBOARD<br/>(Shared Memory)<br/>Problem State<br/>Partial Solutions<br/>Control Data")]
+
+    AA["AGENT A<br/>Specialist"] <-->|read/write| BB
+    AB["AGENT B<br/>Specialist"] <-->|read/write| BB
+    AC["AGENT C<br/>Specialist"] <-->|read/write| BB
 ```
 
 ```python

@@ -8,30 +8,22 @@ LLM agents combine language models with tools, memory, and planning capabilities
 
 ## What Makes an Agent Different from a Chatbot?
 
-```
-Chatbot:
-┌─────────┐     ┌─────────┐     ┌─────────┐
-│  User   │────►│   LLM   │────►│Response │
-│  Input  │     │         │     │         │
-└─────────┘     └─────────┘     └─────────┘
-    Single turn, no actions, no memory
+```mermaid
+graph LR
+    subgraph CHATBOT["Chatbot"]
+        UI1["User Input"] --> LLM1["LLM"] --> R1["Response"]
+    end
 
-Agent:
-┌─────────┐     ┌─────────────────────────────────────────────────┐
-│  User   │────►│                    Agent                        │
-│  Goal   │     │                                                 │
-└─────────┘     │  ┌─────────┐   ┌─────────┐   ┌─────────────┐   │
-                │  │  Plan   │──►│  Act    │──►│   Observe   │   │
-                │  │         │   │  (Tool) │   │   Results   │   │
-                │  └────▲────┘   └─────────┘   └──────┬──────┘   │
-                │       │                             │          │
-                │       └─────────────────────────────┘          │
-                │              Loop until goal achieved          │
-                │                                                 │
-                │  ┌─────────┐   ┌─────────┐   ┌─────────────┐   │
-                │  │ Memory  │   │  Tools  │   │   Context   │   │
-                │  └─────────┘   └─────────┘   └─────────────┘   │
-                └─────────────────────────────────────────────────┘
+    subgraph AGENT["Agent"]
+        UG["User Goal"] --> Plan["Plan"]
+        Plan --> Act["Act<br/>(Tool)"]
+        Act --> Observe["Observe<br/>Results"]
+        Observe -->|Loop until<br/>goal achieved| Plan
+
+        Memory[("Memory")] -.-> Plan
+        Tools["Tools"] -.-> Act
+        Context["Context"] -.-> Plan
+    end
 ```
 
 ### Key Differences
@@ -51,31 +43,13 @@ Agent:
 
 ### Core Components
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                            AGENT                                     │
-│                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │                     BRAIN (LLM)                              │   │
-│  │                                                              │   │
-│  │  • Reasoning and planning                                    │   │
-│  │  • Natural language understanding                            │   │
-│  │  • Decision making                                           │   │
-│  │  • Tool selection                                            │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│                              │                                       │
-│         ┌────────────────────┼────────────────────┐                 │
-│         ▼                    ▼                    ▼                 │
-│  ┌─────────────┐     ┌─────────────┐     ┌─────────────────┐       │
-│  │   MEMORY    │     │    TOOLS    │     │    PLANNING     │       │
-│  │             │     │             │     │                 │       │
-│  │ • Working   │     │ • Search    │     │ • Goal decomp.  │       │
-│  │ • Short-term│     │ • Code exec │     │ • Task ordering │       │
-│  │ • Long-term │     │ • APIs      │     │ • Backtracking  │       │
-│  │ • Episodic  │     │ • Browser   │     │ • Re-planning   │       │
-│  └─────────────┘     └─────────────┘     └─────────────────┘       │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    BRAIN["BRAIN (LLM)<br/>Reasoning, NLU,<br/>Decision making,<br/>Tool selection"]
+
+    BRAIN --> MEMORY[("MEMORY<br/>Working, Short-term,<br/>Long-term, Episodic")]
+    BRAIN --> TOOLS["TOOLS<br/>Search, Code exec,<br/>APIs, Browser"]
+    BRAIN --> PLANNING["PLANNING<br/>Goal decomposition,<br/>Task ordering,<br/>Backtracking, Re-planning"]
 ```
 
 ### Basic Agent Loop
@@ -309,31 +283,15 @@ class OpenAIAgent:
 
 ### Tool Categories
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         TOOL TAXONOMY                                │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  INFORMATION RETRIEVAL        COMPUTATION                           │
-│  ├── Web search               ├── Calculator                       │
-│  ├── Database query           ├── Code interpreter                 │
-│  ├── Document search          ├── Data analysis                    │
-│  ├── Knowledge base           └── Scientific computing             │
-│  └── API calls                                                      │
-│                                                                     │
-│  INTERACTION                  CONTENT CREATION                      │
-│  ├── Browser automation       ├── Text generation                  │
-│  ├── Email sending            ├── Image generation                 │
-│  ├── File operations          ├── Code generation                  │
-│  └── System commands          └── Document formatting              │
-│                                                                     │
-│  MEMORY & STATE               SPECIALIZED                           │
-│  ├── Save to memory           ├── Domain-specific APIs             │
-│  ├── Recall from memory       ├── Enterprise connectors            │
-│  ├── Update context           └── Custom tools                     │
-│  └── Manage state                                                   │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    TT["TOOL TAXONOMY"]
+    TT --> IR["INFORMATION RETRIEVAL<br/>Web search, DB query,<br/>Document search,<br/>Knowledge base, API calls"]
+    TT --> COMP["COMPUTATION<br/>Calculator, Code interpreter,<br/>Data analysis,<br/>Scientific computing"]
+    TT --> INT["INTERACTION<br/>Browser automation,<br/>Email sending,<br/>File operations,<br/>System commands"]
+    TT --> CC["CONTENT CREATION<br/>Text generation,<br/>Image generation,<br/>Code generation,<br/>Document formatting"]
+    TT --> MS["MEMORY & STATE<br/>Save/recall from memory,<br/>Update context,<br/>Manage state"]
+    TT --> SP["SPECIALIZED<br/>Domain-specific APIs,<br/>Enterprise connectors,<br/>Custom tools"]
 ```
 
 ---
@@ -342,30 +300,12 @@ class OpenAIAgent:
 
 ### Memory Types
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        AGENT MEMORY                                  │
-│                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │                    WORKING MEMORY                            │   │
-│  │                                                              │   │
-│  │  Current context window (conversation + recent steps)        │   │
-│  │  Limited by LLM context length                               │   │
-│  │  Most relevant for current task                              │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│                              │                                       │
-│                              ▼                                       │
-│  ┌─────────────────────┐  ┌─────────────────────┐                  │
-│  │   SHORT-TERM        │  │    LONG-TERM        │                  │
-│  │                     │  │                     │                  │
-│  │  • Recent messages  │  │  • User preferences │                  │
-│  │  • Current session  │  │  • Past learnings   │                  │
-│  │  • Task progress    │  │  • Knowledge base   │                  │
-│  │                     │  │  • Episodic memory  │                  │
-│  │  Storage: In-memory │  │  Storage: Vector DB │                  │
-│  └─────────────────────┘  └─────────────────────┘                  │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    WM["WORKING MEMORY<br/>Current context window<br/>Limited by LLM context length<br/>Most relevant for current task"]
+
+    WM --> ST["SHORT-TERM<br/>Recent messages<br/>Current session<br/>Task progress<br/>Storage: In-memory"]
+    WM --> LT[("LONG-TERM<br/>User preferences<br/>Past learnings<br/>Knowledge base<br/>Episodic memory<br/>Storage: Vector DB")]
 ```
 
 ### Memory Implementation
