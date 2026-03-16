@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Completion-based tools (Copilot, Codeium) are autocomplete at scale — they predict the next token in an editor buffer with zero tool access and zero autonomy. Agent-based tools (Claude Code, Codex CLI, Devin) are autonomous software-executing loops that read files, run shells, search codebases, and iterate on failures with multi-step planning. These are not points on the same spectrum; they are fundamentally different architectures with fundamentally different failure mode profiles. Completions fail silently by producing plausible-but-wrong code that humans accept without review. Agents fail noisily with tool errors, test failures, and explicit uncertainty — but carry the risk of arbitrary code execution. Understanding this distinction is prerequisite to deploying either effectively.
+Completion-based tools (Copilot, Codeium) are autocomplete at scale — they predict the next token in an editor buffer with zero tool access and zero autonomy. Agent-based tools (Claude Code, Codex CLI, Devin) are autonomous software-executing loops that read files, run shells, search codebases, and iterate on failures with multi-step planning. These are not points on the same spectrum; they are fundamentally different architectures with fundamentally different failure mode profiles. Completions fail silently by producing plausible-but-wrong code that humans accept without review. Agents fail noisily with tool errors, test failures, and explicit uncertainty — but carry the risk of arbitrary code execution [1]. Understanding this distinction is prerequisite to deploying either effectively.
 
 > Cross-reference: For the general agent loop (Perceive → Think → Act → Observe → Repeat), see [`16-llm-systems/01-agent-fundamentals.md`](../16-llm-systems/01-agent-fundamentals.md). This article focuses on the tool design, execution model, and security boundaries specific to **development** agents.
 
@@ -62,7 +62,7 @@ graph TB
 
 ### Key Insight
 
-The transition from completion to agentic is not incremental. It is a phase change. A completion tool cannot "evolve" into an agent — the trust model, execution model, and failure characteristics are architecturally incompatible. Cursor straddles this boundary by offering both Tab (completion) and Agent (agentic) modes, but these are separate subsystems, not a continuum.
+The transition from completion to agentic is not incremental. It is a phase change. A completion tool cannot "evolve" into an agent — the trust model, execution model, and failure characteristics are architecturally incompatible [1]. Cursor straddles this boundary by offering both Tab (completion) and Agent (agentic) modes, but these are separate subsystems, not a continuum.
 
 ---
 
@@ -152,7 +152,7 @@ These three tools form the fundamental write path. Every code change an agent ma
 }
 ```
 
-**Edit** — Surgical string replacement within a file. Preferred over Write for existing files because it sends only the diff, reducing token cost and error surface.
+**Edit** — Surgical string replacement within a file. Preferred over Write for existing files because it sends only the diff, reducing token cost and error surface [3].
 
 ```json
 {
@@ -252,7 +252,7 @@ Agents spend significant token budget on search. Efficient search tools reduce c
 
 ### 5. Subagent Spawning — Parallelism and Specialization
 
-Advanced agent frameworks allow spawning child agents for parallel or specialist work.
+Advanced agent frameworks allow spawning child agents for parallel or specialist work [3].
 
 ```json
 {
@@ -283,7 +283,7 @@ Advanced agent frameworks allow spawning child agents for parallel or specialist
 
 ## Context Window as Working Memory
 
-The context window is the agent's working memory. Everything the agent "knows" during a session exists as tokens in this window. Understanding its dynamics is essential because **context management is the dominant failure mode** for coding agents.
+The context window is the agent's working memory. Everything the agent "knows" during a session exists as tokens in this window. Understanding its dynamics is essential because **context management is the dominant failure mode** for coding agents [2].
 
 ### What Goes In
 
@@ -418,7 +418,7 @@ The most cost-effective injection method. Written once, applied to every session
 - src/api/ — route handlers, validation, serialization
 ```
 
-**Key properties:**
+**Key properties [3]:**
 - Loaded into context at session start, before any user message
 - Low token cost (typically 500-3000 tokens)
 - Survives context compression (treated as system-level)
@@ -481,7 +481,7 @@ This costs ~200 tokens and saves thousands by preventing aimless exploration.
 - Agent cannot distinguish important from irrelevant context
 - Forces early summarization/eviction of useful content
 
-**Instead:** Let the agent search. Agents with Grep and Glob tools can find what they need in 2-3 tool calls, using a fraction of the token budget compared to a full dump.
+**Instead:** Let the agent search. Agents with Grep and Glob tools can find what they need in 2-3 tool calls, using a fraction of the token budget compared to a full dump [3].
 
 ---
 
@@ -585,7 +585,7 @@ graph TD
 
 ## Sandboxing and Security
 
-An agent with file write and shell execution access is, from a security perspective, equivalent to giving an untrusted program full user-level access to your machine. The security architecture must treat the agent's tool calls as potentially adversarial.
+An agent with file write and shell execution access is, from a security perspective, equivalent to giving an untrusted program full user-level access to your machine [2]. The security architecture must treat the agent's tool calls as potentially adversarial.
 
 ### Threat Model
 
@@ -631,7 +631,7 @@ Most agent frameworks implement tiered permission models:
 
 **Supervised mode** is the default for good reason. Every mutation (file write, shell command) requires explicit human approval. The agent proposes; the human disposes.
 
-**Permission fatigue** is the real risk: after approving 50 benign commands, the human approves the 51st without reading it. This is the same failure mode as certificate warnings and UAC prompts.
+**Permission fatigue** is the real risk: after approving 50 benign commands, the human approves the 51st without reading it [2]. This is the same failure mode as certificate warnings and UAC prompts.
 
 ### Defense Layer 2: Worktree Isolation
 
@@ -836,7 +836,7 @@ Task: Refactor auth module to use middleware pattern
 
 ## The Latency-Quality Tradeoff
 
-Not every agent task requires the most capable model. The model selection decision is a three-way tradeoff between latency, cost, and reasoning depth.
+Not every agent task requires the most capable model. The model selection decision is a three-way tradeoff between latency, cost, and reasoning depth [4].
 
 ### Model Tier Characteristics
 
@@ -900,7 +900,7 @@ Attempt 3: Opus → deep analysis, high-confidence solution
   - Haiku: ~$0.08
   - Sonnet: ~$0.90
   - Opus: ~$4.50
-- Routing 80% of tasks to Haiku, 15% to Sonnet, 5% to Opus reduces average cost by 60-70% vs. Opus-for-everything.
+- Routing 80% of tasks to Haiku, 15% to Sonnet, 5% to Opus reduces average cost by 60-70% vs. Opus-for-everything [4].
 
 **Pattern 3: Hybrid within session** — Use a fast model for search and analysis tool calls, reserve the deep model for planning and code generation steps. This requires framework-level support for mid-session model switching.
 
@@ -937,3 +937,12 @@ Some tasks should never be routed to a fast model regardless of cost pressure:
 9. **Subagent spawning is powerful but expensive.** Use it for parallelism (independent file analysis) and specialization (security review), not as a substitute for better prompting of a single agent.
 
 10. **The best context injection is a well-structured codebase.** Clear directory layout, consistent naming, comprehensive tests, and up-to-date types help agents as much as they help humans. Good engineering practices compound with agent tooling.
+
+---
+
+## References
+
+1. [Every.to - Compound Engineering: How Every Codes With Agents](https://every.to/chain-of-thought/compound-engineering-how-every-codes-with-agents), 2026
+2. [Anthropic - Effective Harnesses for Long-Running Agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents), 2026
+3. [Anthropic - Claude Code: Best Practices for Agentic Coding](https://www.anthropic.com/engineering/claude-code-best-practices), 2025
+4. [Anthropic - API Pricing and Model Comparison](https://www.anthropic.com/pricing), 2026

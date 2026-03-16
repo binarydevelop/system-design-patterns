@@ -76,7 +76,7 @@ This gap means review of AI-generated code must be **more rigorous** than review
 | **Version mismatch** | Uses syntax or APIs from wrong version | React class components in a hooks-only codebase | Linter rules, version-aware SAST | Pin framework version in system prompt |
 | **Confident logic error** | Produces plausible but incorrect logic | Off-by-one in pagination that passes basic tests | Mutation testing, property-based tests | Require edge-case test cases written by humans |
 | **Context boundary error** | Misunderstands cross-file contracts | Calls function with wrong argument order from another module | Integration tests, contract tests | Provide interface definitions in context |
-| **Security anti-pattern** | Introduces vulnerability while solving functional requirement | SQL string interpolation that "works" | SAST scanners (Semgrep, CodeQL) | Security-focused review checklist |
+| **Security anti-pattern** | Introduces vulnerability while solving functional requirement | SQL string interpolation that "works" | SAST scanners (Semgrep [7], CodeQL [8]) | Security-focused review checklist |
 | **Stale pattern** | Uses deprecated approaches | `componentWillMount` in React 18 | Deprecation linters | Keep context current, include migration guides |
 | **Test co-generation bias** | Tests validate the bug, not the spec | Test asserts wrong output as correct | Mutation testing, spec review | Separate test authoring from implementation |
 | **Silent assumption** | Makes undocumented assumptions about environment | Assumes UTC timezone, assumes Linux paths | Environment-specific CI matrix | Require assumption documentation |
@@ -129,7 +129,7 @@ Most agent failures trace to three root causes:
 
 ### Why Plan Approval is the Highest-Leverage Review Gate
 
-Reviewing a plan takes 5 minutes. Reviewing an incorrect implementation takes 2 hours. Rejecting a plan costs nothing. Rejecting a PR costs the agent's compute and the reviewer's time.
+Reviewing a plan takes 5 minutes. Reviewing an incorrect implementation takes 2 hours [15]. Rejecting a plan costs nothing. Rejecting a PR costs the agent's compute and the reviewer's time.
 
 ```mermaid
 flowchart TD
@@ -314,9 +314,9 @@ Pass 3: INTEGRATION (5 minutes)
 
 ### CWE Categories Agents Commonly Produce
 
-AI agents are trained on vast codebases that include vulnerable code. They reproduce security anti-patterns with the same fluency as correct patterns, often without any indication that the output is dangerous.
+AI agents are trained on vast codebases that include vulnerable code. They reproduce security anti-patterns with the same fluency as correct patterns, often without any indication that the output is dangerous. The following CWE categories [6] are among the most frequently reproduced.
 
-#### CWE-78: OS Command Injection
+#### CWE-78: OS Command Injection [1]
 
 ```python
 # ❌ Agent-generated: functional but vulnerable
@@ -352,7 +352,7 @@ def convert_image(filename: str, format: str) -> str:
     return output
 ```
 
-#### CWE-89: SQL Injection
+#### CWE-89: SQL Injection [2]
 
 ```python
 # ❌ Agent-generated: works for demo, vulnerable in production
@@ -366,7 +366,7 @@ def get_user(db, username: str):
     return db.execute(query, (username,)).fetchone()
 ```
 
-#### CWE-798: Hardcoded Credentials
+#### CWE-798: Hardcoded Credentials [3]
 
 ```python
 # ❌ Agent-generated: "for testing" that ships to production
@@ -386,7 +386,7 @@ class DatabaseConfig:
     PASSWORD = os.environ["DB_PASSWORD"]
 ```
 
-#### CWE-20: Improper Input Validation
+#### CWE-20: Improper Input Validation [4]
 
 ```python
 # ❌ Agent-generated: trusts user input
@@ -419,7 +419,7 @@ def set_profile_picture(user_id: int, url: str):
     save_image(user_id, content)
 ```
 
-#### CWE-276: Incorrect Default Permissions
+#### CWE-276: Incorrect Default Permissions [5]
 
 ```python
 # ❌ Agent-generated: overly permissive defaults
@@ -451,21 +451,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run Semgrep
+      - name: Run Semgrep  # [7]
         uses: semgrep/semgrep-action@v1
         with:
           config: >-
-            p/owasp-top-ten
+            p/owasp-top-ten  # [14]
             p/cwe-top-25
             p/security-audit
           publishToken: ${{ secrets.SEMGREP_APP_TOKEN }}
 
-      - name: Run CodeQL
+      - name: Run CodeQL  # [8]
         uses: github/codeql-action/analyze@v3
         with:
           languages: ${{ matrix.language }}
 
-      - name: Secret Scanner
+      - name: Secret Scanner  # [9]
         uses: trufflesecurity/trufflehog@v3
         with:
           path: .
@@ -494,7 +494,7 @@ jobs:
 
 ### The Fundamental Issue
 
-When an agent writes both the implementation and the tests, the tests validate **what the code does**, not **what the code should do**. The tests and the code share the same blind spots.
+When an agent writes both the implementation and the tests, the tests validate **what the code does**, not **what the code should do** [10]. The tests and the code share the same blind spots.
 
 ```mermaid
 flowchart LR
@@ -534,13 +534,13 @@ The test passes. The implementation is internally consistent. But if the spec sa
 
 #### 1. Mutation Testing
 
-Mutation testing modifies the source code and checks if tests catch the mutations. Co-generated tests often have low mutation kill rates because they test surface behavior, not invariants.
+Mutation testing [11] modifies the source code and checks if tests catch the mutations. Co-generated tests often have low mutation kill rates because they test surface behavior, not invariants.
 
 ```bash
-# Python: mutmut
+# Python: mutmut [12]
 mutmut run --paths-to-mutate=src/ --tests-dir=tests/
 
-# JavaScript: Stryker
+# JavaScript: Stryker [13]
 npx stryker run
 
 # Interpret results
@@ -550,7 +550,7 @@ npx stryker run
 
 #### 2. Human-Written Property Tests
 
-Property-based tests encode **invariants** that must hold for all inputs, not specific input-output pairs.
+Property-based tests [16] encode **invariants** that must hold for all inputs, not specific input-output pairs.
 
 ```python
 from hypothesis import given, strategies as st
@@ -917,3 +917,24 @@ GROUP BY source_type;
 7. **Automate the automatable.** Linting, type checking, SAST, secret scanning, and mutation testing can all run in CI. Reserve human reviewers for judgment calls that tools cannot make.
 
 8. **The goal is not to eliminate AI code generation.** The goal is to build a quality engineering practice that makes AI-generated code as reliable as human-generated code — with appropriate verification at every stage.
+
+---
+
+## References
+
+1. [MITRE — CWE-78: Improper Neutralization of Special Elements used in an OS Command](https://cwe.mitre.org/data/definitions/78.html)
+2. [MITRE — CWE-89: Improper Neutralization of Special Elements used in an SQL Command](https://cwe.mitre.org/data/definitions/89.html)
+3. [MITRE — CWE-798: Use of Hard-coded Credentials](https://cwe.mitre.org/data/definitions/798.html)
+4. [MITRE — CWE-20: Improper Input Validation](https://cwe.mitre.org/data/definitions/20.html)
+5. [MITRE — CWE-276: Incorrect Default Permissions](https://cwe.mitre.org/data/definitions/276.html)
+6. [MITRE — Common Weakness Enumeration (CWE)](https://cwe.mitre.org/)
+7. [Semgrep — Static Analysis at Ludicrous Speed](https://semgrep.dev/)
+8. [GitHub — CodeQL Code Scanning](https://codeql.github.com/)
+9. [TruffleHog — Find and Verify Credentials](https://github.com/trufflesecurity/trufflehog)
+10. [Anthropic — Building Effective Agents: Evaluating AI-Generated Code](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering)
+11. [Wikipedia — Mutation Testing](https://en.wikipedia.org/wiki/Mutation_testing)
+12. [mutmut — Python Mutation Testing](https://github.com/boxed/mutmut)
+13. [Stryker Mutator — JavaScript/TypeScript Mutation Testing](https://stryker-mutator.io/)
+14. [OWASP — Top 10 Web Application Security Risks](https://owasp.org/www-project-top-ten/)
+15. [Anthropic — Claude Code: Best Practices for Agentic Coding](https://docs.anthropic.com/en/docs/claude-code/overview)
+16. [Hypothesis — Property-Based Testing for Python](https://hypothesis.readthedocs.io/)
