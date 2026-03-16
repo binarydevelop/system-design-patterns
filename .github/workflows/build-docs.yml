@@ -379,6 +379,18 @@ jobs:
                           { text: '整合性モデル', link: '/ja/01-foundations/04-consistency-models' },
                           { text: '分散時間', link: '/ja/01-foundations/05-distributed-time' },
                         ]
+                      },
+                      {
+                        text: '18. コンパウンドエンジニアリング',
+                        collapsed: true,
+                        items: [
+                          { text: '基礎', link: '/ja/18-compound-engineering/01-compound-engineering-fundamentals' },
+                          { text: 'コーディングエージェントツール設計', link: '/ja/18-compound-engineering/02-coding-agent-tool-design' },
+                          { text: 'エージェントコンテキストエンジニアリング', link: '/ja/18-compound-engineering/03-agent-context-engineering' },
+                          { text: 'AIネイティブアーキテクチャ', link: '/ja/18-compound-engineering/04-ai-native-software-architecture' },
+                          { text: 'AIエージェント品質エンジニアリング', link: '/ja/18-compound-engineering/05-quality-engineering-with-ai-agents' },
+                          { text: 'コンパウンド開発ワークフロー', link: '/ja/18-compound-engineering/06-compound-development-workflows' },
+                        ]
                       }
                     ]
                   },
