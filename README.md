@@ -158,6 +158,14 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Subscriptions and Real-Time](17-graphql/05-subscriptions-realtime.md)
 - [Federation](17-graphql/06-federation.md)
 
+### Part 18: Compound Engineering
+- [Compound Engineering Fundamentals](18-compound-engineering/01-compound-engineering-fundamentals.md)
+- [Coding Agent Tool Design](18-compound-engineering/02-coding-agent-tool-design.md)
+- [Agent Context Engineering](18-compound-engineering/03-agent-context-engineering.md)
+- [AI-Native Software Architecture](18-compound-engineering/04-ai-native-software-architecture.md)
+- [Quality Engineering with AI Agents](18-compound-engineering/05-quality-engineering-with-ai-agents.md)
+- [Compound Development Workflows](18-compound-engineering/06-compound-development-workflows.md)
+
 ## Notation
 
 | Symbol | Meaning |
