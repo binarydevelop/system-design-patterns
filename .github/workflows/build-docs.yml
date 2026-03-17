@@ -378,6 +378,207 @@ jobs:
                           { text: 'CAP定理', link: '/ja/01-foundations/03-cap-theorem' },
                           { text: '整合性モデル', link: '/ja/01-foundations/04-consistency-models' },
                           { text: '分散時間', link: '/ja/01-foundations/05-distributed-time' },
+                          { text: '障害モード', link: '/ja/01-foundations/06-failure-modes' },
+                          { text: 'ネットワーク分断', link: '/ja/01-foundations/07-network-partitions' },
+                          { text: '冪等性', link: '/ja/01-foundations/08-idempotency' },
+                        ]
+                      },
+                      {
+                        text: '2. 分散データベース',
+                        collapsed: true,
+                        items: [
+                          { text: 'シングルリーダーレプリケーション', link: '/ja/02-distributed-databases/01-single-leader-replication' },
+                          { text: 'マルチリーダーレプリケーション', link: '/ja/02-distributed-databases/02-multi-leader-replication' },
+                          { text: 'リーダーレスレプリケーション', link: '/ja/02-distributed-databases/03-leaderless-replication' },
+                          { text: 'コンフリクト解決', link: '/ja/02-distributed-databases/04-conflict-resolution' },
+                          { text: 'パーティショニング戦略', link: '/ja/02-distributed-databases/05-partitioning-strategies' },
+                          { text: 'セカンダリインデックス', link: '/ja/02-distributed-databases/06-secondary-indexes' },
+                          { text: '分散トランザクション', link: '/ja/02-distributed-databases/07-distributed-transactions' },
+                          { text: 'コンセンサスアルゴリズム', link: '/ja/02-distributed-databases/08-consensus-algorithms' },
+                          { text: 'リーダー選出', link: '/ja/02-distributed-databases/09-leader-election' },
+                        ]
+                      },
+                      {
+                        text: '3. ストレージエンジン',
+                        collapsed: true,
+                        items: [
+                          { text: 'B木', link: '/ja/03-storage-engines/01-b-trees' },
+                          { text: 'LSM木', link: '/ja/03-storage-engines/02-lsm-trees' },
+                          { text: 'SSTableとコンパクション', link: '/ja/03-storage-engines/03-sstables-compaction' },
+                          { text: '先行書き込みログ', link: '/ja/03-storage-engines/04-write-ahead-logging' },
+                          { text: 'ブルームフィルタ', link: '/ja/03-storage-engines/05-bloom-filters' },
+                          { text: 'カラムストレージ', link: '/ja/03-storage-engines/06-column-storage' },
+                          { text: 'データエンコーディング', link: '/ja/03-storage-engines/07-data-encoding' },
+                        ]
+                      },
+                      {
+                        text: '4. キャッシング',
+                        collapsed: true,
+                        items: [
+                          { text: 'キャッシュ戦略', link: '/ja/04-caching/01-cache-strategies' },
+                          { text: 'キャッシュ無効化', link: '/ja/04-caching/02-cache-invalidation' },
+                          { text: '分散キャッシュ', link: '/ja/04-caching/03-distributed-caching' },
+                          { text: 'キャッシュスタンピード', link: '/ja/04-caching/04-cache-stampede' },
+                          { text: 'マルチティアキャッシュ', link: '/ja/04-caching/05-multi-tier-caching' },
+                          { text: 'キャッシュウォーミング', link: '/ja/04-caching/06-cache-warming' },
+                        ]
+                      },
+                      {
+                        text: '5. メッセージング',
+                        collapsed: true,
+                        items: [
+                          { text: 'メッセージキュー', link: '/ja/05-messaging/01-message-queues' },
+                          { text: 'Pub/Sub', link: '/ja/05-messaging/02-pub-sub' },
+                          { text: 'メッセージ順序', link: '/ja/05-messaging/03-message-ordering' },
+                          { text: '配信保証', link: '/ja/05-messaging/04-delivery-guarantees' },
+                          { text: 'イベントソーシング', link: '/ja/05-messaging/05-event-sourcing' },
+                          { text: 'CQRS', link: '/ja/05-messaging/06-cqrs' },
+                          { text: 'Outboxパターン', link: '/ja/05-messaging/07-outbox-pattern' },
+                          { text: 'デッドレターキュー', link: '/ja/05-messaging/08-dead-letter-queues' },
+                        ]
+                      },
+                      {
+                        text: '6. スケーリング',
+                        collapsed: true,
+                        items: [
+                          { text: 'ロードバランシング', link: '/ja/06-scaling/01-load-balancing' },
+                          { text: '水平vs垂直スケーリング', link: '/ja/06-scaling/02-horizontal-vertical' },
+                          { text: 'データベースシャーディング', link: '/ja/06-scaling/03-database-sharding' },
+                          { text: 'CDNアーキテクチャ', link: '/ja/06-scaling/04-cdn-architecture' },
+                          { text: 'レート制限', link: '/ja/06-scaling/05-rate-limiting' },
+                          { text: 'サーキットブレーカー', link: '/ja/06-scaling/06-circuit-breakers' },
+                          { text: 'バックプレッシャー', link: '/ja/06-scaling/07-backpressure' },
+                          { text: 'オートスケーリング', link: '/ja/06-scaling/08-auto-scaling' },
+                        ]
+                      },
+                      {
+                        text: '7. リアルタイム',
+                        collapsed: true,
+                        items: [
+                          { text: 'ポーリング', link: '/ja/07-real-time/01-polling' },
+                          { text: 'ロングポーリング', link: '/ja/07-real-time/02-long-polling' },
+                          { text: 'Server-Sent Events', link: '/ja/07-real-time/03-server-sent-events' },
+                          { text: 'WebSocket', link: '/ja/07-real-time/04-websockets' },
+                          { text: 'WebRTC', link: '/ja/07-real-time/05-webrtc' },
+                          { text: 'プレゼンス', link: '/ja/07-real-time/06-presence' },
+                        ]
+                      },
+                      {
+                        text: '8. ケーススタディ',
+                        collapsed: true,
+                        items: [
+                          { text: 'Twitter', link: '/ja/08-case-studies/01-twitter' },
+                          { text: 'Instagram', link: '/ja/08-case-studies/02-instagram' },
+                          { text: 'Uber', link: '/ja/08-case-studies/03-uber' },
+                          { text: 'Netflix', link: '/ja/08-case-studies/04-netflix' },
+                          { text: 'Slack', link: '/ja/08-case-studies/05-slack' },
+                          { text: 'Stripe', link: '/ja/08-case-studies/06-stripe' },
+                          { text: 'Dropbox', link: '/ja/08-case-studies/07-dropbox' },
+                          { text: 'Discord', link: '/ja/08-case-studies/08-discord' },
+                          { text: 'Google Maps', link: '/ja/08-case-studies/09-google-maps' },
+                          { text: 'WhatsApp', link: '/ja/08-case-studies/10-whatsapp' },
+                        ]
+                      },
+                      {
+                        text: '9. ホワイトペーパー',
+                        collapsed: true,
+                        items: [
+                          { text: 'MapReduce', link: '/ja/09-whitepapers/01-mapreduce' },
+                          { text: 'Dynamo', link: '/ja/09-whitepapers/02-dynamo' },
+                          { text: 'Bigtable', link: '/ja/09-whitepapers/03-bigtable' },
+                          { text: 'Spanner', link: '/ja/09-whitepapers/04-spanner' },
+                          { text: 'TAO', link: '/ja/09-whitepapers/05-tao' },
+                          { text: 'Kafka', link: '/ja/09-whitepapers/06-kafka' },
+                          { text: 'Raft', link: '/ja/09-whitepapers/07-raft' },
+                          { text: 'Chubby', link: '/ja/09-whitepapers/08-chubby' },
+                          { text: 'Aurora', link: '/ja/09-whitepapers/09-aurora' },
+                          { text: 'CockroachDB', link: '/ja/09-whitepapers/10-cockroachdb' },
+                        ]
+                      },
+                      {
+                        text: '10. セキュリティ',
+                        collapsed: true,
+                        items: [
+                          { text: '認証の基礎', link: '/ja/10-security/01-authentication-fundamentals' },
+                          { text: 'OAuth2とOpenID Connect', link: '/ja/10-security/02-oauth2-openid-connect' },
+                          { text: 'JWTトークン', link: '/ja/10-security/03-jwt-tokens' },
+                          { text: 'APIセキュリティ', link: '/ja/10-security/04-api-security' },
+                          { text: 'ゼロトラストアーキテクチャ', link: '/ja/10-security/05-zero-trust-architecture' },
+                          { text: '暗号化', link: '/ja/10-security/06-encryption' },
+                        ]
+                      },
+                      {
+                        text: '11. オブザーバビリティ',
+                        collapsed: true,
+                        items: [
+                          { text: '分散トレーシング', link: '/ja/11-observability/01-distributed-tracing' },
+                          { text: 'メトリクスとモニタリング', link: '/ja/11-observability/02-metrics-monitoring' },
+                          { text: 'ロギング', link: '/ja/11-observability/03-logging' },
+                          { text: 'アラート', link: '/ja/11-observability/04-alerting' },
+                        ]
+                      },
+                      {
+                        text: '12. サービスメッシュ',
+                        collapsed: true,
+                        items: [
+                          { text: 'サービスディスカバリ', link: '/ja/12-service-mesh/01-service-discovery' },
+                          { text: 'APIゲートウェイ', link: '/ja/12-service-mesh/02-api-gateway' },
+                          { text: 'サイドカーパターン', link: '/ja/12-service-mesh/03-sidecar-pattern' },
+                        ]
+                      },
+                      {
+                        text: '13. データパイプライン',
+                        collapsed: true,
+                        items: [
+                          { text: 'バッチ処理', link: '/ja/13-data-pipelines/01-batch-processing' },
+                          { text: 'ストリーム処理', link: '/ja/13-data-pipelines/02-stream-processing' },
+                          { text: 'Lambda/Kappaアーキテクチャ', link: '/ja/13-data-pipelines/03-lambda-kappa-architecture' },
+                        ]
+                      },
+                      {
+                        text: '14. 検索システム',
+                        collapsed: true,
+                        items: [
+                          { text: '転置インデックス', link: '/ja/14-search-systems/01-inverted-indexes' },
+                          { text: '全文検索', link: '/ja/14-search-systems/02-full-text-search' },
+                          { text: 'ベクトル検索', link: '/ja/14-search-systems/03-vector-search' },
+                          { text: 'ランキングアルゴリズム', link: '/ja/14-search-systems/04-ranking-algorithms' },
+                          { text: '検索関連性チューニング', link: '/ja/14-search-systems/05-search-relevance-tuning' },
+                          { text: 'タイプアヘッド', link: '/ja/14-search-systems/06-typeahead-autocomplete' },
+                        ]
+                      },
+                      {
+                        text: '15. デプロイメント',
+                        collapsed: true,
+                        items: [
+                          { text: 'デプロイメント戦略', link: '/ja/15-deployment/01-deployment-strategies' },
+                          { text: 'フィーチャーフラグ', link: '/ja/15-deployment/02-feature-flags' },
+                        ]
+                      },
+                      {
+                        text: '16. LLMシステム',
+                        collapsed: true,
+                        items: [
+                          { text: 'エージェント基礎', link: '/ja/16-llm-systems/01-agent-fundamentals' },
+                          { text: 'オーケストレーション', link: '/ja/16-llm-systems/02-orchestration-patterns' },
+                          { text: 'マルチエージェント', link: '/ja/16-llm-systems/03-multi-agent-systems' },
+                          { text: 'RAGパターン', link: '/ja/16-llm-systems/04-rag-patterns' },
+                          { text: 'LLMインフラ', link: '/ja/16-llm-systems/05-llm-infrastructure' },
+                          { text: 'プロンプトエンジニアリング', link: '/ja/16-llm-systems/06-prompt-engineering' },
+                          { text: 'ファインチューニング', link: '/ja/16-llm-systems/07-fine-tuning-patterns' },
+                          { text: 'コンテキスト管理', link: '/ja/16-llm-systems/08-context-management' },
+                        ]
+                      },
+                      {
+                        text: '17. GraphQL',
+                        collapsed: true,
+                        items: [
+                          { text: 'GraphQL基礎', link: '/ja/17-graphql/01-graphql-fundamentals' },
+                          { text: 'スキーマ設計', link: '/ja/17-graphql/02-schema-design' },
+                          { text: 'リゾルバ', link: '/ja/17-graphql/03-resolvers-data-fetching' },
+                          { text: 'キャッシュとパフォーマンス', link: '/ja/17-graphql/04-caching-performance' },
+                          { text: 'サブスクリプション', link: '/ja/17-graphql/05-subscriptions-realtime' },
+                          { text: 'フェデレーション', link: '/ja/17-graphql/06-federation' },
                         ]
                       },
                       {
