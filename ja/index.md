@@ -22,55 +22,55 @@ features:
     link: /ja/01-foundations/01-acid-transactions
   - title: 分散データベース
     details: レプリケーション、パーティショニング、合意アルゴリズム
-    link: /02-distributed-databases/01-single-leader-replication
+    link: /ja/02-distributed-databases/01-single-leader-replication
   - title: ストレージエンジン
     details: B木、LSM木、SSTable、先行書き込みログ
-    link: /03-storage-engines/01-b-trees
+    link: /ja/03-storage-engines/01-b-trees
   - title: キャッシュ
     details: キャッシュ戦略、キャッシュ無効化、分散キャッシュ
-    link: /04-caching/01-cache-strategies
+    link: /ja/04-caching/01-cache-strategies
   - title: メッセージング
     details: メッセージキュー、Pub/Sub、イベントソーシング、CQRS
-    link: /05-messaging/01-message-queues
+    link: /ja/05-messaging/01-message-queues
   - title: スケーリング
     details: ロードバランシング、シャーディング、サーキットブレーカー
-    link: /06-scaling/01-load-balancing
+    link: /ja/06-scaling/01-load-balancing
   - title: リアルタイムシステム
     details: ポーリング、WebSocket、WebRTC、プレゼンスシステム
-    link: /07-real-time/01-polling
+    link: /ja/07-real-time/01-polling
   - title: ケーススタディ
     details: Twitter、Instagram、Uber、Netflix、Slack、Stripe
-    link: /08-case-studies/01-twitter-timeline
+    link: /ja/08-case-studies/01-twitter
   - title: ホワイトペーパー
     details: MapReduce、Dynamo、BigTable、Spanner、Raft
-    link: /09-whitepapers/01-mapreduce
+    link: /ja/09-whitepapers/01-mapreduce
   - title: セキュリティ
     details: 認証、OAuth 2.0、JWT、ゼロトラストアーキテクチャ
-    link: /10-security/01-authentication-fundamentals
+    link: /ja/10-security/01-authentication-fundamentals
   - title: オブザーバビリティ
     details: 分散トレーシング、メトリクス、ロギング、アラート
-    link: /11-observability/01-distributed-tracing
+    link: /ja/11-observability/01-distributed-tracing
   - title: サービスメッシュ
     details: サービスディスカバリ、APIゲートウェイ、サイドカーパターン
-    link: /12-service-mesh/01-service-discovery
+    link: /ja/12-service-mesh/01-service-discovery
   - title: データパイプライン
     details: バッチ処理、ストリーム処理、Lambdaアーキテクチャ
-    link: /13-data-pipelines/01-batch-processing
+    link: /ja/13-data-pipelines/01-batch-processing
   - title: 検索システム
     details: 転置インデックス、全文検索、ベクトル検索
-    link: /14-search-systems/01-inverted-indexes
+    link: /ja/14-search-systems/01-inverted-indexes
   - title: デプロイメント
     details: デプロイメント戦略、フィーチャーフラグ
-    link: /15-deployment/01-deployment-strategies
+    link: /ja/15-deployment/01-deployment-strategies
   - title: LLMシステム
     details: エージェント基礎、オーケストレーション、RAGパターン
-    link: /16-llm-systems/01-agent-fundamentals
+    link: /ja/16-llm-systems/01-agent-fundamentals
   - title: GraphQL
     details: 基礎、スキーマ設計、リゾルバー、フェデレーション
-    link: /17-graphql/01-graphql-fundamentals
+    link: /ja/17-graphql/01-graphql-fundamentals
   - title: コンパウンドエンジニアリング
     details: AI駆動開発、コーディングエージェント、コンテキストエンジニアリング
-    link: /18-compound-engineering/01-compound-engineering-fundamentals
+    link: /ja/18-compound-engineering/01-compound-engineering-fundamentals
 ---
 
 <div class="home-stats-bar">
