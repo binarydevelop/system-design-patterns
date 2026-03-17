@@ -1,42 +1,42 @@
 # デッドレターキュー
 
-> この記事は英語版から翻訳されました。最新版は[英語版](/05-messaging/08-dead-letter-queues)をご覧ください。
+> **注記**: この記事は英語版 `/05-messaging/08-dead-letter-queues.md` の日本語翻訳です。
 
 ## TL;DR
 
-デッドレターキュー（DLQ）は、正常に処理できなかったメッセージをキャプチャします。失敗したメッセージを失ったりキューをブロックしたりする代わりに、調査のために別のキューに移動します。デバッグ、コンプライアンス、データ損失防止に不可欠です。リトライ上限を設定し、DLQの深度を監視し、デッドレターの処理手順を確立してください。
+デッドレターキュー（DLQ）は、正常に処理できないメッセージをキャプチャします。失敗したメッセージを失ったりキューをブロックしたりする代わりに、調査のために別のキューに移動します。デバッグ、コンプライアンス、データ損失防止に不可欠です。リトライ制限を設定し、DLQの深度を監視し、デッドレター処理の手順を確立してください。
 
 ---
 
-## なぜデッドレターキューが必要なのか？
+## なぜデッドレターキューが必要か？
 
 ### 問題
 
 ```
-Message arrives → Processing fails → What now?
+メッセージ到着 → 処理失敗 → どうする？
 
-Options without DLQ:
-  1. Retry forever (blocks queue)
-  2. Discard (lose data)
-  3. Crash consumer (disrupts service)
+DLQなしの選択肢:
+  1. 永遠にリトライ（キューをブロック）
+  2. 破棄（データ損失）
+  3. コンシューマーをクラッシュ（サービス中断）
 
-None are good!
+どれも良くない！
 ```
 
-### DLQによる解決策
+### DLQソリューション
 
 ```
-Message arrives → Processing fails → Retry N times → Move to DLQ
+メッセージ到着 → 処理失敗 → N回リトライ → DLQに移動
 
-Main Queue ──► Consumer ──► Success
+Main Queue ──► Consumer ──► 成功
                   │
-              Failure (after retries)
+              失敗（リトライ後）
                   │
                   ▼
               Dead Letter Queue
                   │
                   ▼
-          Manual investigation
+          手動調査
 ```
 
 ---
@@ -46,13 +46,13 @@ Main Queue ──► Consumer ──► Success
 ### 基本フロー
 
 ```
-1. Consumer receives message
-2. Processing fails
-3. Message returned to queue (nack)
-4. Retry counter incremented
-5. After N retries, move to DLQ
-6. Original queue continues processing
-7. DLQ monitored and investigated
+1. コンシューマーがメッセージを受信する
+2. 処理が失敗する
+3. メッセージがキューに返される（nack）
+4. リトライカウンターがインクリメントされる
+5. N回リトライ後、DLQに移動する
+6. 元のキューは処理を継続する
+7. DLQが監視・調査される
 ```
 
 ### メッセージメタデータ
@@ -195,13 +195,13 @@ def process_with_backoff(message, max_retries=3):
 ### 遅延リトライキュー
 
 ```
-Instead of immediate retry, use delay queue
+即時リトライの代わりに遅延キューを使用
 
-Main Queue → Failure → Delay Queue (5 min) → Main Queue
+Main Queue → 失敗 → Delay Queue (5分) → Main Queue
 
-Delay Queue implementation:
-  - Message TTL + DLQ routing back to main queue
-  - Or: Scheduled re-delivery
+Delay Queueの実装:
+  - メッセージTTL + メインキューへのDLQルーティング
+  - または: スケジュールされた再配信
 ```
 
 ---
@@ -211,14 +211,14 @@ Delay Queue implementation:
 ### 調査ワークフロー
 
 ```
-1. Alert on DLQ messages
-2. View message content and failure reason
-3. Determine root cause
-   - Bug in consumer?
-   - Invalid message format?
-   - External dependency failure?
-4. Fix root cause
-5. Replay or discard messages
+1. DLQメッセージでアラート
+2. メッセージ内容と失敗理由を確認
+3. 根本原因を特定
+   - コンシューマーのバグ？
+   - 無効なメッセージフォーマット？
+   - 外部依存関係の障害？
+4. 根本原因を修正
+5. メッセージをリプレイまたは破棄
 ```
 
 ### メッセージの検査
@@ -280,22 +280,22 @@ def replay_if_fixed(message):
 
 ---
 
-## エラータイプ別のDLQ
+## エラータイプごとのDLQ
 
-### DLQの分離
+### 分離されたDLQ
 
 ```
-orders-dlq-validation  → Invalid message format
-orders-dlq-external    → External service failures
-orders-dlq-unknown     → Unknown errors
+orders-dlq-validation  → 無効なメッセージフォーマット
+orders-dlq-external    → 外部サービス障害
+orders-dlq-unknown     → 不明なエラー
 
-Benefits:
-  - Different handling per type
-  - Easier investigation
-  - Different retention policies
+利点:
+  - タイプごとに異なる処理
+  - より簡単な調査
+  - 異なる保持ポリシー
 ```
 
-### ルーティングの実装
+### ルーティング実装
 
 ```python
 def send_to_appropriate_dlq(message, error):
@@ -311,29 +311,29 @@ def send_to_appropriate_dlq(message, error):
 
 ---
 
-## 監視
+## モニタリング
 
 ### 主要メトリクス
 
 ```
-DLQ depth:
-  Number of messages in DLQ
-  Should be near zero normally
+DLQ深度:
+  DLQ内のメッセージ数
+  通常はゼロ近くであるべき
 
-DLQ arrival rate:
-  Messages arriving per minute
-  Spike indicates processing issue
+DLQ到着レート:
+  1分あたりの到着メッセージ数
+  スパイクは処理問題を示す
 
-DLQ age:
-  Age of oldest message
-  Stale messages indicate neglect
+DLQ経過時間:
+  最も古いメッセージの経過時間
+  古いメッセージは放置を示す
 
-Failure categories:
-  Breakdown by error type
-  Identify systemic issues
+障害カテゴリ:
+  エラータイプ別の内訳
+  システム的な問題を特定
 ```
 
-### アラート設定
+### アラート
 
 ```yaml
 alerts:
@@ -357,27 +357,27 @@ alerts:
 ### ダッシュボード
 
 ```
-DLQ Dashboard:
-  - Current depth (gauge)
-  - Arrival rate (time series)
-  - Top failure reasons (pie chart)
-  - Age distribution (histogram)
-  - Recent messages (table)
+DLQダッシュボード:
+  - 現在の深度（ゲージ）
+  - 到着レート（時系列）
+  - 上位の失敗理由（パイチャート）
+  - 経過時間分布（ヒストグラム）
+  - 最近のメッセージ（テーブル）
 ```
 
 ---
 
-## 保持期間とクリーンアップ
+## 保持とクリーンアップ
 
 ### 保持ポリシー
 
 ```
-Consider:
-  - Compliance requirements (must keep N days)
-  - Investigation time (allow time to debug)
-  - Storage costs (don't keep forever)
+考慮事項:
+  - コンプライアンス要件（N日間保持が必要）
+  - 調査時間（デバッグのための時間を確保）
+  - ストレージコスト（永遠に保持しない）
 
-Typical: 7-30 days
+一般的: 7-30日
 ```
 
 ### 自動クリーンアップ
@@ -468,7 +468,7 @@ class DLQConsumer:
             self.create_ticket(message)
 ```
 
-### サーキットブレーカーとの統合
+### サーキットブレーカー連携
 
 ```python
 from circuitbreaker import circuit
@@ -494,99 +494,99 @@ def process_message(message):
 ### 手動レビュー
 
 ```
-Who:     Human operator via dashboard or CLI
-When:    Low-volume DLQs, compliance-sensitive data, unknown failure types
-How:     Operator inspects message body + failure reason → decides replay or discard
+担当者:   ダッシュボードまたはCLI経由の人間のオペレーター
+いつ:     低ボリュームDLQ、コンプライアンスに敏感なデータ、不明な障害タイプ
+方法:     オペレーターがメッセージボディ + 失敗理由を検査 → リプレイまたは破棄を決定
 
-Workflow:
-  1. Alert fires on DLQ depth
-  2. Operator opens DLQ dashboard
-  3. Reads failure reason + stack trace
-  4. Determines root cause
-  5. Fixes consumer or upstream data
-  6. Replays or archives the message
+ワークフロー:
+  1. DLQ深度でアラート発報
+  2. オペレーターがDLQダッシュボードを開く
+  3. 失敗理由 + スタックトレースを読む
+  4. 根本原因を特定
+  5. コンシューマーまたは上流データを修正
+  6. メッセージをリプレイまたはアーカイブ
 
-Tradeoff: Slow, doesn't scale. But safest for critical financial or PII data.
+トレードオフ: 遅い、スケールしない。ただし重要な金融データやPIIには最も安全。
 ```
 
 ### 自動リトライ
 
 ```
-A scheduler periodically reads DLQ and re-publishes messages to the original queue.
+スケジューラーが定期的にDLQを読み取り、元のキューにメッセージを再パブリッシュします。
 
-Schedule: Every 15 min, pick up to 50 messages, republish with exponential backoff.
+スケジュール: 15分ごとに最大50メッセージを取得し、指数バックオフで再パブリッシュ。
 
-Backoff formula:
+バックオフ計算式:
   delay = min(base_delay * 2^retry_count, max_delay)
-  Example: 1s → 2s → 4s → 8s → ... → cap at 5 min
+  例: 1s → 2s → 4s → 8s → ... → 5分で上限
 
-Risk: Infinite retry loop.
-  If the message is permanently invalid (bad schema, missing required field),
-  it will bounce between main queue and DLQ forever.
+リスク: 無限リトライループ。
+  メッセージが永続的に無効な場合（不正なスキーマ、必須フィールドの欠落）、
+  メインキューとDLQの間を永遠にバウンスします。
 
-Mitigation:
-  - Set a max lifetime (e.g., 24h from first failure). After that → archive.
-  - Distinguish retryable vs non-retryable errors before republishing.
+緩和策:
+  - 最大ライフタイムを設定（例: 最初の失敗から24時間）。それ以降 → アーカイブ。
+  - 再パブリッシュ前にリトライ可能 vs リトライ不可のエラーを区別する。
 ```
 
 ### 条件付きリプレイ
 
 ```
-Inspect each DLQ message, apply a transformation or data correction, then replay.
+各DLQメッセージを検査し、変換またはデータ修正を適用してからリプレイします。
 
-Example:
-  Original message has { "price": -5 }  → validation failure
-  Fix: set price to 0 or fetch correct price from source system
-  Replay corrected message to main queue
+例:
+  元のメッセージに { "price": -5 } → バリデーション失敗
+  修正: priceを0に設定、またはソースシステムから正しい価格を取得
+  修正されたメッセージをメインキューにリプレイ
 
-Use when:
-  - Upstream producer sent bad data but the intent is recoverable
-  - Schema evolved and old messages need field backfill
-  - External reference data was temporarily wrong (e.g., currency rate)
+使用する場合:
+  - 上流プロデューサーが不正データを送信したが意図は回復可能
+  - スキーマが進化し古いメッセージにフィールドのバックフィルが必要
+  - 外部参照データが一時的に不正だった（例: 為替レート）
 
-Caution: Transformations must be idempotent. Replayed message may be processed
-         alongside newer messages — ensure no duplicate side effects.
+注意: 変換は冪等でなければなりません。リプレイされたメッセージは
+      より新しいメッセージと並行して処理される可能性があります — 重複副作用がないことを確認してください。
 ```
 
 ### DLQコンシューマーサービス
 
 ```
-A dedicated microservice consumes the DLQ as its primary input.
+DLQをプライマリ入力として消費する専用マイクロサービスです。
 
-Responsibilities:
-  - Classify failure type (validation, timeout, auth, unknown)
-  - Apply programmatic fixes per failure type
-  - Re-publish fixed messages to original queue
-  - Escalate unfixable messages (create ticket, send Slack alert)
-  - Track repair metrics (auto-fixed %, escalation %)
+責任:
+  - 障害タイプの分類（バリデーション、タイムアウト、認証、不明）
+  - 障害タイプごとのプログラマティックな修正の適用
+  - 修正されたメッセージを元のキューに再パブリッシュ
+  - 修正不能なメッセージのエスカレーション（チケット作成、Slackアラート送信）
+  - 修復メトリクスの追跡（自動修正率、エスカレーション率）
 
-Architecture:
+アーキテクチャ:
   Main Queue ──► Consumer ──► DLQ ──► DLQ Consumer Service
                                           │
                               ┌────────────┼────────────┐
                               ▼            ▼            ▼
-                         Auto-fix     Create Ticket   Archive
-                         & Replay
+                         自動修正      チケット作成   アーカイブ
+                         & リプレイ
 ```
 
 ---
 
 ## DLQスキーマとメタデータ
 
-### メタデータが重要な理由
+### なぜメタデータが重要か
 
 ```
-Without failure context, a DLQ is a black hole.
+障害コンテキストがなければ、DLQはブラックホールです。
 
-You see a message in the DLQ. Questions you need answered:
-  - Which queue did it come from?
-  - Why did it fail?
-  - How many times was it retried?
-  - When did it first fail? When did it last fail?
-  - What does the stack trace say?
+DLQにメッセージがある。回答が必要な質問:
+  - どのキューから来たか？
+  - なぜ失敗したか？
+  - 何回リトライされたか？
+  - いつ最初に失敗した？いつ最後に失敗した？
+  - スタックトレースは何と言っているか？
 
-Without this metadata, triage is guesswork. Engineers waste hours
-reproducing failures that a stack trace would have explained in seconds.
+このメタデータがなければ、トリアージは推測になります。エンジニアが
+スタックトレースが数秒で説明できたはずの障害を再現するのに何時間も無駄にします。
 ```
 
 ### 必須メタデータスキーマ
@@ -620,146 +620,146 @@ reproducing failures that a stack trace would have explained in seconds.
 }
 ```
 
-### メタデータのガイドライン
+### メタデータガイドライン
 
 ```
-- Always capture failure_reason: the exception message, not just the class name.
-- Always capture stack_trace: truncate to last 20 frames if needed for storage.
-- Track first vs last failure timestamps: shows how long the message has been bouncing.
-- Include consumer_version: critical for debugging issues introduced by a specific deploy.
-- Keep original headers intact: correlation IDs enable end-to-end tracing.
+- 常にfailure_reasonをキャプチャする: クラス名だけでなく例外メッセージを。
+- 常にstack_traceをキャプチャする: ストレージのために必要なら最後の20フレームに切り詰める。
+- 最初と最後の失敗タイムスタンプを追跡する: メッセージがどのくらいバウンスしているか示す。
+- consumer_versionを含める: 特定のデプロイで導入された問題のデバッグに重要。
+- 元のヘッダーをそのまま保持する: コリレーションIDがエンドツーエンドのトレーシングを可能にする。
 ```
 
 ---
 
-## DLQのアンチパターン
+## DLQアンチパターン
 
 ### DLQの無視
 
 ```
-Symptom:  DLQ has 50,000 messages. Nobody noticed.
-Cause:    No monitoring, no alerts, no ownership.
-Fix:      Alert on DLQ depth > 0 (warning), > 100 (critical).
-          Assign a team to own DLQ triage as part of on-call rotation.
+症状:  DLQに50,000メッセージ。誰も気づかない。
+原因:  モニタリングなし、アラートなし、オーナーシップなし。
+修正:  DLQ深度 > 0（警告）、> 100（重大）でアラート。
+      オンコールローテーションの一部としてDLQトリアージを担当するチームを割り当てる。
 ```
 
 ### 修正せずにリプレイ
 
 ```
-Symptom:  Message fails → goes to DLQ → replayed → fails again → DLQ → replay → ...
-Cause:    Blind replay script with no root cause analysis.
-Fix:      Never replay without understanding the failure reason.
-          Gate replay behind a check: has the consumer bug been fixed?
-          Has the invalid data been corrected?
-          Track replay count — if a message has been replayed 3+ times, escalate.
+症状:  メッセージ失敗 → DLQ → リプレイ → 再び失敗 → DLQ → リプレイ → ...
+原因:  根本原因分析なしの盲目的なリプレイスクリプト。
+修正:  失敗理由を理解せずにリプレイしない。
+      チェックでリプレイをゲートする: コンシューマーのバグは修正された？
+      無効なデータは修正された？
+      リプレイ回数を追跡 — メッセージが3回以上リプレイされた場合、エスカレートする。
 ```
 
-### DLQメッセージにTTLがない
+### DLQメッセージにTTLなし
 
 ```
-Symptom:  DLQ contains messages from 2 years ago. Nobody knows what they are.
-Cause:    No retention policy, no cleanup job.
-Fix:      Set retention between 7-30 days depending on compliance needs.
-          Archive to cold storage (S3, GCS) before deletion if audit trail is required.
-          Messages older than retention are not actionable — delete or archive them.
+症状:  DLQに2年前のメッセージが含まれている。誰もそれが何か知らない。
+原因:  保持ポリシーなし、クリーンアップジョブなし。
+修正:  コンプライアンスニーズに応じて7-30日の保持を設定する。
+      監査証跡が必要なら削除前にコールドストレージ（S3、GCS）にアーカイブする。
+      保持期間を超えたメッセージはアクション不可能 — 削除またはアーカイブする。
 ```
 
-### DLQを機能として使用する
+### DLQを機能として使用
 
 ```
-Symptom:  Producer intentionally sends messages to a queue knowing they'll fail,
-          so they end up in the DLQ for "later processing."
-Cause:    Misunderstanding DLQ purpose. Treating it as a delay queue.
-Fix:      Use a dedicated delay queue or scheduled queue instead.
-          DLQs are for unexpected failures, not intentional routing.
-          Delay mechanisms: RabbitMQ message TTL + dead-letter routing to a processing
-          queue, SQS delay queues, Kafka topic with timestamp-based consumer pause.
+症状:  プロデューサーが意図的にメッセージを失敗させ、
+      DLQで「後で処理」するためにキューに送信する。
+原因:  DLQの目的の誤解。遅延キューとして扱っている。
+修正:  代わりに専用の遅延キューまたはスケジュールキューを使用する。
+      DLQは予期しない障害用であり、意図的なルーティング用ではない。
+      遅延メカニズム: RabbitMQメッセージTTL + 処理キューへのデッドレタールーティング、
+      SQS遅延キュー、タイムスタンプベースのコンシューマー一時停止付きKafkaトピック。
 ```
 
 ---
 
-## 実際のシステムにおけるDLQ
+## 実システムでのDLQ
 
 ### AWS SQS
 
 ```
-Configuration:
-  Main queue has a RedrivePolicy:
+設定:
+  メインキューにRedrivePolicy:
     { "maxReceiveCount": 5, "deadLetterTargetArn": "arn:aws:sqs:...:orders-dlq" }
 
-Behavior:
-  - After 5 failed receive+process cycles (no deletion), message moves to DLQ.
-  - SQS tracks receive count automatically — no application code needed.
-  - Use RedriveAllowPolicy on DLQ to restrict which queues can target it.
-  - Redrive to source: SQS console supports moving messages back to original queue.
+動作:
+  - 5回の失敗した受信+処理サイクル（削除なし）後、メッセージがDLQに移動。
+  - SQSが受信カウントを自動追跡 — アプリケーションコード不要。
+  - DLQでRedriveAllowPolicyを使用してターゲットにできるキューを制限。
+  - ソースへの再駆動: SQSコンソールがメッセージを元のキューに戻す機能をサポート。
 
-Gotcha: maxReceiveCount includes visibility timeout expiries. If your consumer
-        is slow and the visibility timeout expires, that counts as a receive.
+注意点: maxReceiveCountにはVisibility Timeoutの期限切れが含まれる。コンシューマーが
+        遅くてVisibility Timeoutが切れた場合、それは受信としてカウントされる。
 ```
 
 ### Apache Kafka
 
 ```
-Kafka has no native DLQ mechanism. You implement it yourself.
+KafkaにはネイティブのDLQメカニズムがありません。自分で実装します。
 
-Common pattern:
-  - Failed messages are produced to a separate topic: orders.dlq
-  - Consumer catches exception → writes to DLQ topic with failure headers
-  - A DLQ consumer service reads orders.dlq for triage
+一般的なパターン:
+  - 失敗したメッセージを別のトピックにプロデュース: orders.dlq
+  - コンシューマーが例外をキャッチ → 失敗ヘッダー付きでDLQトピックに書き込み
+  - DLQコンシューマーサービスがorders.dlqを読んでトリアージ
 
-Spring Kafka integration:
-  - DeadLetterPublishingRecoverer: auto-publishes to <topic>.DLT after retries
-  - DefaultErrorHandler with BackOff: configurable retry + DLT routing
-  - Retains original headers + adds exception headers automatically
+Spring Kafka連携:
+  - DeadLetterPublishingRecoverer: リトライ後に<topic>.DLTに自動パブリッシュ
+  - DefaultErrorHandler with BackOff: 設定可能なリトライ + DLTルーティング
+  - 元のヘッダーを保持 + 例外ヘッダーを自動追加
 
-Naming convention: <original-topic>.dlq or <original-topic>.DLT (dead letter topic)
+命名規則: <original-topic>.dlq または <original-topic>.DLT（dead letter topic）
 ```
 
 ### RabbitMQ
 
 ```
-Native DLQ support via exchange routing:
+エクスチェンジルーティングによるネイティブDLQサポート:
 
-Queue arguments:
+キュー引数:
   x-dead-letter-exchange: "dlx-exchange"
   x-dead-letter-routing-key: "orders.dlq"
 
-Messages are dead-lettered when:
-  - Consumer nacks (basic.reject / basic.nack) with requeue=false
-  - Message TTL expires
-  - Queue max-length exceeded
+メッセージがデッドレターになる条件:
+  - コンシューマーがnack（basic.reject / basic.nack）でrequeue=false
+  - メッセージTTLが期限切れ
+  - キューのmax-lengthを超過
 
-The dead-letter exchange routes the message to the DLQ based on the routing key.
-Original death metadata is added to x-death header array (queue, reason, count, time).
+デッドレターエクスチェンジがルーティングキーに基づいてメッセージをDLQにルーティング。
+元のdeathメタデータがx-deathヘッダー配列に追加される（キュー、理由、回数、時間）。
 ```
 
 ### GCP Pub/Sub
 
 ```
-Configuration:
-  Subscription has a deadLetterPolicy:
+設定:
+  サブスクリプションにdeadLetterPolicy:
     { "deadLetterTopic": "projects/.../topics/orders-dlq",
       "maxDeliveryAttempts": 5 }
 
-Behavior:
-  - After 5 failed delivery attempts (nack or ack deadline expiry), message
-    is forwarded to the dead letter topic.
-  - Pub/Sub adds CloudPubSubDeadLetterSourceDeliveryCount attribute automatically.
-  - The DLQ topic needs a separate subscription for consumers to read from it.
+動作:
+  - 5回の失敗した配信試行（nackまたはackデッドライン期限切れ）後、メッセージが
+    デッドレタートピックに転送される。
+  - Pub/SubがCloudPubSubDeadLetterSourceDeliveryCount属性を自動追加。
+  - DLQトピックにはコンシューマーが読むための別のサブスクリプションが必要。
 
-Gotcha: The service account needs pubsub.publisher role on the DLQ topic
-        and pubsub.subscriber role on the source subscription.
+注意点: サービスアカウントにDLQトピックへのpubsub.publisherロールと
+        ソースサブスクリプションへのpubsub.subscriberロールが必要。
 ```
 
 ---
 
-## まとめ
+## 重要なポイント
 
-1. **DLQはメッセージの損失を防ぎます** - 失敗したメッセージが保持されます
-2. **リトライ上限を設定してください** - 永遠にリトライしてはいけません
-3. **障害メタデータを含めてください** - 理由、タイムスタンプ、リトライ回数
-4. **DLQの深度を監視してください** - 蓄積に対してアラートを設定します
-5. **処理手順を確立してください** - 調査、リプレイ、アーカイブ
-6. **エラーの種類ごとに異なるDLQを使用してください** - 分類が容易になります
-7. **保持ポリシーは重要です** - コンプライアンスとストレージコスト
-8. **可能な限り自動化してください** - リプレイ、クリーンアップ、アラート
+1. **DLQはメッセージ損失を防ぐ** - 失敗したメッセージが保持される
+2. **リトライ制限を設定する** - 永遠にリトライしない
+3. **障害メタデータを含める** - 理由、タイムスタンプ、リトライ回数
+4. **DLQ深度を監視する** - 蓄積時にアラート
+5. **処理手順を確立する** - 調査、リプレイ、アーカイブ
+6. **エラーごとに異なるDLQ** - より簡単な分類
+7. **保持ポリシーが重要** - コンプライアンスとストレージコスト
+8. **可能な限り自動化する** - リプレイ、クリーンアップ、アラート
