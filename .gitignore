@@ -3,7 +3,7 @@ node_modules/
 
 # VitePress build output (generated in CI)
 .vitepress/
-index.md
+/index.md
 public/
 
 # VitePress cache
