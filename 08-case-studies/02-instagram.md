@@ -627,6 +627,88 @@ class ExploreService:
 
 ---
 
+## Production Insights
+
+### Cassandra Migration from PostgreSQL
+
+Instagram's activity feed, comments, and likes originally lived in PostgreSQL. At ~500M users, write amplification on PostgreSQL's B-tree indexes became the bottleneck — every like required updating the post's like count, the user's activity feed, and the notification table, all against B-tree indexes with random I/O.
+
+**Why Cassandra won:**
+- LSM-tree write path: sequential I/O, writes are append-only to memtable → sstable. 10-50x faster for write-heavy workloads than PostgreSQL's in-place B-tree updates.
+- Token-aware routing: the Java driver's `TokenAwarePolicy` routes requests directly to the replica owning the partition key, avoiding coordinator hops. For a `user_id`-partitioned table, this means single-node writes with no cross-node coordination.
+- No joins by design: Cassandra has no JOIN support. Instagram enforced a "no-join discipline" at the application layer — every query pattern has a dedicated denormalized table. This forced engineers to think about access patterns upfront instead of relying on ad-hoc SQL joins.
+
+**Migration strategy:**
+- Dual-write: application writes to both PostgreSQL and Cassandra simultaneously for 4 weeks.
+- Shadow-read validation: reads from Cassandra compared against PostgreSQL. Discrepancy rate tracked until < 0.01%.
+- Cutover: read traffic shifted to Cassandra. PostgreSQL kept as fallback for 2 weeks, then decommissioned.
+- Replication: `NetworkTopologyStrategy` with RF=3 per datacenter, `LOCAL_QUORUM` for reads and writes. Cross-DC replication is asynchronous — user sees their own writes (session consistency) but followers in other DCs may see 100-500ms staleness.
+
+**Compaction strategy:** `LeveledCompactionStrategy` for read-heavy tables (user profiles, post metadata). `TimeWindowCompactionStrategy` for time-series data (activity feeds, notifications) where older data is rarely accessed and can be compacted into larger SSTables efficiently.
+
+### Django Scaling at 2B MAU
+
+Instagram is one of the largest Django deployments in the world. They never rewrote in a different framework — instead, they optimized Django itself.
+
+**Raw SQL over ORM for hot paths:**
+- Django's ORM generates SQL with `select_related` (JOIN) and `prefetch_related` (N+1 → 2 queries). For the feed endpoint (~50% of all traffic), this is too slow.
+- Hot paths use raw SQL with hand-tuned queries: `cursor.execute("SELECT ...")` with pre-computed read replicas.
+- A custom `PostHydrator` class fetches post data, author data, and social context (mutual friends who liked) in 3 parallel queries instead of ORM's serial chain.
+
+**Read replica routing:**
+- Custom Django database router routes `SELECT` queries to read replicas based on the request's AZ (availability zone).
+- Sticky reads: after a write, subsequent reads from the same session are routed to the primary for 2 seconds to ensure read-your-writes consistency.
+- Each Django app server maintains connection pools to 1 primary + 3 read replicas.
+
+**Celery task architecture:**
+- 4 priority queues: `critical` (notifications, DMs), `high` (feed updates, likes), `default` (analytics events, ML feature logging), `low` (email digests, data exports).
+- Media transcoding runs on dedicated GPU-equipped worker fleets, not shared Celery workers.
+- Fan-out (distributing a new post to followers' feeds) is the most expensive async operation — a celebrity post fans out to 100M+ follower feeds via batched Redis LPUSH operations.
+- Task idempotency: every Celery task includes a `task_id` derived from the content hash. Duplicate tasks (from retry storms) are deduplicated at the broker level.
+
+**gunicorn tuning:**
+- `--preload`: loads the Django application once in the master process, then forks workers with copy-on-write memory sharing. Saves ~200MB per worker.
+- Worker count: `2 * CPU_CORES + 1` for CPU-bound, `4 * CPU_CORES` for I/O-bound (Instagram uses the latter with gevent).
+- `--max-requests 10000 --max-requests-jitter 1000`: recycle workers after 10K requests to prevent memory leaks from accumulating.
+- `--timeout 30`: kill workers that take > 30s (indicates database lock wait or downstream service failure).
+
+**Why not async Django:**
+Instagram evaluated Django 4.x async views (ASGI) but decided against adoption because:
+1. Their existing Celery infrastructure handles async workloads.
+2. The ORM is not async-native — `sync_to_async` wrappers add overhead without real benefit.
+3. The operational risk of migrating 10,000+ views to ASGI outweighs the latency benefit (~5ms improvement on p50).
+4. WebSocket needs (real-time DMs, live video) are handled by a separate Go service, not Django.
+
+### Image Processing Pipeline
+
+Instagram processes 100M+ photo uploads per day. The pipeline must generate 5+ image variants (thumbnail, small, medium, large, original) per upload within 2 seconds of the upload completing.
+
+**Pillow vs libvips:**
+- Instagram originally used Pillow (PIL fork). At scale, Pillow's memory usage per image (loading the entire decoded image into RAM) became the bottleneck: a 12MP photo consumes ~48MB decoded.
+- libvips uses demand-driven processing: it only loads the portion of the image being processed. Memory usage: ~7x less than Pillow for the same operation.
+- Throughput: libvips generates thumbnails 3-5x faster than Pillow on the same hardware due to SIMD-optimized codecs and streaming I/O.
+
+**Dedicated worker fleets:**
+- Image processing does NOT run on Django app servers. It runs on dedicated `c5.2xlarge` (compute-optimized) worker fleets.
+- Three tiers: `fast` (thumbnail + small, < 500ms SLA), `standard` (medium + large, < 2s SLA), `heavy` (video transcoding, filters, < 30s SLA).
+- Workers consume from SQS FIFO queues with `MessageGroupId = user_id` to ensure per-user ordering (a user's second upload shouldn't complete before their first).
+- Auto-scaling based on `ApproximateNumberOfMessagesVisible` — scale out when queue depth > 1000, scale in when < 100.
+
+**Pre-signed S3 URL pattern:**
+- The mobile client requests a pre-signed S3 PUT URL from the API server.
+- The client uploads the image directly to S3, bypassing Django entirely. This eliminates the 10-50MB upload from hitting the app server's request handling pipeline.
+- After S3 receives the upload, an S3 Event Notification triggers a Lambda that enqueues the processing job.
+- Benefit: Django handles a 200-byte metadata request instead of a 10MB file upload. At 100M uploads/day, this saves ~1PB/day of app-server bandwidth.
+
+**CDN cache key strategy:**
+- URL format: `https://cdn.instagram.com/{variant_name}/{content_hash}.{format}`
+- Example: `https://cdn.instagram.com/t/abc123def456.jpg` (thumbnail), `https://cdn.instagram.com/l/abc123def456.webp` (large, webp)
+- Content-addressable: the hash changes when the image content changes (edit, filter applied). Old URLs remain valid (immutable).
+- `Cache-Control: public, max-age=31536000, immutable` — cached forever. New versions get new hashes, so no purging needed.
+- Three-tier CDN: edge PoP (< 10ms) → regional shield (< 50ms) → S3 origin (< 200ms). Cache hit rate > 99.5% at the edge for images older than 1 hour.
+
+---
+
 ## Key Takeaways
 
 1. **Direct-to-S3 uploads**: Bypass app servers for media uploads using signed URLs; process async
