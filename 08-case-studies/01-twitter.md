@@ -60,112 +60,138 @@ graph TD
 
 Each follower's timeline cache gets the tweet ID appended.
 
-```python
-class FanOutService:
-    def __init__(self, redis_client, follower_service):
-        self.redis = redis_client
-        self.follower_service = follower_service
-        self.max_timeline_size = 800  # Keep last 800 tweets
-    
-    async def fan_out_tweet(self, tweet: Tweet):
-        """
-        Distribute tweet to all followers' timelines.
-        """
-        user_id = tweet.author_id
-        follower_count = await self.follower_service.get_follower_count(user_id)
-        
-        # Check if user is a celebrity (high follower count)
-        if follower_count > 10000:
-            # Don't fan out for celebrities - use fan-out-on-read
-            await self._mark_as_celebrity_tweet(tweet)
-            return
-        
-        # Get all followers
-        followers = await self.follower_service.get_followers(user_id)
-        
-        # Fan out to each follower's timeline
-        pipe = self.redis.pipeline()
-        
-        for follower_id in followers:
-            timeline_key = f"timeline:{follower_id}"
-            
-            # Add tweet ID to timeline (sorted set by timestamp)
-            pipe.zadd(timeline_key, {tweet.id: tweet.created_at.timestamp()})
-            
-            # Trim to max size
-            pipe.zremrangebyrank(timeline_key, 0, -self.max_timeline_size - 1)
-        
-        await pipe.execute()
-    
-    async def _mark_as_celebrity_tweet(self, tweet: Tweet):
-        """Store in celebrity tweets index for fan-out-on-read."""
-        await self.redis.zadd(
-            f"celebrity_tweets:{tweet.author_id}",
-            {tweet.id: tweet.created_at.timestamp()}
-        )
+```java
+import com.twitter.finagle.Service;
+import redis.clients.jedis.JedisCluster;
+import redis.clients.jedis.Pipeline;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public class FanOutService {
+    private final JedisCluster redis;
+    private final FollowerService followerService;
+    private final ExecutorService executor;
+    private static final int MAX_TIMELINE_SIZE = 800; // Keep last 800 tweets
+
+    public FanOutService(JedisCluster redis, FollowerService followerService) {
+        this.redis = redis;
+        this.followerService = followerService;
+        this.executor = Executors.newFixedThreadPool(64);
+    }
+
+    /**
+     * Distribute tweet to all followers' timelines.
+     */
+    public CompletableFuture<Void> fanOutTweet(Tweet tweet) {
+        long userId = tweet.getAuthorId();
+
+        return followerService.getFollowerCount(userId).thenComposeAsync(followerCount -> {
+            // Check if user is a celebrity (high follower count)
+            if (followerCount > 10_000) {
+                // Don't fan out for celebrities - use fan-out-on-read
+                return markAsCelebrityTweet(tweet);
+            }
+
+            // Get all followers and fan out
+            return followerService.getFollowers(userId).thenAcceptAsync(followers -> {
+                Pipeline pipe = redis.pipelined();
+
+                for (Long followerId : followers) {
+                    String timelineKey = "timeline:" + followerId;
+
+                    // Add tweet ID to timeline (sorted set by timestamp)
+                    pipe.zadd(timelineKey, tweet.getCreatedAt().toEpochMilli(), String.valueOf(tweet.getId()));
+
+                    // Trim to max size
+                    pipe.zremrangeByRank(timelineKey, 0, -MAX_TIMELINE_SIZE - 1);
+                }
+
+                pipe.sync();
+            }, executor);
+        }, executor);
+    }
+
+    /** Store in celebrity tweets index for fan-out-on-read. */
+    private CompletableFuture<Void> markAsCelebrityTweet(Tweet tweet) {
+        return CompletableFuture.runAsync(() -> {
+            redis.zadd(
+                "celebrity_tweets:" + tweet.getAuthorId(),
+                tweet.getCreatedAt().toEpochMilli(),
+                String.valueOf(tweet.getId())
+            );
+        }, executor);
+    }
+}
 ```
 
 ### Fan-Out-on-Read for Celebrities
 
-```python
-class TimelineService:
-    def __init__(self, redis_client, tweet_service, follow_service):
-        self.redis = redis_client
-        self.tweet_service = tweet_service
-        self.follow_service = follow_service
-    
-    async def get_home_timeline(
-        self, 
-        user_id: str, 
-        count: int = 20,
-        max_id: str = None
-    ) -> List[Tweet]:
-        """
-        Get home timeline with hybrid fan-out.
-        """
-        # 1. Get pre-computed timeline (fan-out-on-write results)
-        timeline_key = f"timeline:{user_id}"
-        
-        if max_id:
-            max_score = await self._get_tweet_score(max_id)
-            cached_ids = await self.redis.zrevrangebyscore(
-                timeline_key,
-                max_score,
-                '-inf',
-                start=0,
-                num=count
-            )
-        else:
-            cached_ids = await self.redis.zrevrange(
-                timeline_key,
-                0,
-                count - 1
-            )
-        
-        # 2. Get tweets from celebrities user follows
-        celebrity_followings = await self.follow_service.get_celebrity_followings(
-            user_id
-        )
-        
-        celebrity_tweets = []
-        for celebrity_id in celebrity_followings:
-            tweets = await self.redis.zrevrange(
-                f"celebrity_tweets:{celebrity_id}",
-                0,
-                count - 1
-            )
-            celebrity_tweets.extend(tweets)
-        
-        # 3. Merge and sort
-        all_tweet_ids = list(set(cached_ids + celebrity_tweets))
-        
-        # Fetch tweet objects
-        tweets = await self.tweet_service.get_tweets_batch(all_tweet_ids)
-        
-        # Sort by created_at descending
-        tweets.sort(key=lambda t: t.created_at, reverse=True)
-        
-        return tweets[:count]
+```java
+import com.twitter.finagle.Service;
+import redis.clients.jedis.JedisCluster;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
+
+public class TimelineService extends Service<TimelineRequest, TimelineResponse> {
+    private final JedisCluster redis;
+    private final TweetService tweetService;
+    private final FollowService followService;
+    private final ExecutorService executor;
+
+    public TimelineService(JedisCluster redis, TweetService tweetService, FollowService followService) {
+        this.redis = redis;
+        this.tweetService = tweetService;
+        this.followService = followService;
+        this.executor = Executors.newFixedThreadPool(32);
+    }
+
+    /**
+     * Get home timeline with hybrid fan-out.
+     */
+    public CompletableFuture<List<Tweet>> getHomeTimeline(long userId, int count, Long maxId) {
+        String timelineKey = "timeline:" + userId;
+
+        // 1. Get pre-computed timeline (fan-out-on-write results)
+        CompletableFuture<Set<String>> cachedFuture = CompletableFuture.supplyAsync(() -> {
+            if (maxId != null) {
+                double maxScore = redis.zscore(timelineKey, String.valueOf(maxId));
+                return redis.zrevrangeByScore(timelineKey, maxScore, 0, 0, count);
+            }
+            return redis.zrevrange(timelineKey, 0, count - 1);
+        }, executor);
+
+        // 2. Get tweets from celebrities user follows
+        CompletableFuture<List<String>> celebFuture = followService
+            .getCelebrityFollowings(userId)
+            .thenApplyAsync(celebrityIds -> {
+                List<String> celebTweets = new ArrayList<>();
+                for (Long celebrityId : celebrityIds) {
+                    Set<String> tweets = redis.zrevrange("celebrity_tweets:" + celebrityId, 0, count - 1);
+                    celebTweets.addAll(tweets);
+                }
+                return celebTweets;
+            }, executor);
+
+        // 3. Merge and sort
+        return cachedFuture.thenCombineAsync(celebFuture, (cached, celeb) -> {
+            Set<String> allIds = new LinkedHashSet<>(cached);
+            allIds.addAll(celeb);
+            return allIds;
+        }, executor).thenComposeAsync(allIds -> {
+            return tweetService.getTweetsBatch(
+                allIds.stream().map(Long::parseLong).collect(Collectors.toList())
+            );
+        }, executor).thenApplyAsync(tweets -> {
+            tweets.sort(Comparator.comparing(Tweet::getCreatedAt).reversed());
+            return tweets.subList(0, Math.min(count, tweets.size()));
+        }, executor);
+    }
+}
 ```
 
 ```mermaid
@@ -229,68 +255,81 @@ CREATE TABLE follows (
 
 ### Tweet ID Generation (Snowflake)
 
-```python
-import time
-import threading
+```java
+import java.util.concurrent.atomic.AtomicLong;
 
-class SnowflakeGenerator:
-    """
-    Twitter's Snowflake ID generator.
-    64-bit IDs with embedded timestamp for ordering.
-    
-    Structure:
-    | 1 bit unused | 41 bits timestamp | 10 bits machine | 12 bits sequence |
-    """
-    
-    def __init__(self, machine_id: int):
-        self.machine_id = machine_id & 0x3FF  # 10 bits
-        self.sequence = 0
-        self.last_timestamp = -1
-        self.lock = threading.Lock()
-        
-        # Epoch: Twitter's epoch (Nov 4, 2010)
-        self.epoch = 1288834974657
-    
-    def _current_millis(self) -> int:
-        return int(time.time() * 1000)
-    
-    def _wait_next_millis(self, last_ts: int) -> int:
-        ts = self._current_millis()
-        while ts <= last_ts:
-            ts = self._current_millis()
-        return ts
-    
-    def next_id(self) -> int:
-        with self.lock:
-            timestamp = self._current_millis()
-            
-            if timestamp < self.last_timestamp:
-                raise Exception("Clock moved backwards!")
-            
-            if timestamp == self.last_timestamp:
-                self.sequence = (self.sequence + 1) & 0xFFF  # 12 bits
-                if self.sequence == 0:
-                    timestamp = self._wait_next_millis(self.last_timestamp)
-            else:
-                self.sequence = 0
-            
-            self.last_timestamp = timestamp
-            
-            # Compose ID
-            id = ((timestamp - self.epoch) << 22) | \
-                 (self.machine_id << 12) | \
-                 self.sequence
-            
-            return id
+/**
+ * Twitter's Snowflake ID generator.
+ * 64-bit IDs with embedded timestamp for ordering.
+ *
+ * Structure:
+ * | 1 bit unused | 41 bits timestamp | 10 bits machine | 12 bits sequence |
+ */
+public class SnowflakeGenerator {
+    private static final long TWITTER_EPOCH = 1288834974657L; // Nov 4, 2010
+    private static final int MACHINE_ID_BITS = 10;
+    private static final int SEQUENCE_BITS = 12;
+    private static final long MAX_SEQUENCE = (1L << SEQUENCE_BITS) - 1; // 4095
 
-# Usage
-generator = SnowflakeGenerator(machine_id=1)
-tweet_id = generator.next_id()  # e.g., 1234567890123456789
+    private final long machineId;
+    private final AtomicLong sequence = new AtomicLong(0);
+    private long lastTimestamp = -1L;
 
-# Extract timestamp from ID
-def extract_timestamp(tweet_id: int) -> int:
-    epoch = 1288834974657
-    return ((tweet_id >> 22) + epoch)
+    public SnowflakeGenerator(int machineId) {
+        this.machineId = machineId & 0x3FF; // 10 bits
+    }
+
+    private long currentMillis() {
+        return System.currentTimeMillis();
+    }
+
+    private long waitNextMillis(long lastTs) {
+        long ts = currentMillis();
+        while (ts <= lastTs) {
+            ts = currentMillis();
+        }
+        return ts;
+    }
+
+    public synchronized long nextId() {
+        long timestamp = currentMillis();
+
+        if (timestamp < lastTimestamp) {
+            throw new IllegalStateException(
+                "Clock moved backwards! Refusing to generate ID for "
+                + (lastTimestamp - timestamp) + " milliseconds"
+            );
+        }
+
+        if (timestamp == lastTimestamp) {
+            long seq = sequence.incrementAndGet() & MAX_SEQUENCE;
+            if (seq == 0) {
+                timestamp = waitNextMillis(lastTimestamp);
+            }
+        } else {
+            sequence.set(0);
+        }
+
+        lastTimestamp = timestamp;
+
+        // Compose ID with bit manipulation
+        return ((timestamp - TWITTER_EPOCH) << (MACHINE_ID_BITS + SEQUENCE_BITS))
+             | (machineId << SEQUENCE_BITS)
+             | sequence.get();
+    }
+
+    /** Extract creation timestamp from a Snowflake ID. */
+    public static long extractTimestamp(long snowflakeId) {
+        return (snowflakeId >> (MACHINE_ID_BITS + SEQUENCE_BITS)) + TWITTER_EPOCH;
+    }
+
+    // Usage
+    public static void main(String[] args) {
+        SnowflakeGenerator generator = new SnowflakeGenerator(1);
+        long tweetId = generator.nextId(); // e.g., 1234567890123456789
+        long createdAt = extractTimestamp(tweetId);
+    }
+}
 ```
 
 ---
@@ -307,318 +346,368 @@ graph LR
     ES --> S2[("Shard 2")]
 ```
 
-```python
-class TweetSearchService:
-    def __init__(self, es_client):
-        self.es = es_client
-        self.index_name = "tweets"
-    
-    async def index_tweet(self, tweet: Tweet):
-        """Index tweet for search."""
-        doc = {
-            'id': tweet.id,
-            'text': tweet.content,
-            'author_id': tweet.author_id,
-            'author_username': tweet.author.username,
-            'created_at': tweet.created_at.isoformat(),
-            'hashtags': self._extract_hashtags(tweet.content),
-            'mentions': self._extract_mentions(tweet.content),
-            'lang': self._detect_language(tweet.content),
-            'engagement': {
-                'likes': tweet.like_count,
-                'retweets': tweet.retweet_count,
-                'replies': tweet.reply_count
-            }
-        }
-        
-        await self.es.index(
-            index=self.index_name,
-            id=tweet.id,
-            document=doc
-        )
-    
-    async def search(
-        self,
-        query: str,
-        filters: dict = None,
-        size: int = 20
-    ) -> List[Tweet]:
-        """Search tweets with relevance ranking."""
-        
-        body = {
-            'query': {
-                'bool': {
-                    'must': [
-                        {
-                            'multi_match': {
-                                'query': query,
-                                'fields': ['text^2', 'author_username'],
-                                'type': 'best_fields'
-                            }
-                        }
-                    ],
-                    'filter': []
+```java
+import com.twitter.finagle.Service;
+import org.elasticsearch.action.index.IndexRequest;
+import org.elasticsearch.action.search.SearchRequest;
+import org.elasticsearch.action.search.SearchResponse;
+import org.elasticsearch.client.RestHighLevelClient;
+import org.elasticsearch.index.query.BoolQueryBuilder;
+import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.search.builder.SearchSourceBuilder;
+import org.elasticsearch.search.sort.SortOrder;
+
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
+public class TweetSearchService extends Service<SearchRequest, SearchResponse> {
+    private final RestHighLevelClient esClient;
+    private final ExecutorService executor;
+    private static final String INDEX_NAME = "tweets";
+    private static final Pattern HASHTAG_PATTERN = Pattern.compile("#(\\w+)");
+    private static final Pattern MENTION_PATTERN = Pattern.compile("@(\\w+)");
+
+    public TweetSearchService(RestHighLevelClient esClient) {
+        this.esClient = esClient;
+        this.executor = Executors.newFixedThreadPool(16);
+    }
+
+    /** Index tweet for search. */
+    public CompletableFuture<Void> indexTweet(Tweet tweet) {
+        return CompletableFuture.runAsync(() -> {
+            Map<String, Object> doc = new HashMap<>();
+            doc.put("id", tweet.getId());
+            doc.put("text", tweet.getContent());
+            doc.put("author_id", tweet.getAuthorId());
+            doc.put("author_username", tweet.getAuthor().getUsername());
+            doc.put("created_at", tweet.getCreatedAt().toString());
+            doc.put("hashtags", extractHashtags(tweet.getContent()));
+            doc.put("mentions", extractMentions(tweet.getContent()));
+            doc.put("engagement", Map.of(
+                "likes", tweet.getLikeCount(),
+                "retweets", tweet.getRetweetCount(),
+                "replies", tweet.getReplyCount()
+            ));
+
+            IndexRequest request = new IndexRequest(INDEX_NAME)
+                .id(String.valueOf(tweet.getId()))
+                .source(doc);
+            esClient.index(request);
+        }, executor);
+    }
+
+    /** Search tweets with relevance ranking. */
+    public CompletableFuture<List<Map<String, Object>>> search(
+            String query, Map<String, String> filters, int size) {
+        return CompletableFuture.supplyAsync(() -> {
+            BoolQueryBuilder boolQuery = QueryBuilders.boolQuery()
+                .must(QueryBuilders.multiMatchQuery(query, "text^2", "author_username")
+                    .type("best_fields"));
+
+            // Apply filters
+            if (filters != null) {
+                if (filters.containsKey("from_user")) {
+                    boolQuery.filter(QueryBuilders.termQuery("author_username", filters.get("from_user")));
                 }
-            },
-            'sort': [
-                {'_score': 'desc'},
-                {'created_at': 'desc'}
-            ],
-            'size': size
-        }
-        
-        # Apply filters
-        if filters:
-            if filters.get('from_user'):
-                body['query']['bool']['filter'].append({
-                    'term': {'author_username': filters['from_user']}
-                })
-            
-            if filters.get('since'):
-                body['query']['bool']['filter'].append({
-                    'range': {'created_at': {'gte': filters['since']}}
-                })
-        
-        result = await self.es.search(index=self.index_name, body=body)
-        
-        return [hit['_source'] for hit in result['hits']['hits']]
-    
-    def _extract_hashtags(self, text: str) -> List[str]:
-        import re
-        return re.findall(r'#(\w+)', text)
-    
-    def _extract_mentions(self, text: str) -> List[str]:
-        import re
-        return re.findall(r'@(\w+)', text)
+                if (filters.containsKey("since")) {
+                    boolQuery.filter(QueryBuilders.rangeQuery("created_at").gte(filters.get("since")));
+                }
+            }
+
+            SearchSourceBuilder source = new SearchSourceBuilder()
+                .query(boolQuery)
+                .sort("_score", SortOrder.DESC)
+                .sort("created_at", SortOrder.DESC)
+                .size(size);
+
+            SearchRequest searchRequest = new SearchRequest(INDEX_NAME).source(source);
+            SearchResponse response = esClient.search(searchRequest);
+
+            return Arrays.stream(response.getHits().getHits())
+                .map(hit -> hit.getSourceAsMap())
+                .collect(Collectors.toList());
+        }, executor);
+    }
+
+    private List<String> extractHashtags(String text) {
+        Matcher matcher = HASHTAG_PATTERN.matcher(text);
+        List<String> tags = new ArrayList<>();
+        while (matcher.find()) { tags.add(matcher.group(1)); }
+        return tags;
+    }
+
+    private List<String> extractMentions(String text) {
+        Matcher matcher = MENTION_PATTERN.matcher(text);
+        List<String> mentions = new ArrayList<>();
+        while (matcher.find()) { mentions.add(matcher.group(1)); }
+        return mentions;
+    }
+}
 ```
 
 ---
 
 ## Trending Topics
 
-```python
-import time
-from collections import defaultdict
-from typing import List, Tuple
+```java
+import redis.clients.jedis.JedisCluster;
+import redis.clients.jedis.ScanParams;
+import redis.clients.jedis.ScanResult;
 
-class TrendingService:
-    """
-    Detect trending topics using sliding window and velocity.
-    """
-    
-    def __init__(self, redis_client):
-        self.redis = redis_client
-        self.window_size = 3600  # 1 hour window
-        self.bucket_size = 60    # 1 minute buckets
-    
-    async def record_hashtag(self, hashtag: str, location: str = "global"):
-        """Record hashtag occurrence."""
-        now = int(time.time())
-        bucket = now // self.bucket_size
-        
-        # Increment count in current bucket
-        key = f"trend:{location}:{hashtag}"
-        await self.redis.hincrby(key, str(bucket), 1)
-        
-        # Set expiry
-        await self.redis.expire(key, self.window_size * 2)
-    
-    async def get_trending(
-        self, 
-        location: str = "global",
-        count: int = 10
-    ) -> List[Tuple[str, float]]:
-        """
-        Get trending topics with velocity score.
-        """
-        now = int(time.time())
-        current_bucket = now // self.bucket_size
-        
-        # Get all hashtag keys
-        pattern = f"trend:{location}:*"
-        keys = await self.redis.keys(pattern)
-        
-        scores = {}
-        
-        for key in keys:
-            hashtag = key.decode().split(':')[-1]
-            buckets = await self.redis.hgetall(key)
-            
-            # Calculate velocity (recent vs older)
-            recent_count = 0
-            older_count = 0
-            
-            for bucket_str, count in buckets.items():
-                bucket = int(bucket_str)
-                count = int(count)
-                
-                # Skip expired buckets
-                if (current_bucket - bucket) * self.bucket_size > self.window_size:
-                    continue
-                
-                if current_bucket - bucket <= 10:  # Last 10 minutes
-                    recent_count += count
-                else:
-                    older_count += count
-            
-            # Velocity score: recent activity weighted more
-            total = recent_count + older_count
-            if total < 10:  # Minimum threshold
-                continue
-            
-            velocity = (recent_count * 2 + older_count) / (self.window_size / 60)
-            scores[hashtag] = velocity
-        
-        # Sort by score
-        sorted_trends = sorted(
-            scores.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )
-        
-        return sorted_trends[:count]
-    
-    async def get_personalized_trends(
-        self,
-        user_id: str,
-        location: str
-    ) -> List[Tuple[str, float]]:
-        """
-        Get trends personalized to user's interests.
-        """
-        # Get user's interests
-        interests = await self._get_user_interests(user_id)
-        
-        # Get global trends
-        global_trends = await self.get_trending(location)
-        
-        # Boost trends matching user interests
-        boosted = []
-        for hashtag, score in global_trends:
-            boost = 1.0
-            if hashtag.lower() in interests:
-                boost = 1.5
-            boosted.append((hashtag, score * boost))
-        
-        boosted.sort(key=lambda x: x[1], reverse=True)
-        return boosted
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
+
+/**
+ * Detect trending topics using sliding window and velocity.
+ * Backed by Redis (Twemcache) with Storm for real-time stream processing.
+ */
+public class TrendingService {
+    private final JedisCluster redis;
+    private final ExecutorService executor;
+    private static final int WINDOW_SIZE = 3600;  // 1 hour window
+    private static final int BUCKET_SIZE = 60;    // 1 minute buckets
+
+    public TrendingService(JedisCluster redis) {
+        this.redis = redis;
+        this.executor = Executors.newFixedThreadPool(16);
+    }
+
+    /** Record hashtag occurrence. */
+    public CompletableFuture<Void> recordHashtag(String hashtag, String location) {
+        return CompletableFuture.runAsync(() -> {
+            long now = System.currentTimeMillis() / 1000;
+            long bucket = now / BUCKET_SIZE;
+
+            String key = "trend:" + location + ":" + hashtag;
+            redis.hincrBy(key, String.valueOf(bucket), 1);
+            redis.expire(key, WINDOW_SIZE * 2);
+        }, executor);
+    }
+
+    /** Get trending topics with velocity score. */
+    public CompletableFuture<List<Map.Entry<String, Double>>> getTrending(String location, int count) {
+        return CompletableFuture.supplyAsync(() -> {
+            long now = System.currentTimeMillis() / 1000;
+            long currentBucket = now / BUCKET_SIZE;
+
+            String pattern = "trend:" + location + ":*";
+            Set<String> keys = scanKeys(pattern);
+            Map<String, Double> scores = new HashMap<>();
+
+            for (String key : keys) {
+                String hashtag = key.substring(key.lastIndexOf(':') + 1);
+                Map<String, String> buckets = redis.hgetAll(key);
+
+                long recentCount = 0;
+                long olderCount = 0;
+
+                for (Map.Entry<String, String> entry : buckets.entrySet()) {
+                    long bucket = Long.parseLong(entry.getKey());
+                    long cnt = Long.parseLong(entry.getValue());
+
+                    // Skip expired buckets
+                    if ((currentBucket - bucket) * BUCKET_SIZE > WINDOW_SIZE) continue;
+
+                    if (currentBucket - bucket <= 10) { // Last 10 minutes
+                        recentCount += cnt;
+                    } else {
+                        olderCount += cnt;
+                    }
+                }
+
+                long total = recentCount + olderCount;
+                if (total < 10) continue; // Minimum threshold
+
+                double velocity = (recentCount * 2.0 + olderCount) / (WINDOW_SIZE / 60.0);
+                scores.put(hashtag, velocity);
+            }
+
+            return scores.entrySet().stream()
+                .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                .limit(count)
+                .collect(Collectors.toList());
+        }, executor);
+    }
+
+    /** Get trends personalized to user's interests. */
+    public CompletableFuture<List<Map.Entry<String, Double>>> getPersonalizedTrends(
+            long userId, String location) {
+        return CompletableFuture.supplyAsync(() -> getUserInterests(userId), executor)
+            .thenCombine(getTrending(location, 50), (interests, globalTrends) -> {
+                Map<String, Double> boosted = new LinkedHashMap<>();
+                for (Map.Entry<String, Double> entry : globalTrends) {
+                    double boost = interests.contains(entry.getKey().toLowerCase()) ? 1.5 : 1.0;
+                    boosted.put(entry.getKey(), entry.getValue() * boost);
+                }
+                return boosted.entrySet().stream()
+                    .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                    .collect(Collectors.toList());
+            });
+    }
+
+    private Set<String> scanKeys(String pattern) {
+        Set<String> keys = new HashSet<>();
+        ScanParams params = new ScanParams().match(pattern).count(100);
+        String cursor = "0";
+        do {
+            ScanResult<String> result = redis.scan(cursor, params);
+            keys.addAll(result.getResult());
+            cursor = result.getCursor();
+        } while (!"0".equals(cursor));
+        return keys;
+    }
+
+    private Set<String> getUserInterests(long userId) {
+        return redis.smembers("user:interests:" + userId);
+    }
+}
 ```
 
 ---
 
 ## Notifications
 
-```python
-from enum import Enum
-from dataclasses import dataclass
-from typing import List
+```java
+import redis.clients.jedis.JedisCluster;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
 
-class NotificationType(Enum):
-    LIKE = "like"
-    RETWEET = "retweet"
-    REPLY = "reply"
-    MENTION = "mention"
-    FOLLOW = "follow"
-    QUOTE = "quote"
+public enum NotificationType {
+    LIKE("like"), RETWEET("retweet"), REPLY("reply"),
+    MENTION("mention"), FOLLOW("follow"), QUOTE("quote");
 
-@dataclass
-class Notification:
-    id: str
-    user_id: str
-    type: NotificationType
-    actor_id: str
-    tweet_id: str = None
-    created_at: float = None
+    private final String value;
+    NotificationType(String value) { this.value = value; }
+    public String getValue() { return value; }
+}
 
-class NotificationService:
-    def __init__(self, redis_client, push_service):
-        self.redis = redis_client
-        self.push = push_service
-        self.max_notifications = 1000
-    
-    async def create_notification(
-        self,
-        user_id: str,
-        notification: Notification
-    ):
-        """Create and deliver notification."""
-        # Store in notification list
-        key = f"notifications:{user_id}"
-        
-        await self.redis.zadd(
-            key,
-            {notification.id: notification.created_at}
-        )
-        
-        # Trim old notifications
-        await self.redis.zremrangebyrank(key, 0, -self.max_notifications - 1)
-        
-        # Increment unread count
-        await self.redis.incr(f"notifications:unread:{user_id}")
-        
-        # Check notification preferences
-        prefs = await self._get_notification_prefs(user_id, notification.type)
-        
-        if prefs.get('push_enabled'):
-            # Send push notification
-            await self.push.send(
-                user_id=user_id,
-                title=self._format_title(notification),
-                body=self._format_body(notification)
-            )
-    
-    async def get_notifications(
-        self,
-        user_id: str,
-        count: int = 20,
-        cursor: str = None
-    ) -> List[Notification]:
-        """Get user's notifications."""
-        key = f"notifications:{user_id}"
-        
-        if cursor:
-            max_score = float(cursor)
-            ids = await self.redis.zrevrangebyscore(
-                key, max_score, '-inf',
-                start=0, num=count
-            )
-        else:
-            ids = await self.redis.zrevrange(key, 0, count - 1)
-        
-        notifications = await self._fetch_notifications(ids)
-        
-        # Mark as read
-        await self.redis.set(f"notifications:unread:{user_id}", 0)
-        
-        return notifications
-    
-    async def aggregate_notifications(
-        self,
-        user_id: str,
-        tweet_id: str,
-        notification_type: NotificationType
-    ):
-        """
-        Aggregate similar notifications.
-        e.g., "User A and 5 others liked your tweet"
-        """
-        key = f"notification:aggregate:{tweet_id}:{notification_type.value}"
-        
-        # Add actor to aggregation
-        await self.redis.sadd(key, notification.actor_id)
-        await self.redis.expire(key, 86400)  # 24 hours
-        
-        # Get aggregated count
-        count = await self.redis.scard(key)
-        
-        if count == 1:
-            # First notification - create normally
-            await self.create_notification(user_id, notification)
-        else:
-            # Update existing notification
-            await self._update_aggregated_notification(
-                user_id, tweet_id, notification_type, count
-            )
+public class Notification {
+    private final long id;
+    private final long userId;
+    private final NotificationType type;
+    private final long actorId;
+    private final Long tweetId;       // nullable
+    private final double createdAt;
+
+    public Notification(long id, long userId, NotificationType type,
+                        long actorId, Long tweetId, double createdAt) {
+        this.id = id;
+        this.userId = userId;
+        this.type = type;
+        this.actorId = actorId;
+        this.tweetId = tweetId;
+        this.createdAt = createdAt;
+    }
+
+    // Getters omitted for brevity
+    public long getId() { return id; }
+    public long getUserId() { return userId; }
+    public NotificationType getType() { return type; }
+    public long getActorId() { return actorId; }
+    public Long getTweetId() { return tweetId; }
+    public double getCreatedAt() { return createdAt; }
+}
+
+public class NotificationService {
+    private final JedisCluster redis;
+    private final PushService pushService;
+    private final ExecutorService executor;
+    private static final int MAX_NOTIFICATIONS = 1000;
+
+    public NotificationService(JedisCluster redis, PushService pushService) {
+        this.redis = redis;
+        this.pushService = pushService;
+        this.executor = Executors.newFixedThreadPool(16);
+    }
+
+    /** Create and deliver notification. */
+    public CompletableFuture<Void> createNotification(long userId, Notification notification) {
+        return CompletableFuture.runAsync(() -> {
+            String key = "notifications:" + userId;
+
+            // Store in notification sorted set
+            redis.zadd(key, notification.getCreatedAt(), String.valueOf(notification.getId()));
+
+            // Trim old notifications
+            redis.zremrangeByRank(key, 0, -MAX_NOTIFICATIONS - 1);
+
+            // Increment unread count
+            redis.incr("notifications:unread:" + userId);
+
+            // Check notification preferences and send push
+            Map<String, String> prefs = getNotificationPrefs(userId, notification.getType());
+            if ("true".equals(prefs.get("push_enabled"))) {
+                pushService.send(
+                    userId,
+                    formatTitle(notification),
+                    formatBody(notification)
+                );
+            }
+        }, executor);
+    }
+
+    /** Get user's notifications. */
+    public CompletableFuture<List<Notification>> getNotifications(long userId, int count, Double cursor) {
+        return CompletableFuture.supplyAsync(() -> {
+            String key = "notifications:" + userId;
+            Set<String> ids;
+
+            if (cursor != null) {
+                ids = redis.zrevrangeByScore(key, cursor, 0, 0, count);
+            } else {
+                ids = redis.zrevrange(key, 0, count - 1);
+            }
+
+            List<Notification> notifications = fetchNotifications(ids);
+
+            // Mark as read
+            redis.set("notifications:unread:" + userId, "0");
+            return notifications;
+        }, executor);
+    }
+
+    /**
+     * Aggregate similar notifications.
+     * e.g., "User A and 5 others liked your tweet"
+     */
+    public CompletableFuture<Void> aggregateNotifications(
+            long userId, long tweetId, Notification notification) {
+        return CompletableFuture.runAsync(() -> {
+            String key = "notification:aggregate:" + tweetId + ":" + notification.getType().getValue();
+
+            redis.sadd(key, String.valueOf(notification.getActorId()));
+            redis.expire(key, 86400); // 24 hours
+
+            long aggregatedCount = redis.scard(key);
+
+            if (aggregatedCount == 1) {
+                createNotification(userId, notification).join();
+            } else {
+                updateAggregatedNotification(userId, tweetId, notification.getType(), aggregatedCount);
+            }
+        }, executor);
+    }
+
+    private Map<String, String> getNotificationPrefs(long userId, NotificationType type) {
+        return redis.hgetAll("notification:prefs:" + userId + ":" + type.getValue());
+    }
+
+    private String formatTitle(Notification n) { /* format based on type */ return ""; }
+    private String formatBody(Notification n) { /* format based on type */ return ""; }
+    private List<Notification> fetchNotifications(Set<String> ids) { return Collections.emptyList(); }
+    private void updateAggregatedNotification(long userId, long tweetId, NotificationType type, long count) {}
+}
 ```
 
 ---
@@ -633,6 +722,66 @@ class NotificationService:
 | Search queries/sec | 50K+ |
 | Average latency (timeline) | < 100ms |
 | Fan-out time (non-celebrity) | < 5 seconds |
+
+---
+
+## Production Insights
+
+### Celebrity Fan-Out and Thundering Herd
+
+When a celebrity with 50M+ followers posts a tweet, naive fan-out-on-write would mean
+writing to 50 million Redis sorted sets in a single burst. This creates a thundering herd
+that can saturate network links, blow through Twemcache memory limits, and spike GC pauses
+across the fan-out worker fleet. Twitter's mitigation is the hybrid model: accounts above
+a follower threshold are flagged as "celebrity" and their tweets are never fanned out.
+Instead, the Timeline Service merges celebrity tweets at read time. The threshold is
+dynamic — it can be lowered during high-traffic events (e.g., Super Bowl) to shed write
+load. An additional safeguard is rate-limiting the fan-out queue per author so that
+automated bot accounts cannot trigger a write storm even if they accumulate followers.
+
+### Manhattan KV Store Rationale
+
+Twitter replaced its earlier MySQL-backed timeline store with Manhattan, an in-house
+multi-tenant, eventually-consistent key-value store. The motivation was operational:
+MySQL sharding required manual shard splits, cross-shard queries for user migrations,
+and careful schema evolution. Manhattan provides automatic partition rebalancing,
+tunable consistency (per-key read-your-writes when needed, eventual otherwise), and
+native multi-datacenter replication via CRDT-like merge semantics. It stores timeline
+data, user metadata, and social graph adjacency lists. The storage engine uses LSM
+trees optimized for write-heavy workloads, and supports secondary indexes for reverse
+lookups (e.g., "who follows this user?"). The API exposes range scans, which map
+naturally to paginated timeline reads keyed by Snowflake IDs.
+
+### Finagle RPC Circuit Breaking
+
+Every inter-service call at Twitter goes through Finagle, a protocol-agnostic RPC
+framework built on Netty. Finagle provides built-in circuit breaking using a
+successive-failure policy: after N consecutive failures (or when the failure rate over
+a sliding window exceeds a threshold), the circuit opens and subsequent requests are
+failed fast for a configurable cool-down period. This prevents a single degraded
+downstream (e.g., a slow Elasticsearch shard) from consuming all threads in the caller's
+pool and cascading into a full outage. Finagle also supports request-level deadlines
+propagated via Thrift context — if a timeline read has already exceeded its 200ms budget
+by the time it reaches the tweet lookup service, the downstream call is abandoned early.
+Load balancing uses a "power of two choices" algorithm (p2c) with latency-aware scoring,
+routing requests away from slow hosts before the circuit even trips.
+
+### Clock Skew in Snowflake ID Generation
+
+Snowflake's correctness depends on a monotonically advancing clock. In production,
+NTP corrections and VM live-migrations can cause the system clock to jump backward.
+When `nextId()` detects `timestamp < lastTimestamp`, it throws rather than issuing a
+duplicate or out-of-order ID. Twitter's operational response is threefold:
+(1) Run NTP with `-x` flag to slew rather than step the clock, bounding corrections
+to 500ppm drift instead of abrupt jumps.
+(2) Monitor clock offset via a sidecar that compares the local clock to multiple NTP
+sources and alerts when skew exceeds 10ms.
+(3) Provision spare Snowflake workers with distinct machine IDs — when a worker refuses
+to issue IDs due to clock regression, traffic is shifted to a healthy worker while the
+affected host re-syncs. The 41-bit timestamp field gives roughly 69 years of headroom
+from the Twitter epoch (Nov 4, 2010), meaning ID space exhaustion is not a near-term
+concern, but the machine-ID assignment (10 bits = 1024 workers) requires coordination
+via ZooKeeper to prevent collisions across data centers.
 
 ---
 
