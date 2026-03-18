@@ -1,10 +1,10 @@
 # WhatsApp システム設計
 
-> **注意:** この記事は英語版からの翻訳です。コードブロック、Mermaidダイアグラム、企業名、技術スタック名は原文のまま記載しています。
+> **翻訳についての注記:** この記事は英語版からの翻訳です。コードブロック（Erlang）、Mermaidダイアグラム、およびツール名（Erlang, BEAM, OTP, Mnesia, HBase, FreeBSDなど）は原文のまま記載しています。
 
 ## TL;DR
 
-WhatsAppは20億人以上のユーザーに1日1,000億以上のメッセージをエンドツーエンド暗号化で配信しています。アーキテクチャの中心には、数百万接続をサーバーごとに処理する**Erlang/BEAMによる接続管理**、メッセージングのための**XMPPベースプロトコル**、Signal Protocolを使用した**エンドツーエンド暗号化**、配信確認付きの**オフラインメッセージキューイング**、そして暗号化されたBlobによる**CDN経由のメディア配信**があります。重要な知見：慎重な技術選択と最小限の機能セットによるサーバーあたりの極端な効率性です（買収時に1エンジニア：1,400万ユーザー）。
+WhatsAppは20億人以上のユーザーに1日1,000億以上のメッセージをエンドツーエンド暗号化で配信しています。アーキテクチャの中心には、サーバーあたり数百万接続を処理する**Erlang/BEAMによる接続管理**、メッセージングのための**XMPPベースプロトコル**、Signal Protocolを使用した**エンドツーエンド暗号化**、配信確認付きの**オフラインメッセージキューイング**、そして暗号化されたBlobによる**CDN経由のメディア配信**があります。重要な知見：慎重な技術選択と最小限の機能セットによるサーバーあたりの極端な効率性です（買収時に1エンジニア：1,400万ユーザー）。
 
 ---
 
@@ -333,251 +333,192 @@ retry_pending_messages(State) ->
 
 ### 暗号化の実装
 
-```python
-from dataclasses import dataclass
-from typing import Optional, Tuple, Dict
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-import os
+```erlang
+-module(wa_signal).
+-export([new/1, get_key_bundle/1, initiate_session/3, initiate_session/4,
+         encrypt_message/3, decrypt_message/5]).
 
-@dataclass
-class KeyBundle:
-    """Public keys published to server for initial key exchange"""
-    identity_key: bytes
-    signed_prekey: bytes
-    signed_prekey_signature: bytes
-    one_time_prekeys: list  # List of (id, public_key) tuples
+%% NIF stubs — actual X25519 / AES-GCM lives in a C library loaded via
+%% erlang:load_nif/2.  The server only manages pre-key bundles; all
+%% plaintext encryption happens on-device.  These stubs illustrate the
+%% Erlang ↔ C boundary.
+-on_load(init_nif/0).
 
+init_nif() ->
+    PrivDir = code:priv_dir(wa_signal),
+    erlang:load_nif(filename:join(PrivDir, "wa_signal_nif"), 0).
 
-@dataclass
-class SessionState:
-    """State of an encrypted session with a peer"""
-    root_key: bytes
-    sending_chain_key: bytes
-    receiving_chain_key: Optional[bytes]
-    sending_ratchet_key: X25519PrivateKey
-    receiving_ratchet_key: Optional[X25519PublicKey]
-    message_number_sending: int = 0
-    message_number_receiving: int = 0
-    previous_counter: int = 0
-    skipped_message_keys: Dict[Tuple[bytes, int], bytes] = None
+%% --- NIF placeholders (replaced at load time) ---------------------
+nif_x25519_keypair()           -> erlang:nif_error(not_loaded).
+nif_x25519_dh(_Priv, _Pub)    -> erlang:nif_error(not_loaded).
+nif_hkdf(_Salt, _Ikm, _Info, _Len) -> erlang:nif_error(not_loaded).
+nif_aes_gcm_encrypt(_Key, _Nonce, _Plain, _Ad) -> erlang:nif_error(not_loaded).
+nif_aes_gcm_decrypt(_Key, _Nonce, _Cipher, _Ad) -> erlang:nif_error(not_loaded).
+nif_random_bytes(_N)           -> erlang:nif_error(not_loaded).
+nif_sign_key(_IdentityPriv, _Data) -> erlang:nif_error(not_loaded).
 
+%% --- Public API ---------------------------------------------------
 
-class SignalProtocol:
-    """
-    Implementation of Signal Protocol for E2E encryption.
-    Used by WhatsApp for message encryption.
-    """
+%% Create a new protocol state with a long-term identity key.
+new(IdentityPriv) ->
+    SignedPreKey = nif_x25519_keypair(),
+    OneTimePreKeys = [nif_x25519_keypair() || _ <- lists:seq(1, 100)],
+    #{identity_key => IdentityPriv,
+      signed_prekey => SignedPreKey,
+      one_time_prekeys => OneTimePreKeys,
+      sessions => #{}}.
 
-    def __init__(self, identity_key: X25519PrivateKey):
-        self.identity_key = identity_key
-        self.signed_prekey = X25519PrivateKey.generate()
-        self.one_time_prekeys = []
-        self.sessions: Dict[str, SessionState] = {}
+%% Return the public key bundle to publish to the server.
+get_key_bundle(#{identity_key := IK, signed_prekey := SPK,
+                 one_time_prekeys := OTPs}) ->
+    SPKPub = maps:get(public, SPK),
+    Signature = nif_sign_key(maps:get(private, IK), SPKPub),
+    #{identity_key   => maps:get(public, IK),
+      signed_prekey  => SPKPub,
+      signed_prekey_signature => Signature,
+      one_time_prekeys =>
+          [{I, maps:get(public, K)} || {I, K} <- lists:zip(
+              lists:seq(0, length(OTPs) - 1), OTPs)]}.
 
-        # Generate initial one-time prekeys
-        for _ in range(100):
-            self.one_time_prekeys.append(X25519PrivateKey.generate())
+%% Initiate session without a one-time pre-key.
+initiate_session(PeerId, PeerBundle, State) ->
+    initiate_session(PeerId, PeerBundle, undefined, State).
 
-    def get_key_bundle(self) -> KeyBundle:
-        """Get public keys to publish to server"""
-        # Sign the signed prekey with identity key
-        signature = self._sign_key(
-            self.signed_prekey.public_key().public_bytes_raw()
-        )
+%% X3DH key exchange — returns {EphemeralPub, NewState}.
+initiate_session(PeerId, PeerBundle, UsedOTPId, State) ->
+    EK = nif_x25519_keypair(),
+    EKPriv = maps:get(private, EK),
+    IKPriv = maps:get(private, maps:get(identity_key, State)),
 
-        return KeyBundle(
-            identity_key=self.identity_key.public_key().public_bytes_raw(),
-            signed_prekey=self.signed_prekey.public_key().public_bytes_raw(),
-            signed_prekey_signature=signature,
-            one_time_prekeys=[
-                (i, k.public_key().public_bytes_raw())
-                for i, k in enumerate(self.one_time_prekeys)
-            ]
-        )
+    PeerIK  = maps:get(identity_key, PeerBundle),
+    PeerSPK = maps:get(signed_prekey, PeerBundle),
 
-    def initiate_session(
-        self,
-        peer_id: str,
-        peer_bundle: KeyBundle,
-        used_one_time_key_id: Optional[int] = None
-    ) -> bytes:
-        """
-        Initiate session using X3DH key exchange.
-        Returns ephemeral key to send with first message.
-        """
-        # Generate ephemeral key
-        ephemeral_key = X25519PrivateKey.generate()
+    DH1 = nif_x25519_dh(IKPriv, PeerSPK),
+    DH2 = nif_x25519_dh(EKPriv, PeerIK),
+    DH3 = nif_x25519_dh(EKPriv, PeerSPK),
 
-        # Parse peer's public keys
-        peer_identity = X25519PublicKey.from_public_bytes(peer_bundle.identity_key)
-        peer_signed_prekey = X25519PublicKey.from_public_bytes(peer_bundle.signed_prekey)
+    SharedSecret = case UsedOTPId of
+        undefined ->
+            <<DH1/binary, DH2/binary, DH3/binary>>;
+        Id ->
+            {_, PeerOTP} = lists:keyfind(Id, 1,
+                maps:get(one_time_prekeys, PeerBundle)),
+            DH4 = nif_x25519_dh(EKPriv, PeerOTP),
+            <<DH1/binary, DH2/binary, DH3/binary, DH4/binary>>
+    end,
 
-        # Compute DH values
-        dh1 = self._dh(self.identity_key, peer_signed_prekey)
-        dh2 = self._dh(ephemeral_key, peer_identity)
-        dh3 = self._dh(ephemeral_key, peer_signed_prekey)
+    <<RootKey:32/binary, ChainKey:32/binary>> =
+        nif_hkdf(<<>>, SharedSecret, <<"WhatsAppInitial">>, 64),
 
-        if used_one_time_key_id is not None:
-            peer_one_time = X25519PublicKey.from_public_bytes(
-                peer_bundle.one_time_prekeys[used_one_time_key_id][1]
-            )
-            dh4 = self._dh(ephemeral_key, peer_one_time)
-            shared_secret = dh1 + dh2 + dh3 + dh4
-        else:
-            shared_secret = dh1 + dh2 + dh3
+    Session = #{root_key => RootKey,
+                sending_chain_key => ChainKey,
+                receiving_chain_key => undefined,
+                sending_ratchet_key => EK,
+                receiving_ratchet_key => PeerSPK,
+                msg_num_send => 0,
+                msg_num_recv => 0,
+                prev_counter => 0,
+                skipped_keys => #{}},
 
-        # Derive initial keys
-        root_key, chain_key = self._kdf_rk(shared_secret, b"WhatsAppInitial")
+    Sessions = maps:get(sessions, State),
+    NewState = State#{sessions := Sessions#{PeerId => Session}},
+    {maps:get(public, EK), NewState}.
 
-        # Create session
-        self.sessions[peer_id] = SessionState(
-            root_key=root_key,
-            sending_chain_key=chain_key,
-            receiving_chain_key=None,
-            sending_ratchet_key=ephemeral_key,
-            receiving_ratchet_key=peer_signed_prekey,
-            skipped_message_keys={}
-        )
+%% Encrypt a message — returns {Ciphertext, RatchetPub, MsgNum, NewState}.
+encrypt_message(PeerId, Plaintext, State) ->
+    Sessions = maps:get(sessions, State),
+    Session  = maps:get(PeerId, Sessions),
 
-        return ephemeral_key.public_key().public_bytes_raw()
+    ChainKey = maps:get(sending_chain_key, Session),
+    {MessageKey, NewChainKey} = kdf_ck(ChainKey),
 
-    def encrypt_message(
-        self,
-        peer_id: str,
-        plaintext: bytes
-    ) -> Tuple[bytes, bytes, int]:
-        """
-        Encrypt message using current session.
-        Returns (ciphertext, ratchet_public_key, message_number).
-        """
-        session = self.sessions[peer_id]
+    Nonce = nif_random_bytes(12),
+    RatchetPub = maps:get(public, maps:get(sending_ratchet_key, Session)),
+    MsgNum = maps:get(msg_num_send, Session),
+    AD = <<RatchetPub/binary, MsgNum:32/big>>,
 
-        # Derive message key from chain
-        message_key, new_chain_key = self._kdf_ck(session.sending_chain_key)
-        session.sending_chain_key = new_chain_key
+    Ciphertext = <<Nonce/binary,
+        (nif_aes_gcm_encrypt(MessageKey, Nonce, Plaintext, AD))/binary>>,
 
-        # Encrypt with AES-GCM
-        nonce = os.urandom(12)
-        cipher = AESGCM(message_key)
+    Session2 = Session#{sending_chain_key := NewChainKey,
+                        msg_num_send := MsgNum + 1},
+    NewState = State#{sessions := Sessions#{PeerId := Session2}},
+    {Ciphertext, RatchetPub, MsgNum, NewState}.
 
-        # Associated data includes header info
-        ad = (
-            session.sending_ratchet_key.public_key().public_bytes_raw() +
-            session.message_number_sending.to_bytes(4, 'big')
-        )
+%% Decrypt a received message — returns {Plaintext, NewState}.
+decrypt_message(PeerId, Ciphertext, RatchetKey, MsgNum, State) ->
+    Sessions = maps:get(sessions, State),
+    Session0 = maps:get(PeerId, Sessions),
 
-        ciphertext = nonce + cipher.encrypt(nonce, plaintext, ad)
+    Session = case maps:get(receiving_ratchet_key, Session0) of
+        RatchetKey -> Session0;
+        _Other     -> dh_ratchet(Session0, RatchetKey)
+    end,
 
-        msg_number = session.message_number_sending
-        session.message_number_sending += 1
+    SkippedId = {RatchetKey, MsgNum},
+    Skipped   = maps:get(skipped_keys, Session),
 
-        return (
-            ciphertext,
-            session.sending_ratchet_key.public_key().public_bytes_raw(),
-            msg_number
-        )
+    {MessageKey, Session2} = case maps:find(SkippedId, Skipped) of
+        {ok, MK} ->
+            {MK, Session#{skipped_keys := maps:remove(SkippedId, Skipped)}};
+        error ->
+            skip_to(MsgNum, Session)
+    end,
 
-    def decrypt_message(
-        self,
-        peer_id: str,
-        ciphertext: bytes,
-        ratchet_key: bytes,
-        message_number: int
-    ) -> bytes:
-        """Decrypt received message"""
-        session = self.sessions[peer_id]
+    <<Nonce:12/binary, CT/binary>> = Ciphertext,
+    AD = <<RatchetKey/binary, MsgNum:32/big>>,
+    Plaintext = nif_aes_gcm_decrypt(MessageKey, Nonce, CT, AD),
 
-        peer_ratchet = X25519PublicKey.from_public_bytes(ratchet_key)
+    NewState = State#{sessions := Sessions#{PeerId := Session2}},
+    {Plaintext, NewState}.
 
-        # Check if we need to ratchet
-        if session.receiving_ratchet_key is None or \
-           ratchet_key != session.receiving_ratchet_key.public_bytes_raw():
-            # New ratchet key - advance DH ratchet
-            self._dh_ratchet(session, peer_ratchet)
+%% --- Internal helpers ---------------------------------------------
 
-        # Try skipped message keys first
-        key_id = (ratchet_key, message_number)
-        if key_id in session.skipped_message_keys:
-            message_key = session.skipped_message_keys.pop(key_id)
-        else:
-            # Skip ahead if needed
-            while session.message_number_receiving < message_number:
-                mk, session.receiving_chain_key = self._kdf_ck(
-                    session.receiving_chain_key
-                )
-                session.skipped_message_keys[
-                    (ratchet_key, session.message_number_receiving)
-                ] = mk
-                session.message_number_receiving += 1
+dh_ratchet(Session, PeerRatchet) ->
+    SendPriv = maps:get(private, maps:get(sending_ratchet_key, Session)),
+    RootKey  = maps:get(root_key, Session),
 
-            message_key, session.receiving_chain_key = self._kdf_ck(
-                session.receiving_chain_key
-            )
-            session.message_number_receiving += 1
+    DHOut1 = nif_x25519_dh(SendPriv, PeerRatchet),
+    <<RK1:32/binary, RecvChain:32/binary>> =
+        nif_hkdf(RootKey, DHOut1, <<"WhatsAppRootKey">>, 64),
 
-        # Decrypt
-        nonce = ciphertext[:12]
-        ct = ciphertext[12:]
-        ad = ratchet_key + message_number.to_bytes(4, 'big')
+    NewSendKey = nif_x25519_keypair(),
+    DHOut2 = nif_x25519_dh(maps:get(private, NewSendKey), PeerRatchet),
+    <<RK2:32/binary, SendChain:32/binary>> =
+        nif_hkdf(RK1, DHOut2, <<"WhatsAppRootKey">>, 64),
 
-        cipher = AESGCM(message_key)
-        return cipher.decrypt(nonce, ct, ad)
+    Session#{root_key := RK2,
+             receiving_chain_key := RecvChain,
+             sending_chain_key := SendChain,
+             sending_ratchet_key := NewSendKey,
+             receiving_ratchet_key := PeerRatchet,
+             msg_num_send := 0,
+             msg_num_recv := 0,
+             prev_counter := maps:get(msg_num_recv, Session)}.
 
-    def _dh_ratchet(self, session: SessionState, peer_ratchet: X25519PublicKey):
-        """Advance the DH ratchet"""
-        # Store old receiving chain key for skipped messages
-        session.previous_counter = session.message_number_receiving
-        session.message_number_receiving = 0
-        session.message_number_sending = 0
+skip_to(TargetNum, Session) ->
+    skip_to(TargetNum, maps:get(msg_num_recv, Session),
+            maps:get(receiving_chain_key, Session),
+            maps:get(skipped_keys, Session),
+            maps:get(receiving_ratchet_key, Session), Session).
 
-        # Update receiving chain
-        dh_out = self._dh(session.sending_ratchet_key, peer_ratchet)
-        session.root_key, session.receiving_chain_key = self._kdf_rk(
-            session.root_key, dh_out
-        )
-        session.receiving_ratchet_key = peer_ratchet
+skip_to(Target, Current, ChainKey, Skipped, RatchetKey, Session)
+  when Current < Target ->
+    {MK, NextChain} = kdf_ck(ChainKey),
+    NewSkipped = Skipped#{{RatchetKey, Current} => MK},
+    skip_to(Target, Current + 1, NextChain, NewSkipped, RatchetKey, Session);
+skip_to(_Target, Current, ChainKey, Skipped, _RK, Session) ->
+    {MK, NextChain} = kdf_ck(ChainKey),
+    {MK, Session#{receiving_chain_key := NextChain,
+                  msg_num_recv := Current + 1,
+                  skipped_keys := Skipped}}.
 
-        # Generate new sending ratchet
-        session.sending_ratchet_key = X25519PrivateKey.generate()
-        dh_out = self._dh(session.sending_ratchet_key, peer_ratchet)
-        session.root_key, session.sending_chain_key = self._kdf_rk(
-            session.root_key, dh_out
-        )
-
-    def _dh(self, private: X25519PrivateKey, public: X25519PublicKey) -> bytes:
-        """Diffie-Hellman key exchange"""
-        return private.exchange(public)
-
-    def _kdf_rk(self, root_key: bytes, dh_output: bytes) -> Tuple[bytes, bytes]:
-        """Root key KDF"""
-        output = HKDF(
-            algorithm=hashes.SHA256(),
-            length=64,
-            salt=root_key,
-            info=b"WhatsAppRootKey"
-        ).derive(dh_output)
-        return output[:32], output[32:]
-
-    def _kdf_ck(self, chain_key: bytes) -> Tuple[bytes, bytes]:
-        """Chain key KDF"""
-        message_key = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=None,
-            info=b"WhatsAppMessageKey"
-        ).derive(chain_key + b"\x01")
-
-        new_chain_key = HKDF(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=None,
-            info=b"WhatsAppChainKey"
-        ).derive(chain_key + b"\x02")
-
-        return message_key, new_chain_key
+kdf_ck(ChainKey) ->
+    MessageKey  = nif_hkdf(<<>>, <<ChainKey/binary, 1>>,
+                           <<"WhatsAppMessageKey">>, 32),
+    NewChainKey = nif_hkdf(<<>>, <<ChainKey/binary, 2>>,
+                           <<"WhatsAppChainKey">>, 32),
+    {MessageKey, NewChainKey}.
 ```
 
 ---
@@ -612,546 +553,539 @@ sequenceDiagram
 
 ### メッセージキューの実装
 
-```python
-from dataclasses import dataclass
-from typing import List, Optional
-import time
+```erlang
+-module(wa_offline_queue).
+-behaviour(gen_server).
 
-@dataclass
-class QueuedMessage:
-    message_id: str
-    from_user: str
-    to_user: str
-    encrypted_content: bytes
-    timestamp: int
-    priority: int  # Higher = more important (calls > messages)
-    expiry: int  # When to delete if not delivered
+-export([start_link/1, queue_message/4, get_messages/1, get_messages/2,
+         acknowledge_delivery/2]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+-define(MAX_QUEUE_SIZE, 1000).
+-define(RETENTION_DAYS, 30).
+-define(RETENTION_MS, ?RETENTION_DAYS * 24 * 60 * 60 * 1000).
 
-class OfflineMessageQueue:
-    """
-    Stores messages for offline users.
-    Uses HBase/Cassandra for persistence with TTL.
-    """
+%%% ----------------------------------------------------------------
+%%% API
+%%% ----------------------------------------------------------------
 
-    def __init__(self, hbase_client, push_service, config):
-        self.hbase = hbase_client
-        self.push = push_service
-        self.max_queue_size = config.get("max_queue_size", 1000)
-        self.retention_days = config.get("retention_days", 30)
+start_link(Config) ->
+    gen_server:start_link({local, ?MODULE}, ?MODULE, Config, []).
 
-    async def queue_message(
-        self,
-        from_user: str,
-        to_user: str,
-        message: dict
-    ):
-        """Queue message for offline user"""
-        message_id = message["id"]
-        timestamp = int(time.time() * 1000)
-        expiry = timestamp + (self.retention_days * 24 * 60 * 60 * 1000)
+%% Queue a message for an offline user.
+%% Hot path uses Mnesia dirty writes for speed; a background process
+%% flushes cold messages to HBase after the retention window shrinks.
+queue_message(FromUser, ToUser, Message, MsgType) ->
+    gen_server:cast(?MODULE, {queue, FromUser, ToUser, Message, MsgType}).
 
-        queued = QueuedMessage(
-            message_id=message_id,
-            from_user=from_user,
-            to_user=to_user,
-            encrypted_content=message["encrypted_content"],
-            timestamp=timestamp,
-            priority=self._get_priority(message.get("type", "text")),
-            expiry=expiry
-        )
+get_messages(UserId) ->
+    get_messages(UserId, 100).
 
-        # Store in HBase with user as row key
-        row_key = f"{to_user}#{timestamp}#{message_id}"
+get_messages(UserId, Limit) ->
+    gen_server:call(?MODULE, {get, UserId, Limit}).
 
-        await self.hbase.put(
-            table="offline_messages",
-            row=row_key,
-            data={
-                "msg:from": from_user,
-                "msg:content": queued.encrypted_content,
-                "msg:priority": str(queued.priority),
-                "msg:expiry": str(expiry)
-            },
-            ttl=self.retention_days * 24 * 60 * 60
-        )
+acknowledge_delivery(UserId, MessageIds) ->
+    gen_server:cast(?MODULE, {ack, UserId, MessageIds}).
 
-        # Check queue size
-        queue_size = await self._get_queue_size(to_user)
-        if queue_size > self.max_queue_size:
-            # Remove oldest low-priority messages
-            await self._prune_queue(to_user)
+%%% ----------------------------------------------------------------
+%%% gen_server callbacks
+%%% ----------------------------------------------------------------
 
-        # Send push notification
-        await self.push.notify(
-            to_user,
-            from_user=from_user,
-            message_type=message.get("type", "text"),
-            preview=None  # No preview - E2E encrypted
-        )
+init(Config) ->
+    %% Ensure Mnesia table exists (ram_copies for hot path)
+    ok = ensure_table(),
+    MaxQueue = maps:get(max_queue_size, Config, ?MAX_QUEUE_SIZE),
+    RetDays  = maps:get(retention_days, Config, ?RETENTION_DAYS),
+    {ok, #{max_queue => MaxQueue, retention_days => RetDays}}.
 
-    async def get_messages(
-        self,
-        user_id: str,
-        limit: int = 100
-    ) -> List[QueuedMessage]:
-        """Get queued messages for user"""
-        # Scan HBase with user prefix
-        start_row = f"{user_id}#"
-        end_row = f"{user_id}$"
+handle_cast({queue, FromUser, ToUser, Message, MsgType}, State) ->
+    MsgId     = maps:get(id, Message),
+    Timestamp = erlang:system_time(millisecond),
+    Expiry    = Timestamp + ?RETENTION_MS,
+    Priority  = get_priority(MsgType),
 
-        results = await self.hbase.scan(
-            table="offline_messages",
-            start_row=start_row,
-            end_row=end_row,
-            limit=limit
-        )
+    Row = #{msg_id    => MsgId,
+            from_user => FromUser,
+            to_user   => ToUser,
+            content   => maps:get(encrypted_content, Message),
+            timestamp => Timestamp,
+            priority  => Priority,
+            expiry    => Expiry},
 
-        messages = []
-        for row_key, data in results:
-            parts = row_key.split("#")
-            message_id = parts[2]
-            timestamp = int(parts[1])
+    %% Hot write — Mnesia dirty for minimal latency
+    mnesia:dirty_write(offline_messages,
+        {offline_messages, {ToUser, Timestamp, MsgId}, Row}),
 
-            messages.append(QueuedMessage(
-                message_id=message_id,
-                from_user=data["msg:from"],
-                to_user=user_id,
-                encrypted_content=data["msg:content"],
-                timestamp=timestamp,
-                priority=int(data.get("msg:priority", "0")),
-                expiry=int(data.get("msg:expiry", "0"))
-            ))
+    %% Prune if over limit
+    MaxQueue = maps:get(max_queue, State),
+    maybe_prune(ToUser, MaxQueue),
 
-        # Sort by priority (high first) then timestamp
-        messages.sort(key=lambda m: (-m.priority, m.timestamp))
+    %% Push notification (no preview — E2E encrypted)
+    wa_push:notify(ToUser, #{from => FromUser, type => MsgType,
+                             preview => undefined}),
+    {noreply, State};
 
-        return messages
+handle_cast({ack, UserId, MessageIds}, State) ->
+    lists:foreach(fun(MsgId) ->
+        Pattern = {offline_messages, {UserId, '_', MsgId}, '_'},
+        case mnesia:dirty_match_object(Pattern) of
+            [Rec | _] -> mnesia:dirty_delete_object(Rec);
+            []        -> ok
+        end
+    end, MessageIds),
+    {noreply, State}.
 
-    async def acknowledge_delivery(
-        self,
-        user_id: str,
-        message_ids: List[str]
-    ):
-        """Remove delivered messages from queue"""
-        for message_id in message_ids:
-            # Find and delete the row
-            # In practice, would batch these deletes
-            await self.hbase.delete_by_id(
-                table="offline_messages",
-                user_id=user_id,
-                message_id=message_id
-            )
+handle_call({get, UserId, Limit}, _From, State) ->
+    %% Prefix scan via dirty_select
+    MatchHead = {offline_messages, {UserId, '$1', '$2'}, '$3'},
+    Guard     = [],
+    Result    = ['$3'],
+    Rows = mnesia:dirty_select(offline_messages, [{MatchHead, Guard, Result}]),
 
-    def _get_priority(self, message_type: str) -> int:
-        """Assign priority based on message type"""
-        priorities = {
-            "call": 100,
-            "video_call": 100,
-            "voice_message": 50,
-            "image": 30,
-            "text": 10,
-            "status": 5
-        }
-        return priorities.get(message_type, 10)
+    %% Sort: highest priority first, then oldest timestamp first
+    Sorted = lists:sort(fun(A, B) ->
+        PA = maps:get(priority, A),
+        PB = maps:get(priority, B),
+        case PA =:= PB of
+            true  -> maps:get(timestamp, A) =< maps:get(timestamp, B);
+            false -> PA >= PB
+        end
+    end, Rows),
 
-    async def _prune_queue(self, user_id: str):
-        """Remove old low-priority messages when queue is full"""
-        messages = await self.get_messages(user_id, limit=self.max_queue_size + 100)
+    Limited = lists:sublist(Sorted, Limit),
+    {reply, {ok, Limited}, State}.
 
-        if len(messages) <= self.max_queue_size:
-            return
+handle_info(_Info, State) ->
+    {noreply, State}.
 
-        # Sort by priority (low first) then timestamp (old first)
-        messages.sort(key=lambda m: (m.priority, m.timestamp))
+terminate(_Reason, _State) ->
+    ok.
 
-        # Delete excess
-        to_delete = messages[:len(messages) - self.max_queue_size]
+%%% ----------------------------------------------------------------
+%%% Internal helpers
+%%% ----------------------------------------------------------------
 
-        await self.acknowledge_delivery(
-            user_id,
-            [m.message_id for m in to_delete]
-        )
+ensure_table() ->
+    case mnesia:create_table(offline_messages, [
+        {type, ordered_set},
+        {ram_copies, [node()]},
+        {disc_copies, []},
+        {attributes, [key, value]}
+    ]) of
+        {atomic, ok}                        -> ok;
+        {aborted, {already_exists, _}}      -> ok
+    end.
+
+get_priority(call)          -> 100;
+get_priority(video_call)    -> 100;
+get_priority(voice_message) -> 50;
+get_priority(image)         -> 30;
+get_priority(text)          -> 10;
+get_priority(status)        -> 5;
+get_priority(_)             -> 10.
+
+maybe_prune(UserId, MaxQueue) ->
+    MatchHead = {offline_messages, {UserId, '$1', '$2'}, '$3'},
+    All = mnesia:dirty_select(offline_messages, [{MatchHead, [], ['$_']}]),
+    case length(All) > MaxQueue of
+        false -> ok;
+        true  ->
+            %% Sort: lowest priority first, oldest first — delete excess
+            Sorted = lists:sort(fun({_, _, A}, {_, _, B}) ->
+                PA = maps:get(priority, A),
+                PB = maps:get(priority, B),
+                case PA =:= PB of
+                    true  -> maps:get(timestamp, A) =< maps:get(timestamp, B);
+                    false -> PA =< PB
+                end
+            end, All),
+            ToDelete = lists:sublist(Sorted, length(All) - MaxQueue),
+            lists:foreach(fun(Rec) ->
+                mnesia:dirty_delete_object(Rec)
+            end, ToDelete)
+    end.
 ```
 
 ---
 
 ## グループメッセージング
 
-```python
-from dataclasses import dataclass
-from typing import List, Set, Optional
-import asyncio
+```erlang
+-module(wa_group).
+-behaviour(gen_server).
 
-@dataclass
-class Group:
-    group_id: str
-    name: str
-    creator: str
-    admins: Set[str]
-    members: Set[str]
-    created_at: int
-    settings: dict  # admin-only messages, disappearing, etc.
+-export([start_link/1, send_group_message/3,
+         add_members/3, remove_member/3]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
-@dataclass
-class SenderKey:
-    """Group encryption uses sender keys for efficiency"""
-    key_id: int
-    chain_key: bytes
-    signature_key: bytes
+-define(MAX_GROUP_SIZE, 1024).
 
+%%% ----------------------------------------------------------------
+%%% API
+%%% ----------------------------------------------------------------
 
-class GroupService:
-    """
-    Manages group chats with up to 1024 members.
-    Uses Sender Keys for efficient group encryption.
-    """
+start_link(GroupId) ->
+    gen_server:start_link(?MODULE, GroupId, []).
 
-    MAX_GROUP_SIZE = 1024
+%% Send a group message — non-blocking fan-out via cast.
+send_group_message(GroupPid, SenderId, Message) ->
+    gen_server:cast(GroupPid, {send, SenderId, Message}).
 
-    def __init__(self, db_client, connection_registry, offline_queue):
-        self.db = db_client
-        self.registry = connection_registry
-        self.offline = offline_queue
+add_members(GroupPid, AdminId, NewMemberIds) ->
+    gen_server:call(GroupPid, {add_members, AdminId, NewMemberIds}).
 
-    async def send_group_message(
-        self,
-        group_id: str,
-        sender_id: str,
-        message: dict
-    ):
-        """
-        Send message to all group members.
-        Uses sender keys - sender encrypts once, all can decrypt.
-        """
-        group = await self._get_group(group_id)
+remove_member(GroupPid, AdminId, MemberId) ->
+    gen_server:call(GroupPid, {remove_member, AdminId, MemberId}).
 
-        if sender_id not in group.members:
-            raise PermissionError("Not a group member")
+%%% ----------------------------------------------------------------
+%%% gen_server callbacks
+%%% ----------------------------------------------------------------
 
-        if group.settings.get("admins_only") and sender_id not in group.admins:
-            raise PermissionError("Only admins can send messages")
+init(GroupId) ->
+    %% Load group metadata from Mnesia
+    case mnesia:dirty_read(groups, GroupId) of
+        [{groups, GroupId, GroupData}] ->
+            {ok, GroupData};
+        [] ->
+            {stop, group_not_found}
+    end.
 
-        # Get sender's current sender key for this group
-        sender_key = await self._get_sender_key(group_id, sender_id)
+handle_cast({send, SenderId, Message}, State) ->
+    Members = maps:get(members, State),
+    Admins  = maps:get(admins, State),
+    Settings = maps:get(settings, State),
+    GroupId  = maps:get(group_id, State),
 
-        if not sender_key:
-            # Generate new sender key and distribute
-            sender_key = await self._create_sender_key(group_id, sender_id)
-            await self._distribute_sender_key(group_id, sender_id, sender_key)
+    case {lists:member(SenderId, Members),
+          maps:get(admins_only, Settings, false)} of
+        {false, _} ->
+            %% Not a member — drop silently
+            {noreply, State};
+        {true, true} when not lists:member(SenderId, Admins) ->
+            {noreply, State};
+        {true, _} ->
+            %% Ensure sender key exists and distribute if needed
+            SenderKey = ensure_sender_key(GroupId, SenderId, Members),
 
-        # Encrypt message with sender key (once for all)
-        encrypted = self._encrypt_with_sender_key(
-            message["content"],
-            sender_key
-        )
+            %% Encrypt once with sender key
+            Content   = maps:get(content, Message),
+            Encrypted = wa_sender_key:encrypt(Content, SenderKey),
 
-        # Advance chain
-        sender_key = await self._advance_sender_key(group_id, sender_id)
+            %% Advance the chain
+            wa_sender_key:advance(GroupId, SenderId),
 
-        # Fan out to all members
-        delivery_tasks = []
-        for member_id in group.members:
-            if member_id != sender_id:
-                task = self._deliver_to_member(
-                    group_id,
-                    sender_id,
-                    member_id,
-                    encrypted,
-                    message
-                )
-                delivery_tasks.append(task)
+            %% Non-blocking fan-out to every other member
+            Recipients = lists:delete(SenderId, Members),
+            lists:foreach(fun(RecipientId) ->
+                gen_server:cast(self(), {deliver, GroupId, SenderId,
+                                        RecipientId, Encrypted, Message})
+            end, Recipients),
 
-        # Send in parallel
-        results = await asyncio.gather(*delivery_tasks, return_exceptions=True)
+            {noreply, State}
+    end;
 
-        # Track delivery status
-        delivered = sum(1 for r in results if r is True)
+handle_cast({deliver, GroupId, SenderId, RecipientId, Encrypted, Message},
+            State) ->
+    %% Ensure recipient has the sender's key
+    ok = ensure_recipient_has_key(GroupId, SenderId, RecipientId),
 
-        return {
-            "message_id": message["id"],
-            "delivered_to": delivered,
-            "total_members": len(group.members) - 1
-        }
+    GroupMsg = #{type             => group_message,
+                 group_id         => GroupId,
+                 sender_id        => SenderId,
+                 message_id       => maps:get(id, Message),
+                 encrypted_content => Encrypted,
+                 timestamp        => maps:get(timestamp, Message)},
 
-    async def _deliver_to_member(
-        self,
-        group_id: str,
-        sender_id: str,
-        recipient_id: str,
-        encrypted: bytes,
-        message: dict
-    ) -> bool:
-        """Deliver group message to single member"""
-        # Check if member has sender's key
-        has_key = await self._member_has_sender_key(
-            group_id,
-            recipient_id,
-            sender_id
-        )
+    case wa_registry:lookup(RecipientId) of
+        {ok, Pid} when is_pid(Pid) ->
+            %% Online — deliver directly (non-blocking)
+            gen_server:cast(Pid, {deliver_message, GroupMsg});
+        _ ->
+            %% Offline — queue
+            wa_offline_queue:queue_message(
+                SenderId, RecipientId, GroupMsg, group_message)
+    end,
+    {noreply, State}.
 
-        if not has_key:
-            # Need to send sender key via 1:1 encryption first
-            await self._send_sender_key_message(
-                group_id,
-                sender_id,
-                recipient_id
-            )
+handle_call({add_members, AdminId, NewMemberIds}, _From, State) ->
+    Members = maps:get(members, State),
+    Admins  = maps:get(admins, State),
+    GroupId = maps:get(group_id, State),
 
-        # Deliver group message
-        connection = await self.registry.lookup(recipient_id)
+    case lists:member(AdminId, Admins) of
+        false ->
+            {reply, {error, not_admin}, State};
+        true ->
+            NewTotal = length(Members) + length(NewMemberIds),
+            case NewTotal > ?MAX_GROUP_SIZE of
+                true ->
+                    {reply, {error, group_full}, State};
+                false ->
+                    UpdatedMembers = lists:usort(Members ++ NewMemberIds),
+                    State2 = State#{members := UpdatedMembers},
+                    save_group(State2),
 
-        group_message = {
-            "type": "group_message",
-            "group_id": group_id,
-            "sender_id": sender_id,
-            "message_id": message["id"],
-            "encrypted_content": encrypted,
-            "timestamp": message["timestamp"]
-        }
+                    %% Distribute existing sender keys to new members
+                    ExistingMembers = Members -- NewMemberIds,
+                    lists:foreach(fun(Existing) ->
+                        case wa_sender_key:get(GroupId, Existing) of
+                            {ok, _SK} ->
+                                lists:foreach(fun(New) ->
+                                    wa_sender_key:send_via_1to1(
+                                        GroupId, Existing, New)
+                                end, NewMemberIds);
+                            not_found ->
+                                ok
+                        end
+                    end, ExistingMembers),
 
-        if connection:
-            # Online - deliver directly
-            await connection.deliver(group_message)
-            return True
-        else:
-            # Offline - queue
-            await self.offline.queue_message(
-                sender_id,
-                recipient_id,
-                group_message
-            )
-            return False
+                    send_system_message(GroupId,
+                        iolib_format("~s added ~s",
+                            [AdminId, string:join(NewMemberIds, ", ")])),
+                    {reply, ok, State2}
+            end
+    end;
 
-    async def _distribute_sender_key(
-        self,
-        group_id: str,
-        sender_id: str,
-        sender_key: SenderKey
-    ):
-        """
-        Distribute sender's key to all group members.
-        Each distribution is E2E encrypted 1:1.
-        """
-        group = await self._get_group(group_id)
+handle_call({remove_member, AdminId, MemberId}, _From, State) ->
+    Admins  = maps:get(admins, State),
+    GroupId = maps:get(group_id, State),
 
-        key_message = {
-            "type": "sender_key",
-            "group_id": group_id,
-            "sender_id": sender_id,
-            "key_id": sender_key.key_id,
-            "chain_key": sender_key.chain_key,
-            "signature_key": sender_key.signature_key
-        }
+    case lists:member(AdminId, Admins) orelse AdminId =:= MemberId of
+        false ->
+            {reply, {error, not_admin}, State};
+        true ->
+            Members2 = lists:delete(MemberId, maps:get(members, State)),
+            Admins2  = lists:delete(MemberId, Admins),
+            State2 = State#{members := Members2, admins := Admins2},
+            save_group(State2),
 
-        for member_id in group.members:
-            if member_id != sender_id:
-                # Encrypt 1:1 with member's session
-                await self._send_encrypted_1to1(
-                    sender_id,
-                    member_id,
-                    key_message
-                )
+            %% Rotate all sender keys so removed member cannot decrypt
+            lists:foreach(fun(Remaining) ->
+                wa_sender_key:rotate(GroupId, Remaining)
+            end, Members2),
 
-    async def add_members(
-        self,
-        group_id: str,
-        admin_id: str,
-        new_member_ids: List[str]
-    ):
-        """Add new members to group"""
-        group = await self._get_group(group_id)
+            send_system_message(GroupId,
+                iolib_format("~s left the group", [MemberId])),
+            {reply, ok, State2}
+    end.
 
-        if admin_id not in group.admins:
-            raise PermissionError("Only admins can add members")
+handle_info(_Info, State) ->
+    {noreply, State}.
 
-        if len(group.members) + len(new_member_ids) > self.MAX_GROUP_SIZE:
-            raise ValueError(f"Group cannot exceed {self.MAX_GROUP_SIZE} members")
+terminate(_Reason, _State) ->
+    ok.
 
-        # Add members
-        for member_id in new_member_ids:
-            group.members.add(member_id)
+%%% ----------------------------------------------------------------
+%%% Group supervisor — one child per active group
+%%% ----------------------------------------------------------------
 
-        await self._save_group(group)
+-module(wa_group_sup).
+-behaviour(supervisor).
+-export([start_link/0, start_group/1, init/1]).
 
-        # New members need all sender keys
-        for existing_member in group.members:
-            if existing_member not in new_member_ids:
-                sender_key = await self._get_sender_key(group_id, existing_member)
-                if sender_key:
-                    for new_member in new_member_ids:
-                        await self._send_sender_key_message(
-                            group_id,
-                            existing_member,
-                            new_member
-                        )
+start_link() ->
+    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-        # Notify group
-        await self._send_system_message(
-            group_id,
-            f"{admin_id} added {', '.join(new_member_ids)}"
-        )
+start_group(GroupId) ->
+    supervisor:start_child(?MODULE, [GroupId]).
 
-    async def remove_member(
-        self,
-        group_id: str,
-        admin_id: str,
-        member_id: str
-    ):
-        """Remove member from group"""
-        group = await self._get_group(group_id)
+init([]) ->
+    ChildSpec = #{id       => wa_group,
+                  start    => {wa_group, start_link, []},
+                  restart  => transient,
+                  shutdown => 5000,
+                  type     => worker,
+                  modules  => [wa_group]},
+    {ok, {#{strategy => simple_one_for_one,
+            intensity => 10,
+            period    => 60}, [ChildSpec]}}.
 
-        if admin_id not in group.admins and admin_id != member_id:
-            raise PermissionError("Only admins can remove members")
+%%% ----------------------------------------------------------------
+%%% Internal helpers
+%%% ----------------------------------------------------------------
 
-        group.members.discard(member_id)
-        group.admins.discard(member_id)
+ensure_sender_key(GroupId, SenderId, Members) ->
+    case wa_sender_key:get(GroupId, SenderId) of
+        {ok, SK} ->
+            SK;
+        not_found ->
+            {ok, SK} = wa_sender_key:create(GroupId, SenderId),
+            distribute_sender_key(GroupId, SenderId, SK, Members),
+            SK
+    end.
 
-        await self._save_group(group)
+distribute_sender_key(GroupId, SenderId, SenderKey, Members) ->
+    KeyMsg = #{type          => sender_key,
+               group_id      => GroupId,
+               sender_id     => SenderId,
+               key_id        => maps:get(key_id, SenderKey),
+               chain_key     => maps:get(chain_key, SenderKey),
+               signature_key => maps:get(signature_key, SenderKey)},
+    lists:foreach(fun(MemberId) ->
+        case MemberId =/= SenderId of
+            true  -> wa_signal:send_encrypted_1to1(SenderId, MemberId, KeyMsg);
+            false -> ok
+        end
+    end, Members).
 
-        # Rotate all sender keys (removed member can't decrypt new messages)
-        for remaining_member in group.members:
-            await self._rotate_sender_key(group_id, remaining_member)
+ensure_recipient_has_key(GroupId, SenderId, RecipientId) ->
+    case wa_sender_key:member_has_key(GroupId, RecipientId, SenderId) of
+        true  -> ok;
+        false -> wa_sender_key:send_via_1to1(GroupId, SenderId, RecipientId)
+    end.
 
-        await self._send_system_message(
-            group_id,
-            f"{member_id} left the group"
-        )
+save_group(State) ->
+    GroupId = maps:get(group_id, State),
+    mnesia:dirty_write(groups, {groups, GroupId, State}).
+
+send_system_message(GroupId, Text) ->
+    wa_group:send_group_message(self(), system,
+        #{id => wa_util:generate_id(), content => Text,
+          timestamp => erlang:system_time(millisecond)}).
+
+iolib_format(Fmt, Args) ->
+    lists:flatten(io_lib:format(Fmt, Args)).
 ```
 
 ---
 
 ## メディアの処理
 
-```python
-from dataclasses import dataclass
-from typing import Optional, Tuple
-import hashlib
+```erlang
+-module(wa_media).
+-behaviour(gen_server).
 
-@dataclass
-class MediaUpload:
-    media_id: str
-    mime_type: str
-    size_bytes: int
-    encryption_key: bytes
-    sha256_hash: bytes
-    url: str
+-export([start_link/1, upload_media/3, download_media/3]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+-define(MAX_SIZE_BYTES, 100 * 1024 * 1024).  %% 100 MB
+-define(CDN_EXPIRY_HOURS, 336).               %% 2 weeks
 
-class MediaService:
-    """
-    Handles media upload/download with E2E encryption.
-    Media stored as encrypted blobs - server cannot decrypt.
-    """
+%%% ----------------------------------------------------------------
+%%% API
+%%% ----------------------------------------------------------------
 
-    def __init__(self, blob_storage, cdn_client, config):
-        self.storage = blob_storage
-        self.cdn = cdn_client
-        self.max_size = config.get("max_size_mb", 100) * 1024 * 1024
+start_link(Config) ->
+    gen_server:start_link({local, ?MODULE}, ?MODULE, Config, []).
 
-    async def upload_media(
-        self,
-        user_id: str,
-        file_data: bytes,
-        mime_type: str
-    ) -> MediaUpload:
-        """
-        Upload encrypted media.
-        Client encrypts with random key before upload.
-        Key is sent in message, not to server.
-        """
-        if len(file_data) > self.max_size:
-            raise ValueError(f"File too large. Max {self.max_size // 1024 // 1024}MB")
+%% Upload encrypted media.  Client encrypts with a random key before
+%% uploading; the key travels inside the E2E-encrypted message, never
+%% touches the server in plaintext.
+upload_media(UserId, FileData, MimeType) ->
+    gen_server:call(?MODULE, {upload, UserId, FileData, MimeType}, 30000).
 
-        # Generate encryption key (client-side in real implementation)
-        encryption_key = os.urandom(32)
+%% Download and decrypt media.  Verifies SHA-256 before decrypting.
+download_media(Url, EncryptionKey, ExpectedHash) ->
+    gen_server:call(?MODULE, {download, Url, EncryptionKey, ExpectedHash}, 30000).
 
-        # Encrypt media
-        encrypted = self._encrypt_media(file_data, encryption_key)
+%%% ----------------------------------------------------------------
+%%% gen_server callbacks
+%%% ----------------------------------------------------------------
 
-        # Calculate hash of encrypted content
-        sha256_hash = hashlib.sha256(encrypted).digest()
+init(Config) ->
+    MaxSize = maps:get(max_size_mb, Config, 100) * 1024 * 1024,
+    {ok, #{max_size => MaxSize}}.
 
-        # Generate media ID
-        media_id = hashlib.sha256(sha256_hash + os.urandom(16)).hexdigest()[:24]
+handle_call({upload, UserId, FileData, MimeType}, _From, State) ->
+    MaxSize = maps:get(max_size, State),
+    case byte_size(FileData) > MaxSize of
+        true ->
+            {reply, {error, file_too_large}, State};
+        false ->
+            %% Generate encryption key (client-side in production)
+            EncryptionKey = crypto:strong_rand_bytes(32),
 
-        # Upload to blob storage
-        blob_path = f"media/{user_id}/{media_id}"
-        await self.storage.put(
-            blob_path,
-            encrypted,
-            content_type="application/octet-stream"  # Always binary
-        )
+            %% Encrypt with AES-256-CBC
+            Encrypted = encrypt_media(FileData, EncryptionKey),
 
-        # Get CDN URL
-        cdn_url = await self.cdn.get_signed_url(
-            blob_path,
-            expiry_hours=336  # 2 weeks
-        )
+            %% SHA-256 of encrypted content
+            Sha256Hash = crypto:hash(sha256, Encrypted),
 
-        return MediaUpload(
-            media_id=media_id,
-            mime_type=mime_type,
-            size_bytes=len(file_data),
-            encryption_key=encryption_key,
-            sha256_hash=sha256_hash,
-            url=cdn_url
-        )
+            %% Derive media ID
+            Salt    = crypto:strong_rand_bytes(16),
+            MediaId = binary:part(
+                bin_to_hex(crypto:hash(sha256, <<Sha256Hash/binary, Salt/binary>>)),
+                0, 24),
 
-    async def download_media(
-        self,
-        url: str,
-        encryption_key: bytes,
-        expected_hash: bytes
-    ) -> bytes:
-        """
-        Download and decrypt media.
-        Verifies hash before decrypting.
-        """
-        # Download encrypted blob
-        encrypted = await self.cdn.fetch(url)
+            %% Upload to blob storage
+            BlobPath = <<"media/", (to_bin(UserId))/binary, "/",
+                         MediaId/binary>>,
+            ok = wa_blob:put(BlobPath, Encrypted,
+                             <<"application/octet-stream">>),
 
-        # Verify hash
-        actual_hash = hashlib.sha256(encrypted).digest()
-        if actual_hash != expected_hash:
-            raise IntegrityError("Media hash mismatch")
+            %% Get signed CDN URL
+            {ok, CdnUrl} = wa_cdn:get_signed_url(BlobPath,
+                                                  ?CDN_EXPIRY_HOURS),
 
-        # Decrypt
-        return self._decrypt_media(encrypted, encryption_key)
+            Result = #{media_id       => MediaId,
+                       mime_type      => MimeType,
+                       size_bytes     => byte_size(FileData),
+                       encryption_key => EncryptionKey,
+                       sha256_hash    => Sha256Hash,
+                       url            => CdnUrl},
+            {reply, {ok, Result}, State}
+    end;
 
-    def _encrypt_media(self, data: bytes, key: bytes) -> bytes:
-        """Encrypt media with AES-256-CBC"""
-        iv = os.urandom(16)
-        cipher = Cipher(
-            algorithms.AES(key),
-            modes.CBC(iv)
-        )
-        encryptor = cipher.encryptor()
+handle_call({download, Url, EncryptionKey, ExpectedHash}, _From, State) ->
+    case wa_cdn:fetch(Url) of
+        {ok, Encrypted} ->
+            ActualHash = crypto:hash(sha256, Encrypted),
+            case ActualHash =:= ExpectedHash of
+                false ->
+                    {reply, {error, hash_mismatch}, State};
+                true ->
+                    Plaintext = decrypt_media(Encrypted, EncryptionKey),
+                    {reply, {ok, Plaintext}, State}
+            end;
+        {error, Reason} ->
+            {reply, {error, Reason}, State}
+    end.
 
-        # PKCS7 padding
-        padding_length = 16 - (len(data) % 16)
-        padded = data + bytes([padding_length] * padding_length)
+handle_cast(_Msg, State) ->
+    {noreply, State}.
 
-        encrypted = encryptor.update(padded) + encryptor.finalize()
+handle_info(_Info, State) ->
+    {noreply, State}.
 
-        return iv + encrypted
+terminate(_Reason, _State) ->
+    ok.
 
-    def _decrypt_media(self, encrypted: bytes, key: bytes) -> bytes:
-        """Decrypt media"""
-        iv = encrypted[:16]
-        ciphertext = encrypted[16:]
+%%% ----------------------------------------------------------------
+%%% Internal — AES-256-CBC encrypt / decrypt
+%%% ----------------------------------------------------------------
 
-        cipher = Cipher(
-            algorithms.AES(key),
-            modes.CBC(iv)
-        )
-        decryptor = cipher.decryptor()
+encrypt_media(Data, Key) ->
+    IV = crypto:strong_rand_bytes(16),
+    %% PKCS7 padding
+    PadLen  = 16 - (byte_size(Data) rem 16),
+    Padding = binary:copy(<<PadLen>>, PadLen),
+    Padded  = <<Data/binary, Padding/binary>>,
+    Cipher  = crypto:crypto_one_time(aes_256_cbc, Key, IV, Padded,
+                                     [{encrypt, true}]),
+    <<IV/binary, Cipher/binary>>.
 
-        padded = decryptor.update(ciphertext) + decryptor.finalize()
+decrypt_media(Encrypted, Key) ->
+    <<IV:16/binary, Ciphertext/binary>> = Encrypted,
+    Padded  = crypto:crypto_one_time(aes_256_cbc, Key, IV, Ciphertext,
+                                     [{encrypt, false}]),
+    %% Remove PKCS7 padding
+    PadLen = binary:last(Padded),
+    binary:part(Padded, 0, byte_size(Padded) - PadLen).
 
-        # Remove padding
-        padding_length = padded[-1]
-        return padded[:-padding_length]
+%%% ----------------------------------------------------------------
+%%% Utility
+%%% ----------------------------------------------------------------
+
+to_bin(B) when is_binary(B) -> B;
+to_bin(L) when is_list(L)   -> list_to_binary(L);
+to_bin(A) when is_atom(A)   -> atom_to_binary(A, utf8).
+
+bin_to_hex(Bin) ->
+    <<<<(hex_char(H)), (hex_char(L))>> ||
+        <<H:4, L:4>> <= Bin>>.
+
+hex_char(N) when N < 10 -> $0 + N;
+hex_char(N)             -> $a + N - 10.
 ```
 
 ---
@@ -1189,4 +1123,57 @@ class MediaService:
 
 7. **電話番号によるアイデンティティ** - ユーザーネームなし、発見のフリクションなし。連絡先リストの同期でネットワーク効果を実現します。PSTNで認証します。
 
-8. **極端な効率性** - 買収時に1エンジニアあたり1,400万ユーザー。人員のスケーリングよりも慎重な技術選択を重視しました。
+8. **極端な効率性** - 買収時に1エンジニアあたり1,400万ユーザーです。人員のスケーリングよりも慎重な技術選択を重視しました。
+
+---
+
+## 本番環境の知見
+
+### FreeBSDカーネルチューニングによるサーバーあたり200万以上の接続
+
+WhatsAppは極端な接続数におけるネットワークスタックの優位性から、LinuxではなくFreeBSDを選択しました。コモディティハードウェアで200万以上の同時TCP接続を実現した主要なsysctlおよびカーネル設定は以下の通りです。
+
+- **`kqueue`** — FreeBSDのイベント通知インターフェースは接続数に対してO(1)でスケールし、古い`select`/`poll`パスとは異なります。各Erlangスケジューラスレッドは独自のkqueue fdを実行し、CPU間の競合を排除します。
+- **`kern.ipc.somaxconn`** — デフォルトの128から65535以上に引き上げ、バースト再接続時（例：ネットワーク分断が回復し、数百万のクライアントが数秒以内に再接続する場合）にTCPリッスンバックログがSYNパケットをドロップしないようにします。
+- **`kern.ipc.maxsockbuf` / `net.inet.tcp.recvbuf_max`** — ソケットあたりのバッファサイズを縮小します。200万ソケットでは、各16KBでも32GBのカーネルメモリを消費します。WhatsAppはXMPP由来のフレームが小さいため、約2-4KBの受信バッファで運用していました。
+- **`net.inet.tcp.msl`** — TIME_WAITの持続時間を短縮し、ローリングリスタート時にポート/ソケットペアがより速くリサイクルされるようにします。
+- **ファイルディスクリプタ制限** — `kern.maxfiles`およびプロセスごとの`ulimit`を200万以上に引き上げ、ソケットとMnesiaのファイルハンドルをカバーします。
+
+### Mnesia vs HBase — ホット/コールドデータの境界
+
+WhatsAppは明確なレイテンシ境界に沿ってストレージを分割しています。
+
+| レイヤー | ストア | データ | アクセスパターン |
+|-------|-------|------|----------------|
+| **ホット** | Mnesia (ram_copies) | ユーザーセッション、ルーティングテーブル、プレゼンス、プリキーバンドル | サブミリ秒のダーティ読み書き、Erlangノード間でレプリケーション |
+| **ウォーム** | Mnesia (disc_copies) | グループメタデータ、アカウント設定 | ノード再起動後も存続、読み取りはインメモリ |
+| **コールド** | HBase (HDFSバックエンド) | オフラインメッセージキュー、メディアメタデータ、監査ログ | バッチフレンドリー、TTLベースの有効期限、行キープレフィックススキャン |
+
+Mnesiaの最大の強みはBEAMとの緊密な統合です。シリアライズのオーバーヘッドもネットワークホップもありません。ローカルram_copyに対する`mnesia:dirty_read/2`は実質的にETSルックアップ（マイクロ秒オーダー）です。トレードオフはノードあたりのストレージ容量がRAMに制限されることであり、無制限に増大するデータ（メッセージ履歴、メディア）がHBaseに配置される理由です。
+
+### ejabberdの系譜
+
+WhatsAppのサーバーはejabberd（オープンソースのErlang XMPPサーバー）のフォークとして始まりました。時間の経過とともにチームはXMPP準拠の大部分を取り除き、よりタイトなバイナリプロトコルに移行しましたが、アーキテクチャのDNAは残っています。
+
+- 接続クライアントごとに1つのErlangプロセス（ejabberdの`ejabberd_c2s`）
+- セッション/ルーティングテーブルにMnesia（ejabberdの`session`バックエンド）
+- 至る所で`gen_server`とスーパービジョンツリー
+- `release_handler`によるホットコードアップグレード — 単一の接続もドロップせずに新しいbeamファイルをデプロイ
+
+標準準拠のXMPPから独自プロトコルへの転換により、WhatsAppはメッセージあたりのオーバーヘッドを冗長なXMLスタンザ（フレーミング約200バイト以上）からコンパクトなバイナリフレーム（フレーミング約10-20バイト）に縮小しました。これは2Gネットワークにおいて非常に重要な10倍の帯域幅削減です。
+
+### BEAMスケジューラのコアごとのピンニング
+
+BEAM VMはデフォルトでCPUコアあたり1つのスケジューラスレッドを実行します。WhatsAppはコンテキストスイッチのジッターを排除するため、各スケジューラを専用のコアにピン留めしています。
+
+```erlang
+%% vm.args — passed to the BEAM at boot
++S 24:24            %% 24 schedulers on a 24-core box
++stbt db            %% bind schedulers to cores (default_bind)
++sbwt very_long     %% scheduler busy-wait threshold — keep hot
++swt very_low       %% scheduler wake-up threshold — wake fast
++sub true           %% enable scheduler utilization balancing
++Muacnl 0           %% disable carrier migration (reduce allocator lock contention)
+```
+
+コアごとのピンニング（`+stbt db`）により、各スケジューラは独自のランキューを所有し、その上のプロセスがCPU間で移行することはほとんどありません。これによりL1/L2キャッシュがウォームな状態に保たれ、ランキューのクロスコアロッキングのオーバーヘッドが回避されます。ビジーウェイトフラグ（`+sbwt very_long`）は、わずかなアイドルCPU消費と引き換えに、受信パケットに対するスケジューリングレイテンシをほぼゼロにします。これは200万の永続接続を処理し、そのいずれもが任意の瞬間にメッセージを受信し得るサーバーにとって、まさに正しいトレードオフです。
