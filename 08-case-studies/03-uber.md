@@ -84,296 +84,362 @@ graph TD
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-```python
-import h3  # Uber's H3 library
-from dataclasses import dataclass
-from typing import List, Dict, Set
-import time
+```go
+package main
 
-@dataclass
-class DriverLocation:
-    driver_id: str
-    lat: float
-    lng: float
-    heading: float
-    speed: float
-    timestamp: float
-    status: str  # 'available', 'on_trip', 'offline'
+import (
+	"context"
+	"fmt"
+	"math"
+	"sort"
+	"strconv"
+	"sync"
+	"time"
 
-class LocationService:
-    """
-    Cell-based location service using H3 hexagonal grid.
-    """
-    
-    def __init__(self, redis_client):
-        self.redis = redis_client
-        self.resolution = 9  # ~174m hexagon edge
-        self.location_ttl = 60  # Location expires after 60s without update
-    
-    def _get_cell_id(self, lat: float, lng: float) -> str:
-        """Get H3 cell ID for coordinates."""
-        return h3.geo_to_h3(lat, lng, self.resolution)
-    
-    async def update_location(self, location: DriverLocation):
-        """Update driver location."""
-        cell_id = self._get_cell_id(location.lat, location.lng)
-        
-        # Get previous cell
-        prev_cell = await self.redis.hget(f"driver:{location.driver_id}", "cell")
-        
-        pipe = self.redis.pipeline()
-        
-        # Remove from old cell if changed
-        if prev_cell and prev_cell.decode() != cell_id:
-            pipe.srem(f"cell:{prev_cell.decode()}", location.driver_id)
-        
-        # Add to new cell
-        pipe.sadd(f"cell:{cell_id}", location.driver_id)
-        
-        # Store driver location data
-        pipe.hset(f"driver:{location.driver_id}", mapping={
-            'lat': location.lat,
-            'lng': location.lng,
-            'heading': location.heading,
-            'speed': location.speed,
-            'status': location.status,
-            'cell': cell_id,
-            'timestamp': location.timestamp
-        })
-        
-        # Set TTL (driver offline if no update)
-        pipe.expire(f"driver:{location.driver_id}", self.location_ttl)
-        
-        await pipe.execute()
-    
-    async def find_nearby_drivers(
-        self,
-        lat: float,
-        lng: float,
-        radius_km: float = 3.0,
-        limit: int = 10
-    ) -> List[DriverLocation]:
-        """Find available drivers near a location."""
-        center_cell = self._get_cell_id(lat, lng)
-        
-        # Get neighboring cells within radius
-        # H3 provides k-ring function for this
-        ring_size = self._calculate_ring_size(radius_km)
-        cells = h3.k_ring(center_cell, ring_size)
-        
-        # Get drivers from all cells
-        driver_ids = set()
-        for cell in cells:
-            cell_drivers = await self.redis.smembers(f"cell:{cell}")
-            driver_ids.update(d.decode() for d in cell_drivers)
-        
-        # Get driver details and filter by status
-        drivers = []
-        for driver_id in driver_ids:
-            data = await self.redis.hgetall(f"driver:{driver_id}")
-            if data and data.get(b'status', b'').decode() == 'available':
-                driver = DriverLocation(
-                    driver_id=driver_id,
-                    lat=float(data[b'lat']),
-                    lng=float(data[b'lng']),
-                    heading=float(data.get(b'heading', 0)),
-                    speed=float(data.get(b'speed', 0)),
-                    timestamp=float(data[b'timestamp']),
-                    status='available'
-                )
-                
-                # Calculate actual distance
-                distance = self._haversine(lat, lng, driver.lat, driver.lng)
-                if distance <= radius_km:
-                    driver.distance = distance
-                    drivers.append(driver)
-        
-        # Sort by distance
-        drivers.sort(key=lambda d: d.distance)
-        
-        return drivers[:limit]
-    
-    def _calculate_ring_size(self, radius_km: float) -> int:
-        """Calculate H3 ring size needed to cover radius."""
-        # Average hexagon edge at resolution 9 is ~174m
-        hex_edge_km = 0.174
-        return max(1, int(radius_km / hex_edge_km / 2))
-    
-    def _haversine(self, lat1, lng1, lat2, lng2) -> float:
-        """Calculate distance between two points in km."""
-        from math import radians, sin, cos, sqrt, atan2
-        
-        R = 6371  # Earth's radius in km
-        
-        lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])
-        dlat = lat2 - lat1
-        dlng = lng2 - lng1
-        
-        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlng/2)**2
-        c = 2 * atan2(sqrt(a), sqrt(1-a))
-        
-        return R * c
+	"github.com/go-redis/redis/v8"
+	"github.com/uber/h3-go/v4"
+)
+
+// DriverLocation represents a driver's real-time position and status.
+type DriverLocation struct {
+	DriverID  string
+	Lat       float64
+	Lng       float64
+	Heading   float64
+	Speed     float64
+	Timestamp float64
+	Status    string  // "available", "on_trip", "offline"
+	Distance  float64 // populated during nearby search
+}
+
+// LocationService manages driver locations using an H3 hexagonal grid backed by Redis.
+type LocationService struct {
+	rdb         *redis.Client
+	resolution  int
+	locationTTL time.Duration
+	mu          sync.RWMutex
+}
+
+// NewLocationService creates a LocationService with resolution 9 (~174 m edge).
+func NewLocationService(rdb *redis.Client) *LocationService {
+	return &LocationService{
+		rdb:         rdb,
+		resolution:  9,
+		locationTTL: 60 * time.Second,
+	}
+}
+
+// cellID returns the H3 cell index for the given coordinates.
+func (s *LocationService) cellID(lat, lng float64) h3.Cell {
+	return h3.LatLngToCell(h3.NewLatLng(lat, lng), s.resolution)
+}
+
+// UpdateLocation stores a driver's position and manages cell membership.
+func (s *LocationService) UpdateLocation(ctx context.Context, loc DriverLocation) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	cell := s.cellID(loc.Lat, loc.Lng)
+	cellStr := cell.String()
+
+	// Get previous cell
+	prevCell, _ := s.rdb.HGet(ctx, fmt.Sprintf("driver:%s", loc.DriverID), "cell").Result()
+
+	pipe := s.rdb.TxPipeline()
+
+	// Remove from old cell if changed
+	if prevCell != "" && prevCell != cellStr {
+		pipe.SRem(ctx, fmt.Sprintf("cell:%s", prevCell), loc.DriverID)
+	}
+
+	// Add to new cell
+	pipe.SAdd(ctx, fmt.Sprintf("cell:%s", cellStr), loc.DriverID)
+
+	// Store driver location data
+	pipe.HSet(ctx, fmt.Sprintf("driver:%s", loc.DriverID), map[string]interface{}{
+		"lat":       loc.Lat,
+		"lng":       loc.Lng,
+		"heading":   loc.Heading,
+		"speed":     loc.Speed,
+		"status":    loc.Status,
+		"cell":      cellStr,
+		"timestamp": loc.Timestamp,
+	})
+
+	// Set TTL (driver offline if no update)
+	pipe.Expire(ctx, fmt.Sprintf("driver:%s", loc.DriverID), s.locationTTL)
+
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// FindNearbyDrivers returns available drivers within radiusKm, sorted by distance.
+func (s *LocationService) FindNearbyDrivers(ctx context.Context, lat, lng, radiusKm float64, limit int) ([]DriverLocation, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	center := s.cellID(lat, lng)
+	ringSize := s.calculateRingSize(radiusKm)
+	cells := h3.GridDisk(center, ringSize)
+
+	// Collect unique driver IDs from all cells
+	driverSet := make(map[string]struct{})
+	for _, c := range cells {
+		members, err := s.rdb.SMembers(ctx, fmt.Sprintf("cell:%s", c.String())).Result()
+		if err != nil {
+			continue
+		}
+		for _, id := range members {
+			driverSet[id] = struct{}{}
+		}
+	}
+
+	// Get driver details and filter by status
+	var drivers []DriverLocation
+	for driverID := range driverSet {
+		data, err := s.rdb.HGetAll(ctx, fmt.Sprintf("driver:%s", driverID)).Result()
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		if data["status"] != "available" {
+			continue
+		}
+		dLat, _ := strconv.ParseFloat(data["lat"], 64)
+		dLng, _ := strconv.ParseFloat(data["lng"], 64)
+		heading, _ := strconv.ParseFloat(data["heading"], 64)
+		speed, _ := strconv.ParseFloat(data["speed"], 64)
+		ts, _ := strconv.ParseFloat(data["timestamp"], 64)
+
+		dist := haversine(lat, lng, dLat, dLng)
+		if dist > radiusKm {
+			continue
+		}
+		drivers = append(drivers, DriverLocation{
+			DriverID:  driverID,
+			Lat:       dLat,
+			Lng:       dLng,
+			Heading:   heading,
+			Speed:     speed,
+			Timestamp: ts,
+			Status:    "available",
+			Distance:  dist,
+		})
+	}
+
+	sort.Slice(drivers, func(i, j int) bool {
+		return drivers[i].Distance < drivers[j].Distance
+	})
+	if len(drivers) > limit {
+		drivers = drivers[:limit]
+	}
+	return drivers, nil
+}
+
+// calculateRingSize determines the H3 k-ring needed to cover the given radius.
+func (s *LocationService) calculateRingSize(radiusKm float64) int {
+	const hexEdgeKm = 0.174 // average edge at resolution 9
+	k := int(radiusKm / hexEdgeKm / 2)
+	if k < 1 {
+		return 1
+	}
+	return k
+}
+
+// haversine returns the great-circle distance in km between two lat/lng pairs.
+func haversine(lat1, lng1, lat2, lng2 float64) float64 {
+	const R = 6371.0 // Earth's radius in km
+	dLat := (lat2 - lat1) * math.Pi / 180
+	dLng := (lng2 - lng1) * math.Pi / 180
+	rLat1 := lat1 * math.Pi / 180
+	rLat2 := lat2 * math.Pi / 180
+
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(rLat1)*math.Cos(rLat2)*math.Sin(dLng/2)*math.Sin(dLng/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	return R * c
+}
 ```
 
 ---
 
 ## Matching Service
 
-```python
-from dataclasses import dataclass
-from enum import Enum
-from typing import List, Optional
-import asyncio
+```go
+package main
 
-class MatchStrategy(Enum):
-    NEAREST = "nearest"
-    FASTEST_ETA = "fastest_eta"
-    BEST_RATED = "best_rated"
+import (
+	"context"
+	"sort"
+	"time"
 
-@dataclass
-class RideRequest:
-    request_id: str
-    rider_id: str
-    pickup_lat: float
-    pickup_lng: float
-    dropoff_lat: float
-    dropoff_lng: float
-    vehicle_type: str  # 'uberx', 'uberxl', 'black'
-    
-@dataclass
-class MatchResult:
-    driver_id: str
-    eta_seconds: int
-    distance_km: float
-    driver_rating: float
+	"golang.org/x/sync/errgroup"
+)
 
-class MatchingService:
-    """
-    Match riders with optimal drivers.
-    """
-    
-    def __init__(
-        self,
-        location_service,
-        eta_service,
-        driver_service,
-        dispatch_service
-    ):
-        self.location = location_service
-        self.eta = eta_service
-        self.driver = driver_service
-        self.dispatch = dispatch_service
-        
-        self.match_timeout = 30  # seconds
-        self.max_eta_minutes = 15
-    
-    async def find_match(
-        self,
-        request: RideRequest,
-        strategy: MatchStrategy = MatchStrategy.FASTEST_ETA
-    ) -> Optional[MatchResult]:
-        """Find and dispatch matching driver."""
-        
-        # 1. Find nearby available drivers
-        nearby_drivers = await self.location.find_nearby_drivers(
-            lat=request.pickup_lat,
-            lng=request.pickup_lng,
-            radius_km=5.0,
-            limit=20
-        )
-        
-        if not nearby_drivers:
-            return None
-        
-        # 2. Filter by vehicle type
-        eligible_drivers = await self._filter_by_vehicle(
-            nearby_drivers,
-            request.vehicle_type
-        )
-        
-        if not eligible_drivers:
-            return None
-        
-        # 3. Calculate ETAs for all eligible drivers
-        candidates = await self._calculate_etas(
-            eligible_drivers,
-            request.pickup_lat,
-            request.pickup_lng
-        )
-        
-        # 4. Rank candidates
-        ranked = self._rank_candidates(candidates, strategy)
-        
-        # 5. Try to dispatch to drivers in order
-        for candidate in ranked:
-            if candidate.eta_seconds > self.max_eta_minutes * 60:
-                continue
-            
-            accepted = await self.dispatch.offer_trip(
-                driver_id=candidate.driver_id,
-                request=request,
-                eta_seconds=candidate.eta_seconds,
-                timeout=15  # 15 seconds to accept
-            )
-            
-            if accepted:
-                return candidate
-        
-        return None
-    
-    async def _calculate_etas(
-        self,
-        drivers: List[DriverLocation],
-        dest_lat: float,
-        dest_lng: float
-    ) -> List[MatchResult]:
-        """Calculate ETA for each driver to pickup."""
-        
-        # Batch ETA calculation
-        tasks = [
-            self.eta.get_eta(
-                driver.lat, driver.lng,
-                dest_lat, dest_lng
-            )
-            for driver in drivers
-        ]
-        
-        etas = await asyncio.gather(*tasks)
-        
-        results = []
-        for driver, eta in zip(drivers, etas):
-            if eta:
-                rating = await self.driver.get_rating(driver.driver_id)
-                results.append(MatchResult(
-                    driver_id=driver.driver_id,
-                    eta_seconds=eta['duration_seconds'],
-                    distance_km=eta['distance_km'],
-                    driver_rating=rating
-                ))
-        
-        return results
-    
-    def _rank_candidates(
-        self,
-        candidates: List[MatchResult],
-        strategy: MatchStrategy
-    ) -> List[MatchResult]:
-        """Rank candidates based on strategy."""
-        
-        if strategy == MatchStrategy.NEAREST:
-            return sorted(candidates, key=lambda c: c.distance_km)
-        
-        elif strategy == MatchStrategy.FASTEST_ETA:
-            return sorted(candidates, key=lambda c: c.eta_seconds)
-        
-        elif strategy == MatchStrategy.BEST_RATED:
-            # Combination of rating and ETA
-            return sorted(
-                candidates,
-                key=lambda c: (-c.driver_rating, c.eta_seconds)
-            )
-        
-        return candidates
+// MatchStrategy determines how candidates are ranked.
+type MatchStrategy int
+
+const (
+	MatchNearest    MatchStrategy = iota // sort by distance
+	MatchFastestETA                      // sort by ETA
+	MatchBestRated                       // sort by rating, then ETA
+)
+
+// RideRequest represents a rider's request for a trip.
+type RideRequest struct {
+	RequestID   string
+	RiderID     string
+	PickupLat   float64
+	PickupLng   float64
+	DropoffLat  float64
+	DropoffLng  float64
+	VehicleType string // "uberx", "uberxl", "black"
+}
+
+// MatchResult holds scoring information for a candidate driver.
+type MatchResult struct {
+	DriverID     string
+	ETASeconds   int
+	DistanceKm   float64
+	DriverRating float64
+}
+
+// ETAServiceIface is the interface used by MatchingService for ETA lookups.
+type ETAServiceIface interface {
+	GetETA(ctx context.Context, oLat, oLng, dLat, dLng float64) (*ETAResult, error)
+}
+
+// DriverServiceIface provides driver metadata.
+type DriverServiceIface interface {
+	GetRating(ctx context.Context, driverID string) (float64, error)
+	FilterByVehicle(ctx context.Context, drivers []DriverLocation, vehicleType string) ([]DriverLocation, error)
+}
+
+// DispatchServiceIface offers a trip to a driver and waits for acceptance.
+type DispatchServiceIface interface {
+	OfferTrip(ctx context.Context, driverID string, req RideRequest, etaSec int, timeout time.Duration) (bool, error)
+}
+
+// MatchingService matches riders with optimal drivers.
+type MatchingService struct {
+	location     *LocationService
+	eta          ETAServiceIface
+	driver       DriverServiceIface
+	dispatch     DispatchServiceIface
+	matchTimeout time.Duration
+	maxETAMin    int
+}
+
+// NewMatchingService creates a MatchingService.
+func NewMatchingService(loc *LocationService, eta ETAServiceIface, drv DriverServiceIface, disp DispatchServiceIface) *MatchingService {
+	return &MatchingService{
+		location:     loc,
+		eta:          eta,
+		driver:       drv,
+		dispatch:     disp,
+		matchTimeout: 30 * time.Second,
+		maxETAMin:    15,
+	}
+}
+
+// FindMatch finds and dispatches the best matching driver.
+func (m *MatchingService) FindMatch(ctx context.Context, req RideRequest, strategy MatchStrategy) (*MatchResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, m.matchTimeout)
+	defer cancel()
+
+	// 1. Find nearby available drivers
+	nearby, err := m.location.FindNearbyDrivers(ctx, req.PickupLat, req.PickupLng, 5.0, 20)
+	if err != nil || len(nearby) == 0 {
+		return nil, err
+	}
+
+	// 2. Filter by vehicle type
+	eligible, err := m.driver.FilterByVehicle(ctx, nearby, req.VehicleType)
+	if err != nil || len(eligible) == 0 {
+		return nil, err
+	}
+
+	// 3. Calculate ETAs for all eligible drivers in parallel
+	candidates, err := m.calculateETAs(ctx, eligible, req.PickupLat, req.PickupLng)
+	if err != nil {
+		return nil, err
+	}
+
+	// 4. Rank candidates
+	rankCandidates(candidates, strategy)
+
+	// 5. Try to dispatch to drivers in order
+	for _, c := range candidates {
+		if c.ETASeconds > m.maxETAMin*60 {
+			continue
+		}
+		accepted, err := m.dispatch.OfferTrip(ctx, c.DriverID, req, c.ETASeconds, 15*time.Second)
+		if err != nil {
+			continue
+		}
+		if accepted {
+			return &c, nil
+		}
+	}
+	return nil, nil
+}
+
+// calculateETAs fetches ETAs for all drivers concurrently using errgroup.
+func (m *MatchingService) calculateETAs(ctx context.Context, drivers []DriverLocation, destLat, destLng float64) ([]MatchResult, error) {
+	type indexedResult struct {
+		idx    int
+		result MatchResult
+	}
+
+	g, gCtx := errgroup.WithContext(ctx)
+	ch := make(chan indexedResult, len(drivers))
+
+	for i, d := range drivers {
+		i, d := i, d
+		g.Go(func() error {
+			eta, err := m.eta.GetETA(gCtx, d.Lat, d.Lng, destLat, destLng)
+			if err != nil || eta == nil {
+				return nil // skip this driver, not fatal
+			}
+			rating, _ := m.driver.GetRating(gCtx, d.DriverID)
+			ch <- indexedResult{idx: i, result: MatchResult{
+				DriverID:     d.DriverID,
+				ETASeconds:   eta.DurationSeconds,
+				DistanceKm:   eta.DistanceKm,
+				DriverRating: rating,
+			}}
+			return nil
+		})
+	}
+	_ = g.Wait()
+	close(ch)
+
+	results := make([]MatchResult, 0, len(drivers))
+	for r := range ch {
+		results = append(results, r.result)
+	}
+	return results, nil
+}
+
+// rankCandidates sorts candidates in place according to the given strategy.
+func rankCandidates(candidates []MatchResult, strategy MatchStrategy) {
+	switch strategy {
+	case MatchNearest:
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].DistanceKm < candidates[j].DistanceKm
+		})
+	case MatchFastestETA:
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].ETASeconds < candidates[j].ETASeconds
+		})
+	case MatchBestRated:
+		sort.Slice(candidates, func(i, j int) bool {
+			if candidates[i].DriverRating != candidates[j].DriverRating {
+				return candidates[i].DriverRating > candidates[j].DriverRating
+			}
+			return candidates[i].ETASeconds < candidates[j].ETASeconds
+		})
+	}
+}
 ```
 
 ---
@@ -405,349 +471,450 @@ stateDiagram-v2
     NO_MATCH --> [*]
 ```
 
-```python
-from enum import Enum
-from dataclasses import dataclass
-from typing import Optional
-import time
+```go
+package main
 
-class TripState(Enum):
-    REQUESTED = "requested"
-    MATCHING = "matching"
-    MATCHED = "matched"
-    DRIVER_EN_ROUTE = "driver_en_route"
-    ARRIVED = "arrived"
-    IN_TRIP = "in_trip"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-    NO_MATCH = "no_match"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
 
-@dataclass
-class Trip:
-    trip_id: str
-    rider_id: str
-    driver_id: Optional[str]
-    state: TripState
-    pickup_lat: float
-    pickup_lng: float
-    dropoff_lat: float
-    dropoff_lng: float
-    vehicle_type: str
-    fare_estimate: float
-    fare_actual: Optional[float]
-    created_at: float
-    started_at: Optional[float]
-    completed_at: Optional[float]
-    
-class TripService:
-    """
-    Manage trip lifecycle with state machine.
-    """
-    
-    # Valid state transitions
-    TRANSITIONS = {
-        TripState.REQUESTED: [TripState.MATCHING, TripState.CANCELLED],
-        TripState.MATCHING: [TripState.MATCHED, TripState.NO_MATCH, TripState.CANCELLED],
-        TripState.MATCHED: [TripState.DRIVER_EN_ROUTE, TripState.CANCELLED],
-        TripState.DRIVER_EN_ROUTE: [TripState.ARRIVED, TripState.CANCELLED],
-        TripState.ARRIVED: [TripState.IN_TRIP, TripState.CANCELLED],
-        TripState.IN_TRIP: [TripState.COMPLETED],
-        TripState.COMPLETED: [],
-        TripState.CANCELLED: [],
-        TripState.NO_MATCH: [TripState.REQUESTED],  # Retry
-    }
-    
-    def __init__(self, trip_store, event_bus, payment_service):
-        self.store = trip_store
-        self.events = event_bus
-        self.payment = payment_service
-    
-    async def create_trip(self, request: RideRequest, fare: float) -> Trip:
-        """Create new trip in REQUESTED state."""
-        trip = Trip(
-            trip_id=generate_id(),
-            rider_id=request.rider_id,
-            driver_id=None,
-            state=TripState.REQUESTED,
-            pickup_lat=request.pickup_lat,
-            pickup_lng=request.pickup_lng,
-            dropoff_lat=request.dropoff_lat,
-            dropoff_lng=request.dropoff_lng,
-            vehicle_type=request.vehicle_type,
-            fare_estimate=fare,
-            fare_actual=None,
-            created_at=time.time(),
-            started_at=None,
-            completed_at=None
-        )
-        
-        await self.store.save(trip)
-        await self.events.publish('trip.created', trip)
-        
-        return trip
-    
-    async def transition(
-        self,
-        trip_id: str,
-        new_state: TripState,
-        **kwargs
-    ) -> Trip:
-        """Transition trip to new state."""
-        trip = await self.store.get(trip_id)
-        
-        if not trip:
-            raise TripNotFoundError(trip_id)
-        
-        # Validate transition
-        if new_state not in self.TRANSITIONS[trip.state]:
-            raise InvalidTransitionError(
-                f"Cannot transition from {trip.state} to {new_state}"
-            )
-        
-        old_state = trip.state
-        trip.state = new_state
-        
-        # Handle state-specific logic
-        await self._handle_transition(trip, old_state, new_state, kwargs)
-        
-        await self.store.save(trip)
-        await self.events.publish(f'trip.{new_state.value}', trip)
-        
-        return trip
-    
-    async def _handle_transition(
-        self,
-        trip: Trip,
-        old_state: TripState,
-        new_state: TripState,
-        kwargs: dict
-    ):
-        """Handle state-specific logic."""
-        
-        if new_state == TripState.MATCHED:
-            trip.driver_id = kwargs['driver_id']
-        
-        elif new_state == TripState.IN_TRIP:
-            trip.started_at = time.time()
-            # Start fare meter
-            await self._start_fare_meter(trip)
-        
-        elif new_state == TripState.COMPLETED:
-            trip.completed_at = time.time()
-            # Calculate final fare
-            trip.fare_actual = await self._calculate_final_fare(trip)
-            # Process payment
-            await self.payment.charge(trip.rider_id, trip.fare_actual)
-        
-        elif new_state == TripState.CANCELLED:
-            # Handle cancellation fee if applicable
-            if old_state in [TripState.DRIVER_EN_ROUTE, TripState.ARRIVED]:
-                await self.payment.charge_cancellation(trip)
+	"github.com/google/uuid"
+)
+
+// TripState represents the lifecycle state of a trip.
+type TripState int
+
+const (
+	TripRequested    TripState = iota // initial request
+	TripMatching                      // searching for driver
+	TripMatched                       // driver assigned
+	TripDriverEnRoute                 // driver heading to pickup
+	TripArrived                       // driver at pickup
+	TripInTrip                        // ride in progress
+	TripCompleted                     // ride finished
+	TripCancelled                     // rider or driver cancelled
+	TripNoMatch                       // no driver found
+)
+
+// String returns the event-friendly name for a TripState.
+func (s TripState) String() string {
+	return [...]string{
+		"requested", "matching", "matched", "driver_en_route",
+		"arrived", "in_trip", "completed", "cancelled", "no_match",
+	}[s]
+}
+
+// transitions is the explicit map of valid state transitions.
+var transitions = map[TripState][]TripState{
+	TripRequested:     {TripMatching, TripCancelled},
+	TripMatching:      {TripMatched, TripNoMatch, TripCancelled},
+	TripMatched:       {TripDriverEnRoute, TripCancelled},
+	TripDriverEnRoute: {TripArrived, TripCancelled},
+	TripArrived:       {TripInTrip, TripCancelled},
+	TripInTrip:        {TripCompleted},
+	TripCompleted:     {},
+	TripCancelled:     {},
+	TripNoMatch:       {TripRequested}, // retry
+}
+
+var (
+	ErrTripNotFound      = errors.New("trip not found")
+	ErrInvalidTransition = errors.New("invalid state transition")
+)
+
+// Trip holds the full trip record persisted in Cassandra.
+type Trip struct {
+	TripID      string
+	RiderID     string
+	DriverID    string
+	State       TripState
+	PickupLat   float64
+	PickupLng   float64
+	DropoffLat  float64
+	DropoffLng  float64
+	VehicleType string
+	FareEstimate float64
+	FareActual   float64
+	CreatedAt    time.Time
+	StartedAt    time.Time
+	CompletedAt  time.Time
+}
+
+// TripStoreIface abstracts the persistence layer (Cassandra via gocql).
+type TripStoreIface interface {
+	Save(ctx context.Context, trip *Trip) error
+	Get(ctx context.Context, tripID string) (*Trip, error)
+}
+
+// EventBusIface publishes domain events (Kafka via confluent-kafka-go).
+type EventBusIface interface {
+	Publish(ctx context.Context, topic string, payload interface{}) error
+}
+
+// PaymentServiceIface handles charges and cancellation fees.
+type PaymentServiceIface interface {
+	Charge(ctx context.Context, riderID string, amount float64) error
+	ChargeCancellation(ctx context.Context, trip *Trip) error
+}
+
+// FareMeterIface starts metering for an active trip.
+type FareMeterIface interface {
+	Start(ctx context.Context, trip *Trip) error
+	CalculateFinal(ctx context.Context, trip *Trip) (float64, error)
+}
+
+// TripService manages the trip lifecycle with an explicit state machine.
+type TripService struct {
+	store    TripStoreIface
+	events   EventBusIface
+	payment  PaymentServiceIface
+	fare     FareMeterIface
+}
+
+// NewTripService creates a TripService.
+func NewTripService(store TripStoreIface, events EventBusIface, pay PaymentServiceIface, fare FareMeterIface) *TripService {
+	return &TripService{store: store, events: events, payment: pay, fare: fare}
+}
+
+// CreateTrip persists a new trip in the REQUESTED state.
+func (s *TripService) CreateTrip(ctx context.Context, req RideRequest, fareEstimate float64) (*Trip, error) {
+	trip := &Trip{
+		TripID:       uuid.NewString(),
+		RiderID:      req.RiderID,
+		State:        TripRequested,
+		PickupLat:    req.PickupLat,
+		PickupLng:    req.PickupLng,
+		DropoffLat:   req.DropoffLat,
+		DropoffLng:   req.DropoffLng,
+		VehicleType:  req.VehicleType,
+		FareEstimate: fareEstimate,
+		CreatedAt:    time.Now(),
+	}
+	if err := s.store.Save(ctx, trip); err != nil {
+		return nil, err
+	}
+	_ = s.events.Publish(ctx, "trip.created", trip)
+	return trip, nil
+}
+
+// Transition moves a trip to newState, enforcing the state machine.
+func (s *TripService) Transition(ctx context.Context, tripID string, newState TripState, opts map[string]interface{}) (*Trip, error) {
+	trip, err := s.store.Get(ctx, tripID)
+	if err != nil {
+		return nil, ErrTripNotFound
+	}
+
+	if !isValidTransition(trip.State, newState) {
+		return nil, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, trip.State, newState)
+	}
+
+	oldState := trip.State
+	trip.State = newState
+
+	// Handle state-specific side effects
+	if err := s.handleTransition(ctx, trip, oldState, newState, opts); err != nil {
+		return nil, err
+	}
+
+	if err := s.store.Save(ctx, trip); err != nil {
+		return nil, err
+	}
+	_ = s.events.Publish(ctx, fmt.Sprintf("trip.%s", newState), trip)
+	return trip, nil
+}
+
+func isValidTransition(from, to TripState) bool {
+	for _, allowed := range transitions[from] {
+		if allowed == to {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *TripService) handleTransition(ctx context.Context, trip *Trip, oldState, newState TripState, opts map[string]interface{}) error {
+	switch newState {
+	case TripMatched:
+		if id, ok := opts["driver_id"].(string); ok {
+			trip.DriverID = id
+		}
+	case TripInTrip:
+		trip.StartedAt = time.Now()
+		return s.fare.Start(ctx, trip)
+	case TripCompleted:
+		trip.CompletedAt = time.Now()
+		actual, err := s.fare.CalculateFinal(ctx, trip)
+		if err != nil {
+			return err
+		}
+		trip.FareActual = actual
+		return s.payment.Charge(ctx, trip.RiderID, trip.FareActual)
+	case TripCancelled:
+		if oldState == TripDriverEnRoute || oldState == TripArrived {
+			return s.payment.ChargeCancellation(ctx, trip)
+		}
+	}
+	return nil
+}
 ```
 
 ---
 
 ## Dynamic Pricing (Surge)
 
-```python
-from dataclasses import dataclass
-from typing import Dict
-import time
+```go
+package main
 
-@dataclass
-class SurgeData:
-    multiplier: float
-    demand_count: int
-    supply_count: int
-    calculated_at: float
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"time"
 
-class SurgePricingService:
-    """
-    Calculate surge pricing based on supply/demand.
-    """
-    
-    def __init__(self, redis_client, location_service):
-        self.redis = redis_client
-        self.location = location_service
-        
-        self.min_multiplier = 1.0
-        self.max_multiplier = 5.0
-        self.surge_threshold = 1.5  # demand/supply ratio to start surge
-        self.cache_ttl = 60  # seconds
-    
-    async def get_surge_multiplier(
-        self,
-        lat: float,
-        lng: float,
-        vehicle_type: str
-    ) -> float:
-        """Get current surge multiplier for location."""
-        cell_id = self.location._get_cell_id(lat, lng)
-        cache_key = f"surge:{cell_id}:{vehicle_type}"
-        
-        # Check cache
-        cached = await self.redis.get(cache_key)
-        if cached:
-            return float(cached)
-        
-        # Calculate surge
-        multiplier = await self._calculate_surge(cell_id, vehicle_type)
-        
-        # Cache result
-        await self.redis.setex(cache_key, self.cache_ttl, str(multiplier))
-        
-        return multiplier
-    
-    async def _calculate_surge(
-        self,
-        cell_id: str,
-        vehicle_type: str
-    ) -> float:
-        """Calculate surge based on supply/demand."""
-        
-        # Get demand (recent ride requests)
-        demand = await self._get_demand(cell_id, vehicle_type)
-        
-        # Get supply (available drivers)
-        supply = await self._get_supply(cell_id, vehicle_type)
-        
-        if supply == 0:
-            return self.max_multiplier
-        
-        ratio = demand / supply
-        
-        if ratio < self.surge_threshold:
-            return self.min_multiplier
-        
-        # Linear scaling between threshold and max
-        multiplier = 1.0 + (ratio - self.surge_threshold) * 0.5
-        
-        return min(self.max_multiplier, max(self.min_multiplier, multiplier))
-    
-    async def _get_demand(
-        self,
-        cell_id: str,
-        vehicle_type: str
-    ) -> int:
-        """Get recent ride request count."""
-        key = f"demand:{cell_id}:{vehicle_type}"
-        
-        # Use sliding window counter
-        now = int(time.time())
-        window = 300  # 5 minutes
-        
-        # Count requests in last 5 minutes
-        count = await self.redis.zcount(key, now - window, now)
-        return count
-    
-    async def _get_supply(
-        self,
-        cell_id: str,
-        vehicle_type: str
-    ) -> int:
-        """Get available driver count."""
-        # Get drivers in cell and neighbors
-        cells = h3.k_ring(cell_id, 1)
-        
-        total = 0
-        for cell in cells:
-            drivers = await self.redis.smembers(f"cell:{cell}")
-            
-            for driver_id in drivers:
-                driver_id = driver_id.decode()
-                data = await self.redis.hgetall(f"driver:{driver_id}")
-                
-                if data:
-                    status = data.get(b'status', b'').decode()
-                    v_type = data.get(b'vehicle_type', b'').decode()
-                    
-                    if status == 'available' and v_type == vehicle_type:
-                        total += 1
-        
-        return total
-    
-    async def record_request(
-        self,
-        lat: float,
-        lng: float,
-        vehicle_type: str
-    ):
-        """Record ride request for demand tracking."""
-        cell_id = self.location._get_cell_id(lat, lng)
-        key = f"demand:{cell_id}:{vehicle_type}"
-        
-        now = int(time.time())
-        
-        # Add to sorted set
-        await self.redis.zadd(key, {str(now): now})
-        
-        # Trim old entries
-        await self.redis.zremrangebyscore(key, '-inf', now - 600)
-        await self.redis.expire(key, 600)
+	"github.com/go-redis/redis/v8"
+	"github.com/uber/h3-go/v4"
+)
+
+// SurgeData captures a point-in-time surge calculation.
+type SurgeData struct {
+	Multiplier   float64
+	DemandCount  int
+	SupplyCount  int
+	CalculatedAt time.Time
+}
+
+// SurgePricingService calculates dynamic surge multipliers based on local supply/demand.
+type SurgePricingService struct {
+	rdb            *redis.Client
+	location       *LocationService
+	minMultiplier  float64
+	maxMultiplier  float64
+	surgeThreshold float64
+	cacheTTL       time.Duration
+}
+
+// NewSurgePricingService creates a SurgePricingService.
+func NewSurgePricingService(rdb *redis.Client, loc *LocationService) *SurgePricingService {
+	return &SurgePricingService{
+		rdb:            rdb,
+		location:       loc,
+		minMultiplier:  1.0,
+		maxMultiplier:  5.0,
+		surgeThreshold: 1.5,
+		cacheTTL:       60 * time.Second,
+	}
+}
+
+// GetSurgeMultiplier returns the current surge multiplier for a location and vehicle type.
+func (s *SurgePricingService) GetSurgeMultiplier(ctx context.Context, lat, lng float64, vehicleType string) (float64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	cell := s.location.cellID(lat, lng)
+	cacheKey := fmt.Sprintf("surge:%s:%s", cell, vehicleType)
+
+	// Check cache
+	if cached, err := s.rdb.Get(ctx, cacheKey).Result(); err == nil {
+		if v, err := strconv.ParseFloat(cached, 64); err == nil {
+			return v, nil
+		}
+	}
+
+	// Calculate surge
+	multiplier, err := s.calculateSurge(ctx, cell, vehicleType)
+	if err != nil {
+		return s.minMultiplier, err
+	}
+
+	// Cache result
+	s.rdb.Set(ctx, cacheKey, strconv.FormatFloat(multiplier, 'f', 4, 64), s.cacheTTL)
+
+	return multiplier, nil
+}
+
+func (s *SurgePricingService) calculateSurge(ctx context.Context, cell h3.Cell, vehicleType string) (float64, error) {
+	demand, err := s.getDemand(ctx, cell.String(), vehicleType)
+	if err != nil {
+		return s.minMultiplier, err
+	}
+
+	supply, err := s.getSupply(ctx, cell, vehicleType)
+	if err != nil {
+		return s.minMultiplier, err
+	}
+
+	if supply == 0 {
+		return s.maxMultiplier, nil
+	}
+
+	ratio := float64(demand) / float64(supply)
+	if ratio < s.surgeThreshold {
+		return s.minMultiplier, nil
+	}
+
+	// Linear scaling between threshold and max
+	multiplier := 1.0 + (ratio-s.surgeThreshold)*0.5
+	if multiplier > s.maxMultiplier {
+		multiplier = s.maxMultiplier
+	}
+	if multiplier < s.minMultiplier {
+		multiplier = s.minMultiplier
+	}
+	return multiplier, nil
+}
+
+func (s *SurgePricingService) getDemand(ctx context.Context, cellID, vehicleType string) (int64, error) {
+	key := fmt.Sprintf("demand:%s:%s", cellID, vehicleType)
+	now := time.Now().Unix()
+	window := int64(300) // 5 minutes
+
+	count, err := s.rdb.ZCount(ctx, key, strconv.FormatInt(now-window, 10), strconv.FormatInt(now, 10)).Result()
+	return count, err
+}
+
+func (s *SurgePricingService) getSupply(ctx context.Context, cell h3.Cell, vehicleType string) (int, error) {
+	cells := h3.GridDisk(cell, 1)
+	total := 0
+
+	for _, c := range cells {
+		members, err := s.rdb.SMembers(ctx, fmt.Sprintf("cell:%s", c.String())).Result()
+		if err != nil {
+			continue
+		}
+		for _, driverID := range members {
+			data, err := s.rdb.HGetAll(ctx, fmt.Sprintf("driver:%s", driverID)).Result()
+			if err != nil || len(data) == 0 {
+				continue
+			}
+			if data["status"] == "available" && data["vehicle_type"] == vehicleType {
+				total++
+			}
+		}
+	}
+	return total, nil
+}
+
+// RecordRequest logs a ride request for demand tracking using a Redis sorted set.
+func (s *SurgePricingService) RecordRequest(ctx context.Context, lat, lng float64, vehicleType string) error {
+	cell := s.location.cellID(lat, lng)
+	key := fmt.Sprintf("demand:%s:%s", cell, vehicleType)
+	now := float64(time.Now().Unix())
+
+	pipe := s.rdb.TxPipeline()
+	pipe.ZAdd(ctx, key, &redis.Z{Score: now, Member: strconv.FormatFloat(now, 'f', 0, 64)})
+	pipe.ZRemRangeByScore(ctx, key, "-inf", strconv.FormatFloat(now-600, 'f', 0, 64))
+	pipe.Expire(ctx, key, 600*time.Second)
+	_, err := pipe.Exec(ctx)
+	return err
+}
 ```
 
 ---
 
 ## ETA Service
 
-```python
-class ETAService:
-    """
-    Calculate estimated time of arrival using routing service.
-    """
-    
-    def __init__(self, routing_client, traffic_service, cache):
-        self.routing = routing_client
-        self.traffic = traffic_service
-        self.cache = cache
-        self.cache_ttl = 30  # seconds
-    
-    async def get_eta(
-        self,
-        origin_lat: float,
-        origin_lng: float,
-        dest_lat: float,
-        dest_lng: float
-    ) -> dict:
-        """Get ETA between two points."""
-        
-        # Round coordinates for caching
-        cache_key = self._cache_key(
-            origin_lat, origin_lng, dest_lat, dest_lng
-        )
-        
-        cached = await self.cache.get(cache_key)
-        if cached:
-            return json.loads(cached)
-        
-        # Get route from routing service
-        route = await self.routing.get_route(
-            origin=(origin_lat, origin_lng),
-            destination=(dest_lat, dest_lng)
-        )
-        
-        # Adjust for current traffic
-        traffic_factor = await self.traffic.get_factor(
-            origin_lat, origin_lng,
-            dest_lat, dest_lng
-        )
-        
-        adjusted_duration = int(route['duration_seconds'] * traffic_factor)
-        
-        result = {
-            'duration_seconds': adjusted_duration,
-            'distance_km': route['distance_km'],
-            'route_polyline': route['polyline']
-        }
-        
-        # Cache result
-        await self.cache.setex(cache_key, self.cache_ttl, json.dumps(result))
-        
-        return result
-    
-    def _cache_key(self, olat, olng, dlat, dlng) -> str:
-        # Round to ~100m precision for cache efficiency
-        return f"eta:{olat:.3f},{olng:.3f}:{dlat:.3f},{dlng:.3f}"
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/go-redis/redis/v8"
+	"golang.org/x/sync/singleflight"
+)
+
+// ETAResult holds the routing result returned by GetETA.
+type ETAResult struct {
+	DurationSeconds int     `json:"duration_seconds"`
+	DistanceKm      float64 `json:"distance_km"`
+	RoutePolyline   string  `json:"route_polyline"`
+}
+
+// RoutingClientIface abstracts the external routing engine.
+type RoutingClientIface interface {
+	GetRoute(ctx context.Context, oLat, oLng, dLat, dLng float64) (*ETAResult, error)
+}
+
+// TrafficServiceIface provides real-time traffic adjustment factors.
+type TrafficServiceIface interface {
+	GetFactor(ctx context.Context, oLat, oLng, dLat, dLng float64) (float64, error)
+}
+
+// ETAService calculates estimated time of arrival using a routing engine,
+// traffic adjustments, and a Redis cache with coordinate rounding.
+type ETAService struct {
+	routing  RoutingClientIface
+	traffic  TrafficServiceIface
+	rdb      *redis.Client
+	cacheTTL time.Duration
+	sfGroup  singleflight.Group
+}
+
+// NewETAService creates an ETAService with a 30-second cache TTL.
+func NewETAService(routing RoutingClientIface, traffic TrafficServiceIface, rdb *redis.Client) *ETAService {
+	return &ETAService{
+		routing:  routing,
+		traffic:  traffic,
+		rdb:      rdb,
+		cacheTTL: 30 * time.Second,
+	}
+}
+
+// GetETA returns the ETA between two points, using cache and singleflight
+// to deduplicate concurrent requests for the same origin/destination pair.
+func (s *ETAService) GetETA(ctx context.Context, oLat, oLng, dLat, dLng float64) (*ETAResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	key := s.cacheKey(oLat, oLng, dLat, dLng)
+
+	// Check cache
+	if cached, err := s.rdb.Get(ctx, key).Result(); err == nil {
+		var result ETAResult
+		if json.Unmarshal([]byte(cached), &result) == nil {
+			return &result, nil
+		}
+	}
+
+	// Deduplicate concurrent identical lookups with singleflight keyed by cache key
+	v, err, _ := s.sfGroup.Do(key, func() (interface{}, error) {
+		route, err := s.routing.GetRoute(ctx, oLat, oLng, dLat, dLng)
+		if err != nil {
+			return nil, err
+		}
+
+		factor, err := s.traffic.GetFactor(ctx, oLat, oLng, dLat, dLng)
+		if err != nil {
+			return nil, err
+		}
+
+		result := &ETAResult{
+			DurationSeconds: int(float64(route.DurationSeconds) * factor),
+			DistanceKm:      route.DistanceKm,
+			RoutePolyline:   route.RoutePolyline,
+		}
+
+		// Cache result
+		if data, err := json.Marshal(result); err == nil {
+			s.rdb.Set(ctx, key, data, s.cacheTTL)
+		}
+		return result, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*ETAResult), nil
+}
+
+// cacheKey rounds coordinates to ~100 m precision for cache efficiency.
+func (s *ETAService) cacheKey(oLat, oLng, dLat, dLng float64) string {
+	return fmt.Sprintf("eta:%.3f,%.3f:%.3f,%.3f", oLat, oLng, dLat, dLng)
+}
 ```
 
 ---
@@ -778,3 +945,68 @@ class ETAService:
 5. **ETA caching with rounding**: Round coordinates for cache efficiency; traffic adjustment applied at read time
 
 6. **Dispatch with timeout**: Offer trips to drivers sequentially with acceptance timeout; move to next on timeout
+
+---
+
+## Production Insights
+
+### DISCO Location Pipeline
+
+Uber's DISCO (Dispatch Optimization) system ingests driver locations through a
+multi-stage pipeline: **WebSocket → Kafka → LocationStore**. Drivers hold a
+persistent WebSocket connection to the nearest edge POP. Each location update is
+published to a partitioned Kafka topic (keyed by driver ID for ordering), then
+consumed by the LocationStore writers that fan out into per-cell Redis sets.
+
+At peak, this pipeline sustains **1 M+ location updates per second** globally.
+Back-pressure is handled at the Kafka layer — if the LocationStore consumers
+fall behind, Kafka retains the events and consumers catch up without dropping
+connections. The WebSocket gateway performs client-side throttling (one update
+per second max) and server-side deduplication (discard if H3 cell unchanged).
+
+### Ghost Car Problem
+
+A well-known production issue: when a driver's phone loses connectivity, their
+last-known position remains in Redis until the key TTL expires (60 s default).
+During that window the rider app renders a "ghost car" that appears available
+but cannot be dispatched. Mitigations:
+
+- **Heartbeat-based TTL**: reduce the Redis key TTL to match the WebSocket
+  ping/pong interval (typically 10 s). If no heartbeat arrives, the driver key
+  expires faster.
+- **Dispatch-time liveness check**: before offering a trip, the dispatch service
+  sends a lightweight RPC to the driver's gateway POP. If the POP reports the
+  socket is dead, the driver is removed from the cell set immediately.
+- **Client-side staleness indicator**: the rider app dims cars whose
+  `timestamp` field is older than 15 s, setting user expectations before match.
+
+### Geofence R-Tree Index
+
+Uber maintains tens of thousands of geofences (airports, city boundaries, surge
+zones, restricted areas). These polygons are indexed in an in-memory R-tree per
+service instance, rebuilt from a Kafka compacted topic on startup. When a ride
+request arrives, the service performs a point-in-polygon query against the
+R-tree to determine applicable rules (airport surcharge, regulatory caps, etc.).
+
+The R-tree lookup is O(log n) and sub-microsecond for the typical dataset size
+(~50 k polygons). Updates propagate through Kafka so all instances converge
+within seconds of a geofence change in the admin tool.
+
+### Singleflight for ETA Collapse
+
+When a popular pickup location triggers dozens of simultaneous ride requests
+(e.g., concert venue, stadium exit), each request fans out ETA calculations
+to the same set of nearby drivers. Without deduplication, N requests × M
+drivers = N×M routing calls — most of which share identical origin/destination
+pairs after coordinate rounding.
+
+`singleflight.Group` collapses these redundant calls. The key is the rounded
+cache key (same key used for Redis), so only one in-flight routing RPC is made
+per unique origin/destination pair. Subsequent callers block and receive the
+same result. Combined with the 30-second Redis cache, this reduces routing
+backend load by 5–10× during demand spikes.
+
+Key implementation detail: the singleflight group is **not** global — it lives
+on each ETAService instance. Because requests are load-balanced across many
+service instances, the collapse ratio is per-instance. The Redis cache layer
+provides cross-instance deduplication.
