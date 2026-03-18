@@ -847,10 +847,14 @@ impl AudioProcessor {
 
 ## メガギルドの処理
 
+### GuildService - メンバークエリとチャンキング（Python）
+
 ```python
+# GuildService is Python in Discord's architecture
 from dataclasses import dataclass
 from typing import List, Dict, Set, Optional
 import asyncio
+
 
 @dataclass
 class GuildMemberChunk:
@@ -865,23 +869,21 @@ class GuildMemberChunk:
 
 class MegaGuildHandler:
     """
-    Special handling for guilds with 100k+ members.
-    Uses lazy loading and chunking to avoid overwhelming clients.
+    GuildService: DB queries and member chunking for guilds with 100k+ members.
+    Lazy loading and chunking to avoid overwhelming clients.
     """
 
     MEGA_GUILD_THRESHOLD = 100_000
     CHUNK_SIZE = 1000
 
-    def __init__(self, db_client, cache_client, gateway_dispatcher):
+    def __init__(self, db_client, cache_client):
         self.db = db_client
         self.cache = cache_client
-        self.dispatcher = gateway_dispatcher
 
     async def on_guild_available(
         self,
-        session_id: str,
         guild_id: int
-    ):
+    ) -> dict:
         """Called when client connects and guild becomes available"""
         member_count = await self._get_member_count(guild_id)
 
@@ -910,17 +912,14 @@ class MegaGuildHandler:
 
     async def request_guild_members(
         self,
-        session_id: str,
         guild_id: int,
         query: Optional[str] = None,
         limit: int = 0,
-        presences: bool = False,
         user_ids: Optional[List[int]] = None,
-        nonce: Optional[str] = None
-    ):
+    ) -> dict:
         """
         Handle REQUEST_GUILD_MEMBERS (opcode 8).
-        Returns members matching query or IDs in chunks.
+        Returns members matching query or IDs, ready for chunking.
         """
         if user_ids:
             # Fetch specific users
@@ -939,73 +938,17 @@ class MegaGuildHandler:
             members = await self._get_all_members(guild_id)
             not_found = []
 
-        # Add presences if requested
-        if presences:
-            member_ids = [m["user"]["id"] for m in members]
-            presence_data = await self._get_presences(member_ids)
-            for member in members:
-                member["presence"] = presence_data.get(member["user"]["id"])
+        return {"members": members, "not_found": not_found}
 
-        # Split into chunks
-        chunks = self._chunk_members(members, self.CHUNK_SIZE)
-
-        # Send chunks
-        for i, chunk in enumerate(chunks):
-            chunk_data = GuildMemberChunk(
-                guild_id=guild_id,
-                members=chunk,
-                chunk_index=i,
-                chunk_count=len(chunks),
-                not_found=not_found if i == 0 else [],
-                nonce=nonce
-            )
-
-            await self.dispatcher.dispatch_to_session(
-                session_id,
-                "GUILD_MEMBERS_CHUNK",
-                chunk_data.__dict__
-            )
-
-            # Rate limit chunking to avoid overwhelming client
-            if len(chunks) > 1:
-                await asyncio.sleep(0.1)
-
-    async def subscribe_to_guild_member_list(
+    async def get_channel_visible_members(
         self,
-        session_id: str,
         guild_id: int,
-        channel_ids: List[int]
-    ):
-        """
-        Subscribe to member sidebar for specific channels.
-        Only sends members visible in channel based on permissions.
-        """
-        visible_members = set()
+        channel_id: int
+    ) -> List[int]:
+        """Get members who can see this channel based on permissions."""
+        return await self._get_channel_visible_members(guild_id, channel_id)
 
-        for channel_id in channel_ids:
-            # Get members who can see this channel
-            channel_members = await self._get_channel_visible_members(
-                guild_id,
-                channel_id
-            )
-            visible_members.update(channel_members)
-
-        # Subscribe session to updates for these members
-        await self._subscribe_session_to_members(
-            session_id,
-            guild_id,
-            list(visible_members)
-        )
-
-        # Send initial member list
-        await self.request_guild_members(
-            session_id,
-            guild_id,
-            user_ids=list(visible_members)[:1000],
-            presences=True
-        )
-
-    def _chunk_members(
+    def chunk_members(
         self,
         members: List[dict],
         chunk_size: int
@@ -1015,102 +958,224 @@ class MegaGuildHandler:
             members[i:i + chunk_size]
             for i in range(0, len(members), chunk_size)
         ]
+```
 
+### メンバーリストサブスクリプション追跡（Elixir）
 
-class MemberListOptimizer:
-    """
-    Optimizes member list updates for large guilds.
-    Uses groups (roles) and syncs only visible portions.
-    """
+```elixir
+defmodule Discord.Guild.MemberListSubscription do
+  @moduledoc """
+  Tracks member list subscriptions for mega-guilds.
+  Each guild channel's member sidebar is managed by a GenServer process.
+  Syncs only the visible portion of the member list to subscribed sessions.
+  """
 
-    def __init__(self, cache_client):
-        self.cache = cache_client
+  use GenServer
+  require Logger
 
-    async def get_member_list_state(
-        self,
-        guild_id: int,
-        channel_id: int
-    ) -> dict:
-        """
-        Get optimized member list state for a channel.
-        Groups members by role, only includes visible roles.
-        """
-        cache_key = f"member_list:{guild_id}:{channel_id}"
+  @chunk_size 1000
+  @cache_ttl_ms 60_000
 
-        cached = await self.cache.get(cache_key)
-        if cached:
-            return json.loads(cached)
+  defstruct [
+    :guild_id,
+    :channel_id,
+    subscribed_sessions: %{},   # session_id => pid
+    member_groups: [],           # [{group_id, count, items}]
+    online_count: 0,
+    member_count: 0,
+    last_refreshed: 0
+  ]
 
-        # Build member list grouped by role
-        members = await self._get_channel_members(guild_id, channel_id)
+  # --- Public API ---
 
-        # Group by highest role
-        groups = {}
-        for member in members:
-            group_id = self._get_member_group(member)
-            if group_id not in groups:
-                groups[group_id] = {
-                    "id": group_id,
-                    "count": 0,
-                    "items": []
-                }
-            groups[group_id]["count"] += 1
-            groups[group_id]["items"].append(member)
+  def start_link({guild_id, channel_id}) do
+    GenServer.start_link(
+      __MODULE__,
+      {guild_id, channel_id},
+      name: via(guild_id, channel_id)
+    )
+  end
 
-        state = {
-            "guild_id": str(guild_id),
-            "groups": list(groups.values()),
-            "online_count": sum(1 for m in members if m.get("status") != "offline"),
-            "member_count": len(members)
-        }
+  def subscribe(guild_id, channel_id, session_id, session_pid) do
+    GenServer.call(
+      via(guild_id, channel_id),
+      {:subscribe, session_id, session_pid}
+    )
+  end
 
-        await self.cache.setex(cache_key, 60, json.dumps(state))
+  def unsubscribe(guild_id, channel_id, session_id) do
+    GenServer.cast(
+      via(guild_id, channel_id),
+      {:unsubscribe, session_id}
+    )
+  end
 
-        return state
+  def sync_range(guild_id, channel_id, session_id, range_start, range_end) do
+    GenServer.call(
+      via(guild_id, channel_id),
+      {:sync_range, session_id, range_start, range_end}
+    )
+  end
 
-    async def sync_member_list_ops(
-        self,
-        session_id: str,
-        guild_id: int,
-        channel_id: int,
-        range_start: int,
-        range_end: int
-    ):
-        """
-        Send member list sync operations for visible range.
-        Client specifies which range of the list is visible.
-        """
-        state = await self.get_member_list_state(guild_id, channel_id)
+  # --- Callbacks ---
 
-        # Calculate which items are in range
-        ops = []
-        current_index = 0
+  @impl true
+  def init({guild_id, channel_id}) do
+    # Monitor subscribed sessions so we can clean up on disconnect
+    state = %__MODULE__{
+      guild_id: guild_id,
+      channel_id: channel_id
+    }
 
-        for group in state["groups"]:
-            group_start = current_index
-            group_end = current_index + group["count"]
+    {:ok, state, {:continue, :load_members}}
+  end
 
-            if group_end > range_start and group_start < range_end:
-                # This group is visible
-                visible_start = max(0, range_start - group_start)
-                visible_end = min(group["count"], range_end - group_start)
+  @impl true
+  def handle_continue(:load_members, state) do
+    {:noreply, refresh_member_groups(state)}
+  end
 
-                ops.append({
-                    "op": "SYNC",
-                    "items": group["items"][visible_start:visible_end],
-                    "range": [
-                        group_start + visible_start,
-                        group_start + visible_end
-                    ]
-                })
+  @impl true
+  def handle_call({:subscribe, session_id, session_pid}, _from, state) do
+    Process.monitor(session_pid)
 
-            current_index = group_end
+    new_subs = Map.put(state.subscribed_sessions, session_id, session_pid)
+    state = %{state | subscribed_sessions: new_subs}
 
-        return {
-            "ops": ops,
-            "online_count": state["online_count"],
-            "member_count": state["member_count"]
-        }
+    # Fetch visible members from GuildService (Python) via RPC
+    visible_ids =
+      Discord.GuildService.get_channel_visible_members(
+        state.guild_id,
+        state.channel_id
+      )
+
+    # Request initial chunk from GuildService and dispatch
+    result =
+      Discord.GuildService.request_guild_members(
+        state.guild_id,
+        user_ids: Enum.take(visible_ids, @chunk_size)
+      )
+
+    chunks = chunk_members(result.members, @chunk_size)
+
+    Enum.with_index(chunks, fn chunk, i ->
+      payload = %{
+        guild_id: state.guild_id,
+        members: chunk,
+        chunk_index: i,
+        chunk_count: length(chunks),
+        not_found: if(i == 0, do: result.not_found, else: []),
+        nonce: nil
+      }
+
+      send(session_pid, {:dispatch, "GUILD_MEMBERS_CHUNK", payload})
+    end)
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:sync_range, _session_id, range_start, range_end}, _from, state) do
+    state = maybe_refresh(state)
+
+    ops =
+      state.member_groups
+      |> Enum.reduce({0, []}, fn {group_id, count, items}, {idx, acc} ->
+        group_start = idx
+        group_end = idx + count
+
+        acc =
+          if group_end > range_start and group_start < range_end do
+            vis_start = max(0, range_start - group_start)
+            vis_end = min(count, range_end - group_start)
+
+            op = %{
+              op: "SYNC",
+              items: Enum.slice(items, vis_start, vis_end - vis_start),
+              range: [group_start + vis_start, group_start + vis_end]
+            }
+
+            [op | acc]
+          else
+            acc
+          end
+
+        {group_end, acc}
+      end)
+      |> elem(1)
+      |> Enum.reverse()
+
+    reply = %{
+      ops: ops,
+      online_count: state.online_count,
+      member_count: state.member_count
+    }
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_cast({:unsubscribe, session_id}, state) do
+    new_subs = Map.delete(state.subscribed_sessions, session_id)
+    {:noreply, %{state | subscribed_sessions: new_subs}}
+  end
+
+  @impl true
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    # Clean up when a session process exits
+    new_subs =
+      state.subscribed_sessions
+      |> Enum.reject(fn {_sid, p} -> p == pid end)
+      |> Map.new()
+
+    {:noreply, %{state | subscribed_sessions: new_subs}}
+  end
+
+  # --- Internals ---
+
+  defp maybe_refresh(state) do
+    now = System.monotonic_time(:millisecond)
+
+    if now - state.last_refreshed > @cache_ttl_ms do
+      refresh_member_groups(state)
+    else
+      state
+    end
+  end
+
+  defp refresh_member_groups(state) do
+    members =
+      Discord.GuildService.get_channel_members(state.guild_id, state.channel_id)
+
+    groups =
+      members
+      |> Enum.group_by(&get_member_group/1)
+      |> Enum.map(fn {group_id, items} ->
+        {group_id, length(items), items}
+      end)
+
+    online = Enum.count(members, fn m -> m[:status] != "offline" end)
+
+    %{state |
+      member_groups: groups,
+      online_count: online,
+      member_count: length(members),
+      last_refreshed: System.monotonic_time(:millisecond)
+    }
+  end
+
+  defp get_member_group(member) do
+    member[:highest_role_id] || "online"
+  end
+
+  defp chunk_members(members, size) do
+    Enum.chunk_every(members, size)
+  end
+
+  defp via(guild_id, channel_id) do
+    {:via, Registry, {Discord.MemberListRegistry, {guild_id, channel_id}}}
+  end
+end
 ```
 
 ---
@@ -1140,7 +1205,7 @@ class MemberListOptimizer:
 
 3. **時間バケットパーティションを持つCassandra** - チャンネルメッセージは(channel_id, bucket)でパーティショニングされます。アクティブなチャンネルでのホットパーティションを防止します。
 
-4. **Snowflake ID** - 時間ソート可能でグローバルに一意のIDです。クラスタリングキーとしての自然な時系列順序を提供します。
+4. **Snowflake ID** - 時間ソート可能でグローバルに一意なIDです。クラスタリングキーとしての自然な時系列順序を提供します。
 
 5. **音声のためのSFU** - Selective Forwarding UnitはP2Pメッシュよりもスケールします。一度アップロードすれば、サーバーが他に転送します。モデレーションが可能になります。
 
@@ -1149,3 +1214,113 @@ class MemberListOptimizer:
 7. **リージョン別の音声サーバー** - 音声は最低レイテンシのために最も近いリージョンにルーティングされます。APIゲートウェイインフラストラクチャとは分離されています。
 
 8. **プレゼンスの最適化** - ユーザーが可視のチャンネルにのみプレゼンスをブロードキャストします。メガギルドのイベントボリュームを削減します。
+
+---
+
+## 本番環境での知見
+
+### メガギルドの遅延プレゼンス
+
+100万以上のメンバーを持つサーバーは、すべての接続クライアントにプレゼンス更新をファンアウトすることができません。Discordは**遅延プレゼンス**を使用しています。クライアントは現在のチャンネルのメンバーサイドバーに可視のメンバーのプレゼンス更新のみを受信します。ユーザーがメンバーリストをスクロールすると、クライアントは可視範囲を含む`LAZY_REQUEST`を送信し、ゲートウェイはそのスライスのみを同期します。
+
+オンラインメンバーが約75,000を超えるギルドでは、ゲートウェイは`GUILD_CREATE`時の完全なプレゼンスディスパッチを完全にスキップします。代わりに、プレゼンスは`MemberListSubscription`を介してチャンネルごとにオンデマンドで取得されます。これにより、プレゼンスイベントのボリュームがO(n^2)からO(visible_range * active_channels)に削減されます。
+
+```elixir
+defmodule Discord.Presence.LazyFanOut do
+  @moduledoc """
+  Lazy presence fan-out for mega-guilds.
+  Instead of broadcasting to all guild members, only notify
+  sessions that have the target user in their visible member list range.
+  """
+
+  @lazy_threshold 75_000
+
+  def broadcast_presence_update(guild_id, user_id, new_status) do
+    online_count = Discord.Presence.online_count(guild_id)
+
+    if online_count >= @lazy_threshold do
+      # Only notify sessions subscribed to channels where this user is visible
+      subscribed_sessions =
+        Discord.MemberListRegistry
+        |> Registry.select([{{:"$1", :"$2", :"$3"}, [], [{{:"$1", :"$2"}}]}])
+        |> Enum.filter(fn {{gid, _cid}} -> gid == guild_id end)
+
+      Enum.each(subscribed_sessions, fn {{_gid, channel_id}} ->
+        Discord.Guild.MemberListSubscription.notify_presence(
+          guild_id, channel_id, user_id, new_status
+        )
+      end)
+    else
+      # Small guild: broadcast to all subscribed sessions
+      Discord.PubSub.broadcast("guild:#{guild_id}", {"PRESENCE_UPDATE", %{
+        user: %{id: user_id},
+        status: new_status,
+        guild_id: guild_id
+      }})
+    end
+  end
+end
+```
+
+### ギルドシャーディング
+
+すべてのギルドはコンシステントハッシュを使用してシャードに割り当てられます：`shard_id = guild_id % num_shards`。各ゲートウェイノードはシャードの範囲を所有するため、特定のギルドのすべてのイベントが同じノード（または少数のノードセット）で処理されます。これにより、権限チェックやメンバーリスト更新などのギルド内操作でのクロスノード連携が不要になります。
+
+ギルドが単一シャードで処理できる範囲を超えた場合（例：100万以上のメンバー）、Discordはルーティングキーを安定させたまま、ホットな操作をサブシャードに分割します。クライアントは`IDENTIFY`レスポンスで`shard_id`と`num_shards`を受け取り、正しいゲートウェイに再接続します。
+
+```elixir
+defmodule Discord.Guild.ShardRouter do
+  @moduledoc """
+  Routes guild operations to the correct shard.
+  Uses guild_id % num_shards for deterministic assignment.
+  """
+
+  def shard_for(guild_id, num_shards) do
+    rem(guild_id, num_shards)
+  end
+
+  def route(guild_id, operation, payload) do
+    shard_id = shard_for(guild_id, Discord.Config.num_shards())
+    node = Discord.ShardMap.node_for_shard(shard_id)
+
+    :rpc.call(node, Discord.Guild.Shard, :handle, [guild_id, operation, payload])
+  end
+end
+```
+
+### ScyllaDBへのCassandraからの移行（2023年）
+
+Discordは2023年にメッセージストレージをCassandraからScyllaDBに移行しました。主な動機は**p99テールレイテンシ**でした。CassandraのJVMベースのガベージコレクションは、重いコンパクション時に数秒に及ぶ定期的なレイテンシスパイクを引き起こしていました。C++で書かれたScyllaDBは、GCポーズのないシャード・パー・コアアーキテクチャを使用しています。
+
+移行の主な成果：
+- **p99リードレイテンシ**: 約40-200ms（Cassandra、GC依存）から約15ms（ScyllaDB）に低下
+- **p99ライトレイテンシ**: 約5-70msから約5msに低下し、外れ値が大幅に減少
+- **コンパクション**: ScyllaDBのインクリメンタルコンパクションにより、Cassandraのサイズティアードコンパクションが引き起こす可能性のあった数秒間のストールが解消
+- **運用コスト**: ScyllaDBのシャード・パー・コア効率により、同じスループットに必要なノード数が減少
+- **スキーマ互換性**: ScyllaDBはCassandraのCQLとワイヤー互換であるため、パーティションキー設計`(channel_id, bucket)`とSnowflakeクラスタリングキーはそのまま引き継がれました
+
+移行はデュアルライトによるライブ移行で実施されました。新しいメッセージは両方のクラスタに書き込まれ、リードはチェックサム検証とともに徐々にScyllaDBに移行されました。
+
+### 500万以上の接続のためのBEAMスケジューラチューニング
+
+各Elixirゲートウェイノードは約10万-20万のWebSocket接続を処理します。Discordの規模（約50以上のゲートウェイノード）では、BEAM VMスケジューラのチューニングが極めて重要です。
+
+主要なチューニングパラメータ：
+- **`+S`（スケジューラ）**: ハイパースレッドではなく物理コア数に固定します。ハイパースレッディングは高接続数でスケジューラスレッドの競合を引き起こします
+- **`+SDcpu`**: ダーティCPUスケジューラを物理コア数と同数に設定します。NIF集約型操作（zlib圧縮、JSONエンコーディング）向けです
+- **`+SDio`**: ダーティI/Oスケジューラをコア数の2倍に設定します。DNS解決や証明書検証などのブロッキング操作向けです
+- **`+sbwt`（スケジューラビジーウェイト閾値）**: 本番環境では`none`に設定します。デフォルトのビジーウェイトは、20万のほぼアイドル状態の接続全体でCPUサイクルを浪費します
+- **`+zdbbl`（ディストリビューションバッファビジーリミット）**: ノード間のErlangディストリビューショントラフィック用に32MBに増加します。デフォルトの1MBはプレゼンスファンアウトストーム時にバックプレッシャーを引き起こします
+- **`+hms`（ヒープ最小サイズ）**: プロセスタイプごとにチューニングします。セッションプロセスは長寿命接続の早期GCサイクルを減らすために2586ワードで開始します
+- **大規模ETSテーブル**: メンバールックアップテーブルは、スケジューラロック競合を避けるために`read_concurrency: true`と`write_concurrency: true`を使用します
+
+```elixir
+# vm.args tuning for a 200k-connection gateway node
+# +P 5000000         Max processes (well above 200k connections + internal)
+# +S 16:16           Schedulers pinned to 16 physical cores
+# +SDcpu 16:16       Dirty CPU schedulers
+# +SDio 32:32        Dirty I/O schedulers
+# +sbwt none         Disable scheduler busy-wait
+# +zdbbl 33554432    32MB distribution buffer
+# +hms 2586          Min heap for session processes
+```
