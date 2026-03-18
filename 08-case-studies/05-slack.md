@@ -106,201 +106,225 @@ graph TD
 
 ### Gateway Service Implementation
 
-```python
-from dataclasses import dataclass, field
-from typing import Dict, Set, Optional, List
-import asyncio
-import json
-import time
-from enum import Enum
+```java
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.channel.*;
+import io.netty.channel.epoll.EpollServerSocketChannel;
+import io.netty.channel.epoll.EpollEventLoopGroup;
+import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
+import io.lettuce.core.api.async.RedisAsyncCommands;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
-@dataclass
-class WebSocketConnection:
-    connection_id: str
-    user_id: str
-    workspace_id: str
-    websocket: any  # aiohttp.WebSocketResponse
-    subscribed_channels: Set[str] = field(default_factory=set)
-    connected_at: float = field(default_factory=time.time)
-    last_ping: float = field(default_factory=time.time)
+import java.time.Instant;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
+public class WebSocketConnection {
+    private final String connectionId;
+    private final String userId;
+    private final String workspaceId;
+    private final ChannelHandlerContext ctx;
+    private final Set<String> subscribedChannels = ConcurrentHashMap.newKeySet();
+    private final long connectedAt = Instant.now().toEpochMilli();
+    private volatile long lastPing = Instant.now().toEpochMilli();
 
-class GatewayService:
-    """
-    Manages WebSocket connections and message routing.
-    Each gateway server handles ~100K concurrent connections.
-    """
-    
-    def __init__(self, redis_client, auth_service, gateway_id: str):
-        self.redis = redis_client
-        self.auth = auth_service
-        self.gateway_id = gateway_id
-        
-        # Local connection registry
-        self.connections: Dict[str, WebSocketConnection] = {}
-        self.user_connections: Dict[str, Set[str]] = {}  # user_id -> connection_ids
-        self.channel_connections: Dict[str, Set[str]] = {}  # channel_id -> connection_ids
-    
-    async def handle_connection(self, websocket, request):
-        """Handle new WebSocket connection"""
-        # Authenticate
-        token = request.headers.get("Authorization", "").replace("Bearer ", "")
-        user = await self.auth.validate_token(token)
-        
-        if not user:
-            await websocket.close(code=4001, message="Unauthorized")
-            return
-        
-        # Create connection record
-        conn_id = f"{self.gateway_id}:{user.id}:{int(time.time()*1000)}"
-        conn = WebSocketConnection(
-            connection_id=conn_id,
-            user_id=user.id,
-            workspace_id=user.workspace_id,
-            websocket=websocket
-        )
-        
-        # Register connection
-        await self._register_connection(conn)
-        
-        try:
-            # Send initial state
-            await self._send_initial_state(conn)
-            
-            # Handle messages
-            async for msg in websocket:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    await self._handle_message(conn, json.loads(msg.data))
-                elif msg.type == aiohttp.WSMsgType.PING:
-                    conn.last_ping = time.time()
-                    await websocket.pong()
-        finally:
-            await self._unregister_connection(conn)
-    
-    async def _register_connection(self, conn: WebSocketConnection):
-        """Register connection locally and in Redis"""
-        # Local registry
-        self.connections[conn.connection_id] = conn
-        
-        if conn.user_id not in self.user_connections:
-            self.user_connections[conn.user_id] = set()
-        self.user_connections[conn.user_id].add(conn.connection_id)
-        
-        # Redis for cross-gateway routing
-        await self.redis.hset(
-            f"user:connections:{conn.user_id}",
-            conn.connection_id,
-            json.dumps({
-                "gateway": self.gateway_id,
-                "workspace_id": conn.workspace_id,
-                "connected_at": conn.connected_at
-            })
-        )
-        
-        # Update presence
-        await self._update_presence(conn.user_id, "active")
-    
-    async def _handle_message(self, conn: WebSocketConnection, msg: dict):
-        """Handle incoming WebSocket message"""
-        msg_type = msg.get("type")
-        
-        if msg_type == "subscribe":
-            await self._handle_subscribe(conn, msg["channels"])
-        elif msg_type == "unsubscribe":
-            await self._handle_unsubscribe(conn, msg["channels"])
-        elif msg_type == "message":
-            await self._handle_send_message(conn, msg)
-        elif msg_type == "typing":
-            await self._handle_typing(conn, msg)
-        elif msg_type == "ping":
-            conn.last_ping = time.time()
-            await conn.websocket.send_json({"type": "pong"})
-    
-    async def _handle_subscribe(
-        self, 
-        conn: WebSocketConnection, 
-        channel_ids: List[str]
-    ):
-        """Subscribe connection to channels"""
-        for channel_id in channel_ids:
-            # Verify access
-            if not await self._can_access_channel(conn.user_id, channel_id):
-                continue
-            
-            # Local subscription
-            conn.subscribed_channels.add(channel_id)
-            if channel_id not in self.channel_connections:
-                self.channel_connections[channel_id] = set()
-            self.channel_connections[channel_id].add(conn.connection_id)
-            
-            # Subscribe to Redis pub/sub for this channel
-            await self.redis.subscribe(
-                f"channel:{channel_id}",
-                self._handle_channel_message
-            )
-        
-        await conn.websocket.send_json({
-            "type": "subscribed",
-            "channels": list(conn.subscribed_channels)
-        })
-    
-    async def _handle_channel_message(self, channel: str, message: str):
-        """Handle message from Redis pub/sub"""
-        channel_id = channel.replace("channel:", "")
-        data = json.loads(message)
-        
-        # Get all local connections subscribed to this channel
-        conn_ids = self.channel_connections.get(channel_id, set())
-        
-        # Fan out to connections
-        tasks = []
-        for conn_id in conn_ids:
-            conn = self.connections.get(conn_id)
-            if conn:
-                tasks.append(conn.websocket.send_json(data))
-        
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+    public WebSocketConnection(String connectionId, String userId,
+                                String workspaceId, ChannelHandlerContext ctx) {
+        this.connectionId = connectionId;
+        this.userId = userId;
+        this.workspaceId = workspaceId;
+        this.ctx = ctx;
+    }
+
+    // Getters and setters omitted for brevity
+    public String getConnectionId() { return connectionId; }
+    public String getUserId() { return userId; }
+    public String getWorkspaceId() { return workspaceId; }
+    public ChannelHandlerContext getCtx() { return ctx; }
+    public Set<String> getSubscribedChannels() { return subscribedChannels; }
+    public long getLastPing() { return lastPing; }
+    public void setLastPing(long lastPing) { this.lastPing = lastPing; }
+}
 
 
-class MessagePublisher:
-    """
-    Publishes messages to Redis for cross-gateway distribution.
-    """
-    
-    def __init__(self, redis_client):
-        self.redis = redis_client
-    
-    async def publish_to_channel(self, channel_id: str, message: dict):
-        """Publish message to all channel subscribers"""
-        await self.redis.publish(
-            f"channel:{channel_id}",
-            json.dumps(message)
-        )
-    
-    async def publish_to_user(self, user_id: str, message: dict):
-        """Publish message directly to a user (DM, notification)"""
-        # Get all user's connections across gateways
-        connections = await self.redis.hgetall(f"user:connections:{user_id}")
-        
-        # Group by gateway
-        by_gateway = {}
-        for conn_id, conn_data in connections.items():
-            data = json.loads(conn_data)
-            gateway = data["gateway"]
-            if gateway not in by_gateway:
-                by_gateway[gateway] = []
-            by_gateway[gateway].append(conn_id)
-        
-        # Publish to each gateway's queue
-        for gateway, conn_ids in by_gateway.items():
-            await self.redis.publish(
-                f"gateway:{gateway}:messages",
-                json.dumps({
-                    "connections": conn_ids,
-                    "message": message
-                })
-            )
+/**
+ * Manages WebSocket connections and message routing.
+ * Each gateway server handles ~100K concurrent connections
+ * using Netty with SO_REUSEPORT for kernel-level load balancing.
+ */
+public class GatewayService extends SimpleChannelInboundHandler<TextWebSocketFrame> {
+
+    private final RedisAsyncCommands<String, String> redis;
+    private final AuthService auth;
+    private final String gatewayId;
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    // Local connection registry
+    private final Map<String, WebSocketConnection> connections = new ConcurrentHashMap<>();
+    private final Map<String, Set<String>> userConnections = new ConcurrentHashMap<>();
+    private final Map<String, Set<String>> channelConnections = new ConcurrentHashMap<>();
+
+    public GatewayService(RedisAsyncCommands<String, String> redis,
+                          AuthService auth, String gatewayId) {
+        this.redis = redis;
+        this.auth = auth;
+        this.gatewayId = gatewayId;
+    }
+
+    public void handleConnection(ChannelHandlerContext ctx, String token) {
+        // Authenticate
+        User user = auth.validateToken(token);
+
+        if (user == null) {
+            ctx.close();
+            return;
+        }
+
+        // Create connection record
+        String connId = gatewayId + ":" + user.getId() + ":" + Instant.now().toEpochMilli();
+        WebSocketConnection conn = new WebSocketConnection(
+                connId, user.getId(), user.getWorkspaceId(), ctx);
+
+        // Register connection
+        registerConnection(conn);
+
+        // Send initial state
+        sendInitialState(conn);
+    }
+
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, TextWebSocketFrame frame) throws Exception {
+        Map<String, Object> msg = mapper.readValue(frame.text(), Map.class);
+        String connId = ctx.channel().attr(CONNECTION_ID_KEY).get();
+        WebSocketConnection conn = connections.get(connId);
+        if (conn == null) return;
+
+        handleMessage(conn, msg);
+    }
+
+    private void registerConnection(WebSocketConnection conn) {
+        // Local registry
+        connections.put(conn.getConnectionId(), conn);
+        userConnections.computeIfAbsent(conn.getUserId(), k -> ConcurrentHashMap.newKeySet())
+                .add(conn.getConnectionId());
+
+        // Redis for cross-gateway routing
+        Map<String, String> connData = Map.of(
+                "gateway", gatewayId,
+                "workspace_id", conn.getWorkspaceId(),
+                "connected_at", String.valueOf(conn.getConnectedAt())
+        );
+        redis.hset("user:connections:" + conn.getUserId(),
+                conn.getConnectionId(), mapper.writeValueAsString(connData));
+
+        // Update presence
+        updatePresence(conn.getUserId(), "active");
+    }
+
+    private void handleMessage(WebSocketConnection conn, Map<String, Object> msg) {
+        String msgType = (String) msg.get("type");
+
+        switch (msgType) {
+            case "subscribe":
+                handleSubscribe(conn, (List<String>) msg.get("channels"));
+                break;
+            case "unsubscribe":
+                handleUnsubscribe(conn, (List<String>) msg.get("channels"));
+                break;
+            case "message":
+                handleSendMessage(conn, msg);
+                break;
+            case "typing":
+                handleTyping(conn, msg);
+                break;
+            case "ping":
+                conn.setLastPing(Instant.now().toEpochMilli());
+                conn.getCtx().writeAndFlush(
+                        new TextWebSocketFrame(mapper.writeValueAsString(Map.of("type", "pong"))));
+                break;
+        }
+    }
+
+    private void handleSubscribe(WebSocketConnection conn, List<String> channelIds) {
+        for (String channelId : channelIds) {
+            // Verify access
+            if (!canAccessChannel(conn.getUserId(), channelId)) {
+                continue;
+            }
+
+            // Local subscription
+            conn.getSubscribedChannels().add(channelId);
+            channelConnections.computeIfAbsent(channelId, k -> ConcurrentHashMap.newKeySet())
+                    .add(conn.getConnectionId());
+
+            // Subscribe to Redis pub/sub for this channel
+            redis.subscribe("channel:" + channelId);
+        }
+
+        conn.getCtx().writeAndFlush(new TextWebSocketFrame(
+                mapper.writeValueAsString(Map.of(
+                        "type", "subscribed",
+                        "channels", List.copyOf(conn.getSubscribedChannels())))));
+    }
+
+    public void handleChannelMessage(String channel, String message) {
+        String channelId = channel.replace("channel:", "");
+        Map<String, Object> data = mapper.readValue(message, Map.class);
+
+        // Get all local connections subscribed to this channel
+        Set<String> connIds = channelConnections.getOrDefault(channelId, Set.of());
+
+        // Fan out to connections
+        String payload = mapper.writeValueAsString(data);
+        for (String connId : connIds) {
+            WebSocketConnection conn = connections.get(connId);
+            if (conn != null) {
+                conn.getCtx().writeAndFlush(new TextWebSocketFrame(payload));
+            }
+        }
+    }
+}
+
+
+/**
+ * Publishes messages to Redis for cross-gateway distribution.
+ */
+public class MessagePublisher {
+
+    private final RedisAsyncCommands<String, String> redis;
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    public MessagePublisher(RedisAsyncCommands<String, String> redis) {
+        this.redis = redis;
+    }
+
+    public void publishToChannel(String channelId, Map<String, Object> message) {
+        redis.publish("channel:" + channelId, mapper.writeValueAsString(message));
+    }
+
+    public void publishToUser(String userId, Map<String, Object> message) {
+        // Get all user's connections across gateways
+        Map<String, String> connections = redis.hgetall("user:connections:" + userId)
+                .get();
+
+        // Group by gateway
+        Map<String, List<String>> byGateway = new HashMap<>();
+        for (Map.Entry<String, String> entry : connections.entrySet()) {
+            Map<String, Object> data = mapper.readValue(entry.getValue(), Map.class);
+            String gateway = (String) data.get("gateway");
+            byGateway.computeIfAbsent(gateway, k -> new ArrayList<>())
+                    .add(entry.getKey());
+        }
+
+        // Publish to each gateway's queue
+        for (Map.Entry<String, List<String>> entry : byGateway.entrySet()) {
+            redis.publish("gateway:" + entry.getKey() + ":messages",
+                    mapper.writeValueAsString(Map.of(
+                            "connections", entry.getValue(),
+                            "message", message)));
+        }
+    }
+}
 ```
 
 ---
@@ -340,275 +364,230 @@ graph TD
 
 ### Message Service Implementation
 
-```python
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
-from datetime import datetime
-import uuid
-from enum import Enum
+```java
+import org.jooq.DSLContext;
+import org.jooq.Record;
+import org.jooq.Result;
+import io.lettuce.core.api.async.RedisAsyncCommands;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
-class MessageType(Enum):
-    STANDARD = "standard"
-    THREAD_REPLY = "thread_reply"
-    FILE = "file"
-    SYSTEM = "system"
+import java.time.Instant;
+import java.util.*;
 
-@dataclass
-class Message:
-    id: str
-    workspace_id: str
-    channel_id: str
-    user_id: str
-    content: str
-    message_type: MessageType
-    thread_ts: Optional[str]  # Parent message timestamp for threads
-    ts: str  # Unique timestamp (Slack's message ID format)
-    created_at: datetime
-    edited_at: Optional[datetime]
-    reactions: dict  # emoji -> [user_ids]
-    files: List[str]  # file IDs
+public enum MessageType {
+    STANDARD("standard"),
+    THREAD_REPLY("thread_reply"),
+    FILE("file"),
+    SYSTEM("system");
+
+    private final String value;
+    MessageType(String value) { this.value = value; }
+    public String getValue() { return value; }
+}
+
+public class Message {
+    private String id;
+    private String workspaceId;
+    private String channelId;
+    private String userId;
+    private String content;
+    private MessageType messageType;
+    private String threadTs;    // Parent message timestamp for threads
+    private String ts;          // Unique timestamp (Slack's message ID format)
+    private Instant createdAt;
+    private Instant editedAt;
+    private Map<String, List<String>> reactions;  // emoji -> [userIds]
+    private List<String> files; // file IDs
+
+    // Constructor, getters, setters omitted for brevity
+}
 
 
-class MessageService:
-    """
-    Handles message CRUD operations with Vitess sharding.
-    Uses workspace_id as the sharding key.
-    """
-    
-    def __init__(self, vitess_client, redis_client, search_client, publisher):
-        self.vitess = vitess_client
-        self.redis = redis_client
-        self.search = search_client
-        self.publisher = publisher
-    
-    async def send_message(
-        self,
-        workspace_id: str,
-        channel_id: str,
-        user_id: str,
-        content: str,
-        thread_ts: Optional[str] = None,
-        files: List[str] = None
-    ) -> Message:
-        """Send a new message to a channel"""
-        # Generate Slack-style timestamp ID
-        ts = self._generate_ts()
-        
-        message = Message(
-            id=str(uuid.uuid4()),
-            workspace_id=workspace_id,
-            channel_id=channel_id,
-            user_id=user_id,
-            content=content,
-            message_type=MessageType.THREAD_REPLY if thread_ts else MessageType.STANDARD,
-            thread_ts=thread_ts,
-            ts=ts,
-            created_at=datetime.utcnow(),
-            edited_at=None,
-            reactions={},
-            files=files or []
-        )
-        
-        # Persist to Vitess (routed by workspace_id)
-        await self._persist_message(message)
-        
-        # Update channel's last message
-        await self._update_channel_last_message(channel_id, ts)
-        
-        # If thread reply, update thread metadata
-        if thread_ts:
-            await self._update_thread(channel_id, thread_ts, message)
-        
-        # Index for search
-        await self._index_message(message)
-        
-        # Publish to subscribers
-        await self._publish_message(message)
-        
-        return message
-    
-    async def _persist_message(self, message: Message):
-        """Persist message to Vitess-sharded MySQL"""
-        query = """
-            INSERT INTO messages (
-                id, workspace_id, channel_id, user_id, content,
-                message_type, thread_ts, ts, created_at, reactions, files
-            ) VALUES (
-                %(id)s, %(workspace_id)s, %(channel_id)s, %(user_id)s,
-                %(content)s, %(message_type)s, %(thread_ts)s, %(ts)s,
-                %(created_at)s, %(reactions)s, %(files)s
-            )
-        """
-        
-        # Vitess routes to correct shard based on workspace_id
-        await self.vitess.execute(
-            query,
-            {
-                "id": message.id,
-                "workspace_id": message.workspace_id,
-                "channel_id": message.channel_id,
-                "user_id": message.user_id,
-                "content": message.content,
-                "message_type": message.message_type.value,
-                "thread_ts": message.thread_ts,
-                "ts": message.ts,
-                "created_at": message.created_at,
-                "reactions": json.dumps(message.reactions),
-                "files": json.dumps(message.files)
-            }
-        )
-    
-    async def get_channel_messages(
-        self,
-        workspace_id: str,
-        channel_id: str,
-        cursor: Optional[str] = None,
-        limit: int = 100
-    ) -> Tuple[List[Message], Optional[str]]:
-        """
-        Get messages in a channel with cursor pagination.
-        Cursor is the 'ts' of the last message.
-        """
-        query = """
-            SELECT * FROM messages
-            WHERE workspace_id = %(workspace_id)s
-              AND channel_id = %(channel_id)s
-              AND thread_ts IS NULL
-        """
-        
-        params = {
-            "workspace_id": workspace_id,
-            "channel_id": channel_id,
-            "limit": limit + 1
+/**
+ * Handles message CRUD operations with Vitess sharding.
+ * Uses workspace_id as the sharding key.
+ * Persistence via JOOQ for type-safe SQL against Vitess/MySQL.
+ */
+public class MessageService {
+
+    private final DSLContext dsl;
+    private final RedisAsyncCommands<String, String> redis;
+    private final SearchService search;
+    private final MessagePublisher publisher;
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    public MessageService(DSLContext dsl, RedisAsyncCommands<String, String> redis,
+                          SearchService search, MessagePublisher publisher) {
+        this.dsl = dsl;
+        this.redis = redis;
+        this.search = search;
+        this.publisher = publisher;
+    }
+
+    public Message sendMessage(String workspaceId, String channelId, String userId,
+                                String content, String threadTs, List<String> files) {
+        // Generate Slack-style timestamp ID
+        String ts = generateTs();
+
+        Message message = new Message();
+        message.setId(UUID.randomUUID().toString());
+        message.setWorkspaceId(workspaceId);
+        message.setChannelId(channelId);
+        message.setUserId(userId);
+        message.setContent(content);
+        message.setMessageType(threadTs != null ? MessageType.THREAD_REPLY : MessageType.STANDARD);
+        message.setThreadTs(threadTs);
+        message.setTs(ts);
+        message.setCreatedAt(Instant.now());
+        message.setReactions(Map.of());
+        message.setFiles(files != null ? files : List.of());
+
+        // Persist to Vitess (routed by workspace_id)
+        persistMessage(message);
+
+        // Update channel's last message
+        updateChannelLastMessage(channelId, ts);
+
+        // If thread reply, update thread metadata
+        if (threadTs != null) {
+            updateThread(channelId, threadTs, message);
         }
-        
-        if cursor:
-            query += " AND ts < %(cursor)s"
-            params["cursor"] = cursor
-        
-        query += " ORDER BY ts DESC LIMIT %(limit)s"
-        
-        rows = await self.vitess.execute(query, params)
-        
-        messages = [self._row_to_message(row) for row in rows[:limit]]
-        next_cursor = rows[limit].ts if len(rows) > limit else None
-        
-        return messages, next_cursor
-    
-    async def get_thread_messages(
-        self,
-        workspace_id: str,
-        channel_id: str,
-        thread_ts: str
-    ) -> List[Message]:
-        """Get all messages in a thread"""
-        query = """
-            SELECT * FROM messages
-            WHERE workspace_id = %(workspace_id)s
-              AND channel_id = %(channel_id)s
-              AND (ts = %(thread_ts)s OR thread_ts = %(thread_ts)s)
-            ORDER BY ts ASC
-        """
-        
-        rows = await self.vitess.execute(
-            query,
-            {
-                "workspace_id": workspace_id,
-                "channel_id": channel_id,
-                "thread_ts": thread_ts
-            }
-        )
-        
-        return [self._row_to_message(row) for row in rows]
-    
-    def _generate_ts(self) -> str:
-        """
-        Generate Slack-style timestamp.
-        Format: seconds.microseconds (e.g., "1609459200.000100")
-        Guaranteed unique within a workspace.
-        """
-        now = datetime.utcnow()
-        seconds = int(now.timestamp())
-        micros = now.microsecond
-        
-        # Add uniqueness suffix
-        unique_suffix = uuid.uuid4().hex[:6]
-        
-        return f"{seconds}.{micros:06d}{unique_suffix}"
-    
-    async def _publish_message(self, message: Message):
-        """Publish message to real-time subscribers"""
-        payload = {
-            "type": "message",
-            "channel": message.channel_id,
-            "user": message.user_id,
-            "text": message.content,
-            "ts": message.ts,
-            "thread_ts": message.thread_ts,
-            "files": message.files
+
+        // Index for search
+        indexMessage(message);
+
+        // Publish to subscribers
+        publishMessage(message);
+
+        return message;
+    }
+
+    private void persistMessage(Message message) {
+        // Vitess routes to correct shard based on workspace_id
+        dsl.insertInto(MESSAGES)
+                .set(MESSAGES.ID, message.getId())
+                .set(MESSAGES.WORKSPACE_ID, message.getWorkspaceId())
+                .set(MESSAGES.CHANNEL_ID, message.getChannelId())
+                .set(MESSAGES.USER_ID, message.getUserId())
+                .set(MESSAGES.CONTENT, message.getContent())
+                .set(MESSAGES.MESSAGE_TYPE, message.getMessageType().getValue())
+                .set(MESSAGES.THREAD_TS, message.getThreadTs())
+                .set(MESSAGES.TS, message.getTs())
+                .set(MESSAGES.CREATED_AT, message.getCreatedAt())
+                .set(MESSAGES.REACTIONS, mapper.writeValueAsString(message.getReactions()))
+                .set(MESSAGES.FILES, mapper.writeValueAsString(message.getFiles()))
+                .execute();
+    }
+
+    public MessagePage getChannelMessages(String workspaceId, String channelId,
+                                           String cursor, int limit) {
+        /**
+         * Get messages in a channel with cursor pagination.
+         * Cursor is the 'ts' of the last message.
+         */
+        var query = dsl.selectFrom(MESSAGES)
+                .where(MESSAGES.WORKSPACE_ID.eq(workspaceId))
+                .and(MESSAGES.CHANNEL_ID.eq(channelId))
+                .and(MESSAGES.THREAD_TS.isNull());
+
+        if (cursor != null) {
+            query = query.and(MESSAGES.TS.lt(cursor));
         }
-        
-        await self.publisher.publish_to_channel(
-            message.channel_id,
-            payload
-        )
+
+        Result<Record> rows = query.orderBy(MESSAGES.TS.desc())
+                .limit(limit + 1)
+                .fetch();
+
+        List<Message> messages = rows.stream()
+                .limit(limit)
+                .map(this::rowToMessage)
+                .toList();
+
+        String nextCursor = rows.size() > limit ? rows.get(limit).get(MESSAGES.TS) : null;
+
+        return new MessagePage(messages, nextCursor);
+    }
+
+    public List<Message> getThreadMessages(String workspaceId, String channelId,
+                                            String threadTs) {
+        return dsl.selectFrom(MESSAGES)
+                .where(MESSAGES.WORKSPACE_ID.eq(workspaceId))
+                .and(MESSAGES.CHANNEL_ID.eq(channelId))
+                .and(MESSAGES.TS.eq(threadTs).or(MESSAGES.THREAD_TS.eq(threadTs)))
+                .orderBy(MESSAGES.TS.asc())
+                .fetch()
+                .map(this::rowToMessage);
+    }
+
+    private String generateTs() {
+        /**
+         * Generate Slack-style timestamp.
+         * Format: seconds.microseconds (e.g., "1609459200.000100")
+         * Guaranteed unique within a workspace.
+         */
+        Instant now = Instant.now();
+        long seconds = now.getEpochSecond();
+        int micros = now.getNano() / 1000;
+        String uniqueSuffix = UUID.randomUUID().toString().replace("-", "").substring(0, 6);
+        return String.format("%d.%06d%s", seconds, micros, uniqueSuffix);
+    }
+
+    private void publishMessage(Message message) {
+        Map<String, Object> payload = Map.of(
+                "type", "message",
+                "channel", message.getChannelId(),
+                "user", message.getUserId(),
+                "text", message.getContent(),
+                "ts", message.getTs(),
+                "thread_ts", message.getThreadTs() != null ? message.getThreadTs() : "",
+                "files", message.getFiles()
+        );
+
+        publisher.publishToChannel(message.getChannelId(), payload);
+    }
+}
 
 
-class ReactionService:
-    """Handles emoji reactions on messages"""
-    
-    def __init__(self, vitess_client, redis_client, publisher):
-        self.vitess = vitess_client
-        self.redis = redis_client
-        self.publisher = publisher
-    
-    async def add_reaction(
-        self,
-        workspace_id: str,
-        channel_id: str,
-        message_ts: str,
-        user_id: str,
-        emoji: str
-    ):
-        """Add reaction to a message"""
-        # Atomic update using JSON functions
-        query = """
+/**
+ * Handles emoji reactions on messages.
+ */
+public class ReactionService {
+
+    private final DSLContext dsl;
+    private final RedisAsyncCommands<String, String> redis;
+    private final MessagePublisher publisher;
+
+    public ReactionService(DSLContext dsl, RedisAsyncCommands<String, String> redis,
+                           MessagePublisher publisher) {
+        this.dsl = dsl;
+        this.redis = redis;
+        this.publisher = publisher;
+    }
+
+    public void addReaction(String workspaceId, String channelId,
+                            String messageTs, String userId, String emoji) {
+        // Atomic update using JSON functions
+        dsl.execute("""
             UPDATE messages
             SET reactions = JSON_ARRAY_APPEND(
-                COALESCE(
-                    reactions,
-                    JSON_OBJECT(%(emoji)s, JSON_ARRAY())
-                ),
-                CONCAT('$.', %(emoji)s),
-                %(user_id)s
+                COALESCE(reactions, JSON_OBJECT(?, JSON_ARRAY())),
+                CONCAT('$.', ?), ?
             )
-            WHERE workspace_id = %(workspace_id)s
-              AND channel_id = %(channel_id)s
-              AND ts = %(message_ts)s
-        """
-        
-        await self.vitess.execute(
-            query,
-            {
-                "workspace_id": workspace_id,
-                "channel_id": channel_id,
-                "message_ts": message_ts,
-                "user_id": user_id,
-                "emoji": emoji
-            }
-        )
-        
-        # Publish reaction event
-        await self.publisher.publish_to_channel(
-            channel_id,
-            {
-                "type": "reaction_added",
-                "channel": channel_id,
-                "ts": message_ts,
-                "user": user_id,
-                "reaction": emoji
-            }
-        )
+            WHERE workspace_id = ?
+              AND channel_id = ?
+              AND ts = ?
+            """, emoji, emoji, userId, workspaceId, channelId, messageTs);
+
+        // Publish reaction event
+        publisher.publishToChannel(channelId, Map.of(
+                "type", "reaction_added",
+                "channel", channelId,
+                "ts", messageTs,
+                "user", userId,
+                "reaction", emoji
+        ));
+    }
+}
 ```
 
 ---
@@ -642,425 +621,425 @@ Elasticsearch Cluster (per region)
 
 ### Search Service Implementation
 
-```python
-from typing import List, Optional, Dict
-from dataclasses import dataclass
-from datetime import datetime
-from enum import Enum
+```java
+import org.elasticsearch.client.RestHighLevelClient;
+import org.elasticsearch.client.RequestOptions;
+import org.elasticsearch.action.search.SearchRequest;
+import org.elasticsearch.action.search.SearchResponse;
+import org.elasticsearch.index.query.BoolQueryBuilder;
+import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.search.builder.SearchSourceBuilder;
+import org.elasticsearch.search.fetch.subphase.highlight.HighlightBuilder;
+import org.elasticsearch.search.sort.SortOrder;
+import org.elasticsearch.action.index.IndexRequest;
+import org.springframework.kafka.annotation.KafkaListener;
+import io.lettuce.core.api.async.RedisAsyncCommands;
 
-class SearchScope(Enum):
-    MESSAGES = "messages"
-    FILES = "files"
-    ALL = "all"
+import java.time.Instant;
+import java.util.*;
+import java.util.stream.Collectors;
 
-@dataclass
-class SearchResult:
-    type: str  # "message" or "file"
-    id: str
-    channel_id: str
-    channel_name: str
-    user_id: str
-    content: str
-    ts: str
-    highlights: List[str]
-    score: float
+public enum SearchScope {
+    MESSAGES, FILES, ALL
+}
 
-@dataclass
-class SearchQuery:
-    query: str
-    workspace_id: str
-    user_id: str
-    scope: SearchScope = SearchScope.ALL
-    from_user: Optional[str] = None
-    in_channel: Optional[str] = None
-    after: Optional[datetime] = None
-    before: Optional[datetime] = None
-    has_file: bool = False
-    limit: int = 20
+public record SearchResult(
+        String type,       // "message" or "file"
+        String id,
+        String channelId,
+        String channelName,
+        String userId,
+        String content,
+        String ts,
+        List<String> highlights,
+        float score
+) {}
+
+public record SearchQuery(
+        String query,
+        String workspaceId,
+        String userId,
+        SearchScope scope,
+        String fromUser,
+        String inChannel,
+        Instant after,
+        Instant before,
+        boolean hasFile,
+        int limit
+) {
+    public SearchQuery {
+        if (scope == null) scope = SearchScope.ALL;
+        if (limit <= 0) limit = 20;
+    }
+}
 
 
-class SearchService:
-    """
-    Full-text search across messages and files.
-    Uses Elasticsearch with per-workspace indices.
-    """
-    
-    def __init__(self, es_client, channel_service, redis_client):
-        self.es = es_client
-        self.channels = channel_service
-        self.redis = redis_client
-    
-    async def search(self, query: SearchQuery) -> List[SearchResult]:
-        """Execute search query with ACL filtering"""
-        # Get channels user has access to
-        accessible_channels = await self.channels.get_user_channels(
-            query.workspace_id,
-            query.user_id
-        )
-        channel_ids = [c.id for c in accessible_channels]
-        
-        # Build Elasticsearch query
-        es_query = self._build_query(query, channel_ids)
-        
-        # Execute search
-        index = f"messages-{query.workspace_id}"
-        if query.scope == SearchScope.FILES:
-            index = f"files-{query.workspace_id}"
-        elif query.scope == SearchScope.ALL:
-            index = f"messages-{query.workspace_id},files-{query.workspace_id}"
-        
-        response = await self.es.search(
-            index=index,
-            body=es_query,
-            size=query.limit
-        )
-        
-        # Transform results
-        results = []
-        for hit in response["hits"]["hits"]:
-            result = SearchResult(
-                type=hit["_index"].split("-")[0],  # "messages" or "files"
-                id=hit["_id"],
-                channel_id=hit["_source"]["channel_id"],
-                channel_name=self._get_channel_name(
-                    hit["_source"]["channel_id"],
-                    accessible_channels
-                ),
-                user_id=hit["_source"]["user_id"],
-                content=hit["_source"]["content"],
-                ts=hit["_source"]["ts"],
-                highlights=hit.get("highlight", {}).get("content", []),
-                score=hit["_score"]
-            )
-            results.append(result)
-        
-        return results
-    
-    def _build_query(
-        self, 
-        query: SearchQuery, 
-        channel_ids: List[str]
-    ) -> dict:
-        """Build Elasticsearch query with filters"""
-        must = [
-            {
-                "multi_match": {
-                    "query": query.query,
-                    "fields": ["content^2", "attachments.content"],
-                    "type": "best_fields",
-                    "fuzziness": "AUTO"
-                }
-            }
-        ]
-        
-        filters = [
-            # ACL: Only search in accessible channels
-            {"terms": {"channel_id": channel_ids}}
-        ]
-        
-        # Optional filters
-        if query.from_user:
-            filters.append({"term": {"user_id": query.from_user}})
-        
-        if query.in_channel:
-            filters.append({"term": {"channel_id": query.in_channel}})
-        
-        if query.after or query.before:
-            range_filter = {"range": {"ts": {}}}
-            if query.after:
-                range_filter["range"]["ts"]["gte"] = query.after.isoformat()
-            if query.before:
-                range_filter["range"]["ts"]["lte"] = query.before.isoformat()
-            filters.append(range_filter)
-        
-        if query.has_file:
-            filters.append({"exists": {"field": "files"}})
-        
-        return {
-            "query": {
-                "bool": {
-                    "must": must,
-                    "filter": filters
-                }
-            },
-            "highlight": {
-                "fields": {
-                    "content": {
-                        "fragment_size": 150,
-                        "number_of_fragments": 3
-                    }
-                }
-            },
-            "sort": [
-                {"_score": "desc"},
-                {"ts": "desc"}
-            ]
+/**
+ * Full-text search across messages and files.
+ * Uses Elasticsearch with per-workspace indices.
+ */
+public class SearchService {
+
+    private final RestHighLevelClient es;
+    private final ChannelService channels;
+    private final RedisAsyncCommands<String, String> redis;
+
+    public SearchService(RestHighLevelClient es, ChannelService channels,
+                         RedisAsyncCommands<String, String> redis) {
+        this.es = es;
+        this.channels = channels;
+        this.redis = redis;
+    }
+
+    public List<SearchResult> search(SearchQuery query) throws Exception {
+        // Get channels user has access to
+        List<Channel> accessibleChannels = channels.getUserChannels(
+                query.workspaceId(), query.userId());
+        List<String> channelIds = accessibleChannels.stream()
+                .map(Channel::getId).toList();
+
+        // Build Elasticsearch query
+        SearchSourceBuilder sourceBuilder = buildQuery(query, channelIds);
+
+        // Determine index
+        String index = switch (query.scope()) {
+            case FILES -> "files-" + query.workspaceId();
+            case MESSAGES -> "messages-" + query.workspaceId();
+            case ALL -> "messages-" + query.workspaceId() + ",files-" + query.workspaceId();
+        };
+
+        SearchRequest request = new SearchRequest(index);
+        request.source(sourceBuilder);
+
+        SearchResponse response = es.search(request, RequestOptions.DEFAULT);
+
+        // Transform results
+        List<SearchResult> results = new ArrayList<>();
+        for (var hit : response.getHits().getHits()) {
+            Map<String, Object> source = hit.getSourceAsMap();
+            String hitChannelId = (String) source.get("channel_id");
+            results.add(new SearchResult(
+                    hit.getIndex().split("-")[0],  // "messages" or "files"
+                    hit.getId(),
+                    hitChannelId,
+                    getChannelName(hitChannelId, accessibleChannels),
+                    (String) source.get("user_id"),
+                    (String) source.get("content"),
+                    (String) source.get("ts"),
+                    hit.getHighlightFields().containsKey("content")
+                            ? Arrays.asList(hit.getHighlightFields().get("content").getFragments())
+                                    .stream().map(Object::toString).toList()
+                            : List.of(),
+                    hit.getScore()
+            ));
         }
 
+        return results;
+    }
 
-class SearchIndexer:
-    """Indexes messages and files for search"""
-    
-    def __init__(self, es_client, kafka_consumer):
-        self.es = es_client
-        self.kafka = kafka_consumer
-    
-    async def run(self):
-        """Process indexing queue"""
-        async for message in self.kafka.subscribe("search-index"):
-            try:
-                await self._index_document(message)
-            except Exception as e:
-                # Dead letter queue for failed indexing
-                await self._send_to_dlq(message, e)
-    
-    async def _index_document(self, message: dict):
-        """Index a single document"""
-        doc_type = message["type"]
-        workspace_id = message["workspace_id"]
-        
-        if doc_type == "message":
-            index = f"messages-{workspace_id}"
-            doc = {
-                "channel_id": message["channel_id"],
-                "user_id": message["user_id"],
-                "content": message["content"],
-                "ts": message["ts"],
-                "thread_ts": message.get("thread_ts"),
-                "files": message.get("files", []),
-                "channel_members": message.get("channel_members", [])
-            }
-        elif doc_type == "file":
-            index = f"files-{workspace_id}"
-            doc = {
-                "channel_id": message["channel_id"],
-                "user_id": message["user_id"],
-                "filename": message["filename"],
-                "content": message.get("extracted_text", ""),
-                "ts": message["ts"],
-                "filetype": message["filetype"],
-                "channel_members": message.get("channel_members", [])
-            }
-        
-        await self.es.index(
-            index=index,
-            id=message["id"],
-            body=doc,
-            refresh=False  # Async refresh for performance
-        )
+    private SearchSourceBuilder buildQuery(SearchQuery query, List<String> channelIds) {
+        BoolQueryBuilder boolQuery = QueryBuilders.boolQuery()
+                .must(QueryBuilders.multiMatchQuery(query.query(), "content", "attachments.content")
+                        .field("content", 2.0f)
+                        .type(org.elasticsearch.index.query.MultiMatchQueryBuilder.Type.BEST_FIELDS)
+                        .fuzziness("AUTO"))
+                .filter(QueryBuilders.termsQuery("channel_id", channelIds));
+
+        // Optional filters
+        if (query.fromUser() != null) {
+            boolQuery.filter(QueryBuilders.termQuery("user_id", query.fromUser()));
+        }
+        if (query.inChannel() != null) {
+            boolQuery.filter(QueryBuilders.termQuery("channel_id", query.inChannel()));
+        }
+        if (query.after() != null || query.before() != null) {
+            var rangeQuery = QueryBuilders.rangeQuery("ts");
+            if (query.after() != null) rangeQuery.gte(query.after().toString());
+            if (query.before() != null) rangeQuery.lte(query.before().toString());
+            boolQuery.filter(rangeQuery);
+        }
+        if (query.hasFile()) {
+            boolQuery.filter(QueryBuilders.existsQuery("files"));
+        }
+
+        return new SearchSourceBuilder()
+                .query(boolQuery)
+                .highlighter(new HighlightBuilder()
+                        .field("content", 150, 3))
+                .sort("_score", SortOrder.DESC)
+                .sort("ts", SortOrder.DESC)
+                .size(query.limit());
+    }
+}
+
+
+/**
+ * Indexes messages and files for search.
+ * Consumes from Kafka via Spring KafkaTemplate.
+ */
+public class SearchIndexer {
+
+    private final RestHighLevelClient es;
+
+    public SearchIndexer(RestHighLevelClient es) {
+        this.es = es;
+    }
+
+    @KafkaListener(topics = "search-index", groupId = "search-indexer")
+    public void processMessage(String payload) {
+        try {
+            Map<String, Object> message = new ObjectMapper().readValue(payload, Map.class);
+            indexDocument(message);
+        } catch (Exception e) {
+            // Dead letter queue for failed indexing
+            sendToDlq(message, e);
+        }
+    }
+
+    private void indexDocument(Map<String, Object> message) throws Exception {
+        String docType = (String) message.get("type");
+        String workspaceId = (String) message.get("workspace_id");
+
+        String index;
+        Map<String, Object> doc;
+
+        if ("message".equals(docType)) {
+            index = "messages-" + workspaceId;
+            doc = Map.of(
+                    "channel_id", message.get("channel_id"),
+                    "user_id", message.get("user_id"),
+                    "content", message.get("content"),
+                    "ts", message.get("ts"),
+                    "thread_ts", message.getOrDefault("thread_ts", ""),
+                    "files", message.getOrDefault("files", List.of()),
+                    "channel_members", message.getOrDefault("channel_members", List.of())
+            );
+        } else {
+            index = "files-" + workspaceId;
+            doc = Map.of(
+                    "channel_id", message.get("channel_id"),
+                    "user_id", message.get("user_id"),
+                    "filename", message.get("filename"),
+                    "content", message.getOrDefault("extracted_text", ""),
+                    "ts", message.get("ts"),
+                    "filetype", message.get("filetype"),
+                    "channel_members", message.getOrDefault("channel_members", List.of())
+            );
+        }
+
+        IndexRequest request = new IndexRequest(index)
+                .id((String) message.get("id"))
+                .source(doc);
+        // Async refresh for performance
+        request.setRefreshPolicy(org.elasticsearch.action.support.WriteRequest.RefreshPolicy.NONE);
+
+        es.index(request, RequestOptions.DEFAULT);
+    }
+}
 ```
 
 ---
 
 ## Presence System
 
-```python
-from typing import Dict, Set, Optional, List
-from dataclasses import dataclass
-from enum import Enum
-import asyncio
-import time
+```java
+import io.lettuce.core.api.async.RedisAsyncCommands;
+import io.lettuce.core.RedisFuture;
 
-class PresenceStatus(Enum):
-    ACTIVE = "active"
-    AWAY = "away"
-    DND = "dnd"  # Do Not Disturb
-    OFFLINE = "offline"
+import java.time.Instant;
+import java.util.*;
 
-@dataclass
-class UserPresence:
-    user_id: str
-    status: PresenceStatus
-    status_text: Optional[str]
-    status_emoji: Optional[str]
-    last_activity: float
-    dnd_until: Optional[float]
+public enum PresenceStatus {
+    ACTIVE("active"),
+    AWAY("away"),
+    DND("dnd"),       // Do Not Disturb
+    OFFLINE("offline");
+
+    private final String value;
+    PresenceStatus(String value) { this.value = value; }
+    public String getValue() { return value; }
+}
+
+public class UserPresence {
+    private String userId;
+    private PresenceStatus status;
+    private String statusText;
+    private String statusEmoji;
+    private long lastActivity;
+    private Long dndUntil;
+
+    // Constructor, getters, setters omitted for brevity
+}
 
 
-class PresenceService:
-    """
-    Tracks and broadcasts user presence status.
-    Optimized for read-heavy workloads with caching.
-    """
-    
-    def __init__(self, redis_client, publisher):
-        self.redis = redis_client
-        self.publisher = publisher
-        
-        # Active/away threshold
-        self.away_threshold_seconds = 300  # 5 minutes
-        self.offline_threshold_seconds = 900  # 15 minutes
-    
-    async def update_activity(self, user_id: str, workspace_id: str):
-        """Update user's last activity timestamp"""
-        now = time.time()
-        
-        # Get current presence
-        current = await self._get_presence(user_id)
-        
-        # Update activity time
-        await self.redis.hset(
-            f"presence:{user_id}",
-            mapping={
-                "last_activity": now,
-                "workspace_id": workspace_id
-            }
-        )
-        
-        # If status changed, broadcast
-        new_status = self._calculate_status(now, current)
-        if current and new_status != current.status:
-            await self._broadcast_presence_change(
-                user_id, 
-                workspace_id, 
-                new_status
-            )
-    
-    async def set_status(
-        self,
-        user_id: str,
-        workspace_id: str,
-        status: PresenceStatus,
-        status_text: Optional[str] = None,
-        status_emoji: Optional[str] = None,
-        dnd_until: Optional[float] = None
-    ):
-        """Manually set user status"""
-        await self.redis.hset(
-            f"presence:{user_id}",
-            mapping={
-                "status": status.value,
-                "status_text": status_text or "",
-                "status_emoji": status_emoji or "",
-                "dnd_until": dnd_until or 0,
-                "last_activity": time.time()
-            }
-        )
-        
-        await self._broadcast_presence_change(user_id, workspace_id, status)
-    
-    async def get_presence_batch(
-        self, 
-        user_ids: List[str]
-    ) -> Dict[str, UserPresence]:
-        """Get presence for multiple users efficiently"""
-        pipe = self.redis.pipeline()
-        
-        for user_id in user_ids:
-            pipe.hgetall(f"presence:{user_id}")
-        
-        results = await pipe.execute()
-        
-        presences = {}
-        now = time.time()
-        
-        for user_id, data in zip(user_ids, results):
-            if data:
-                presences[user_id] = self._data_to_presence(user_id, data, now)
-            else:
-                presences[user_id] = UserPresence(
-                    user_id=user_id,
-                    status=PresenceStatus.OFFLINE,
-                    status_text=None,
-                    status_emoji=None,
-                    last_activity=0,
-                    dnd_until=None
-                )
-        
-        return presences
-    
-    async def get_channel_presence(
-        self, 
-        channel_id: str
-    ) -> Dict[str, UserPresence]:
-        """Get presence for all members of a channel"""
-        # Get channel members
-        member_ids = await self.redis.smembers(f"channel:{channel_id}:members")
-        
-        return await self.get_presence_batch(list(member_ids))
-    
-    def _calculate_status(
-        self, 
-        now: float, 
-        current: Optional[UserPresence]
-    ) -> PresenceStatus:
-        """Calculate status based on activity"""
-        if not current:
-            return PresenceStatus.ACTIVE
-        
-        # Check DND
-        if current.dnd_until and now < current.dnd_until:
-            return PresenceStatus.DND
-        
-        # Check manual status
-        if current.status in [PresenceStatus.DND, PresenceStatus.AWAY]:
-            return current.status
-        
-        # Calculate based on activity
-        idle_time = now - current.last_activity
-        
-        if idle_time > self.offline_threshold_seconds:
-            return PresenceStatus.OFFLINE
-        elif idle_time > self.away_threshold_seconds:
-            return PresenceStatus.AWAY
-        else:
-            return PresenceStatus.ACTIVE
-    
-    async def _broadcast_presence_change(
-        self,
-        user_id: str,
-        workspace_id: str,
-        status: PresenceStatus
-    ):
-        """Broadcast presence change to relevant users"""
-        # Get all channels user is in
-        channels = await self.redis.smembers(f"user:{user_id}:channels")
-        
-        payload = {
-            "type": "presence_change",
-            "user": user_id,
-            "presence": status.value
+/**
+ * Tracks and broadcasts user presence status.
+ * Optimized for read-heavy workloads with caching.
+ */
+public class PresenceService {
+
+    private final RedisAsyncCommands<String, String> redis;
+    private final MessagePublisher publisher;
+
+    // Active/away threshold
+    private static final long AWAY_THRESHOLD_SECONDS = 300;     // 5 minutes
+    private static final long OFFLINE_THRESHOLD_SECONDS = 900;  // 15 minutes
+
+    public PresenceService(RedisAsyncCommands<String, String> redis,
+                           MessagePublisher publisher) {
+        this.redis = redis;
+        this.publisher = publisher;
+    }
+
+    public void updateActivity(String userId, String workspaceId) throws Exception {
+        long now = Instant.now().getEpochSecond();
+
+        // Get current presence
+        UserPresence current = getPresence(userId);
+
+        // Update activity time
+        redis.hset("presence:" + userId, Map.of(
+                "last_activity", String.valueOf(now),
+                "workspace_id", workspaceId
+        )).get();
+
+        // If status changed, broadcast
+        PresenceStatus newStatus = calculateStatus(now, current);
+        if (current != null && newStatus != current.getStatus()) {
+            broadcastPresenceChange(userId, workspaceId, newStatus);
         }
-        
-        # Publish to each channel
-        for channel_id in channels:
-            await self.publisher.publish_to_channel(channel_id, payload)
+    }
+
+    public void setStatus(String userId, String workspaceId,
+                          PresenceStatus status, String statusText,
+                          String statusEmoji, Long dndUntil) throws Exception {
+        redis.hset("presence:" + userId, Map.of(
+                "status", status.getValue(),
+                "status_text", statusText != null ? statusText : "",
+                "status_emoji", statusEmoji != null ? statusEmoji : "",
+                "dnd_until", String.valueOf(dndUntil != null ? dndUntil : 0),
+                "last_activity", String.valueOf(Instant.now().getEpochSecond())
+        )).get();
+
+        broadcastPresenceChange(userId, workspaceId, status);
+    }
+
+    public Map<String, UserPresence> getPresenceBatch(List<String> userIds) throws Exception {
+        // Pipeline commands for efficiency
+        Map<String, RedisFuture<Map<String, String>>> futures = new LinkedHashMap<>();
+        for (String userId : userIds) {
+            futures.put(userId, redis.hgetall("presence:" + userId));
+        }
+
+        Map<String, UserPresence> presences = new HashMap<>();
+        long now = Instant.now().getEpochSecond();
+
+        for (String userId : userIds) {
+            Map<String, String> data = futures.get(userId).get();
+            if (data != null && !data.isEmpty()) {
+                presences.put(userId, dataToPresence(userId, data, now));
+            } else {
+                UserPresence offline = new UserPresence();
+                offline.setUserId(userId);
+                offline.setStatus(PresenceStatus.OFFLINE);
+                offline.setLastActivity(0);
+                presences.put(userId, offline);
+            }
+        }
+
+        return presences;
+    }
+
+    public Map<String, UserPresence> getChannelPresence(String channelId) throws Exception {
+        // Get channel members
+        Set<String> memberIds = redis.smembers("channel:" + channelId + ":members").get();
+        return getPresenceBatch(new ArrayList<>(memberIds));
+    }
+
+    private PresenceStatus calculateStatus(long now, UserPresence current) {
+        if (current == null) {
+            return PresenceStatus.ACTIVE;
+        }
+
+        // Check DND
+        if (current.getDndUntil() != null && now < current.getDndUntil()) {
+            return PresenceStatus.DND;
+        }
+
+        // Check manual status
+        if (current.getStatus() == PresenceStatus.DND
+                || current.getStatus() == PresenceStatus.AWAY) {
+            return current.getStatus();
+        }
+
+        // Calculate based on activity
+        long idleTime = now - current.getLastActivity();
+
+        if (idleTime > OFFLINE_THRESHOLD_SECONDS) {
+            return PresenceStatus.OFFLINE;
+        } else if (idleTime > AWAY_THRESHOLD_SECONDS) {
+            return PresenceStatus.AWAY;
+        } else {
+            return PresenceStatus.ACTIVE;
+        }
+    }
+
+    private void broadcastPresenceChange(String userId, String workspaceId,
+                                          PresenceStatus status) throws Exception {
+        // Get all channels user is in
+        Set<String> channelSet = redis.smembers("user:" + userId + ":channels").get();
+
+        Map<String, Object> payload = Map.of(
+                "type", "presence_change",
+                "user", userId,
+                "presence", status.getValue()
+        );
+
+        // Publish to each channel
+        for (String channelId : channelSet) {
+            publisher.publishToChannel(channelId, payload);
+        }
+    }
+}
 
 
-class PresenceSubscriptionManager:
-    """
-    Manages client subscriptions to presence updates.
-    Optimizes by batching and limiting subscription scope.
-    """
-    
-    def __init__(self, redis_client, presence_service):
-        self.redis = redis_client
-        self.presence = presence_service
-        
-        # Limit presence subscriptions per connection
-        self.max_subscriptions = 500
-    
-    async def subscribe_to_users(
-        self,
-        connection_id: str,
-        user_ids: List[str]
-    ) -> Dict[str, UserPresence]:
-        """
-        Subscribe to presence updates for users.
-        Returns initial presence state.
-        """
-        # Limit subscriptions
-        if len(user_ids) > self.max_subscriptions:
-            user_ids = user_ids[:self.max_subscriptions]
-        
-        # Store subscriptions
-        await self.redis.sadd(
-            f"conn:{connection_id}:presence_subs",
-            *user_ids
-        )
-        
-        # Return initial state
-        return await self.presence.get_presence_batch(user_ids)
+/**
+ * Manages client subscriptions to presence updates.
+ * Optimizes by batching and limiting subscription scope.
+ */
+public class PresenceSubscriptionManager {
+
+    private final RedisAsyncCommands<String, String> redis;
+    private final PresenceService presence;
+
+    // Limit presence subscriptions per connection
+    private static final int MAX_SUBSCRIPTIONS = 500;
+
+    public PresenceSubscriptionManager(RedisAsyncCommands<String, String> redis,
+                                        PresenceService presence) {
+        this.redis = redis;
+        this.presence = presence;
+    }
+
+    public Map<String, UserPresence> subscribeToUsers(String connectionId,
+                                                       List<String> userIds) throws Exception {
+        /**
+         * Subscribe to presence updates for users.
+         * Returns initial presence state.
+         */
+        // Limit subscriptions
+        if (userIds.size() > MAX_SUBSCRIPTIONS) {
+            userIds = userIds.subList(0, MAX_SUBSCRIPTIONS);
+        }
+
+        // Store subscriptions
+        redis.sadd("conn:" + connectionId + ":presence_subs",
+                userIds.toArray(new String[0])).get();
+
+        // Return initial state
+        return presence.getPresenceBatch(userIds);
+    }
+}
 ```
 
 ---
@@ -1087,360 +1066,352 @@ graph LR
 
 ### File Service Implementation
 
-```python
-import hashlib
-from dataclasses import dataclass
-from typing import Optional, List
-import mimetypes
+```java
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
+import org.jooq.DSLContext;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
-@dataclass
-class FileUpload:
-    id: str
-    workspace_id: str
-    channel_id: str
-    user_id: str
-    filename: str
-    filetype: str
-    size_bytes: int
-    url_private: str
-    thumb_url: Optional[str]
-    status: str  # "uploading", "processing", "ready", "error"
+import java.time.Duration;
+import java.util.*;
+
+public class FileUpload {
+    private String id;
+    private String workspaceId;
+    private String channelId;
+    private String userId;
+    private String filename;
+    private String filetype;
+    private long sizeBytes;
+    private String urlPrivate;
+    private String thumbUrl;
+    private String status;  // "uploading", "processing", "ready", "error"
+
+    // Constructor, getters, setters omitted for brevity
+}
 
 
-class FileService:
-    """Handles file uploads, processing, and retrieval"""
-    
-    def __init__(self, s3_client, vitess_client, sqs_client, cdn_url: str):
-        self.s3 = s3_client
-        self.vitess = vitess_client
-        self.sqs = sqs_client
-        self.cdn_url = cdn_url
-        
-        # Upload limits
-        self.max_file_size = 1 * 1024 * 1024 * 1024  # 1GB
-        self.allowed_types = {"image", "video", "audio", "application", "text"}
-    
-    async def get_upload_url(
-        self,
-        workspace_id: str,
-        channel_id: str,
-        user_id: str,
-        filename: str,
-        content_type: str,
-        size_bytes: int
-    ) -> dict:
-        """Get presigned URL for direct upload to S3"""
-        # Validate
-        if size_bytes > self.max_file_size:
-            raise FileTooLargeError(f"Max size is {self.max_file_size} bytes")
-        
-        main_type = content_type.split("/")[0]
-        if main_type not in self.allowed_types:
-            raise InvalidFileTypeError(f"Type {content_type} not allowed")
-        
-        # Generate file ID and path
-        file_id = str(uuid.uuid4())
-        s3_key = f"{workspace_id}/{channel_id}/{file_id}/{filename}"
-        
-        # Create file record
-        file_record = FileUpload(
-            id=file_id,
-            workspace_id=workspace_id,
-            channel_id=channel_id,
-            user_id=user_id,
-            filename=filename,
-            filetype=content_type,
-            size_bytes=size_bytes,
-            url_private=f"{self.cdn_url}/{s3_key}",
-            thumb_url=None,
-            status="uploading"
-        )
-        
-        await self._save_file_record(file_record)
-        
-        # Generate presigned URL
-        presigned = await self.s3.generate_presigned_post(
-            Bucket="slack-files",
-            Key=s3_key,
-            Fields={
-                "Content-Type": content_type,
-            },
-            Conditions=[
-                ["content-length-range", 1, size_bytes],
-                {"Content-Type": content_type}
-            ],
-            ExpiresIn=3600  # 1 hour
-        )
-        
-        return {
-            "file_id": file_id,
-            "upload_url": presigned["url"],
-            "fields": presigned["fields"]
+/**
+ * Handles file uploads, processing, and retrieval.
+ * Uses AWS S3 SDK v2 for presigned URLs and object storage.
+ */
+public class FileService {
+
+    private final S3Presigner s3Presigner;
+    private final DSLContext dsl;
+    private final SqsClient sqs;
+    private final String cdnUrl;
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    // Upload limits
+    private static final long MAX_FILE_SIZE = 1L * 1024 * 1024 * 1024; // 1GB
+    private static final Set<String> ALLOWED_TYPES = Set.of(
+            "image", "video", "audio", "application", "text");
+
+    public FileService(S3Presigner s3Presigner, DSLContext dsl,
+                       SqsClient sqs, String cdnUrl) {
+        this.s3Presigner = s3Presigner;
+        this.dsl = dsl;
+        this.sqs = sqs;
+        this.cdnUrl = cdnUrl;
+    }
+
+    public Map<String, Object> getUploadUrl(String workspaceId, String channelId,
+                                             String userId, String filename,
+                                             String contentType, long sizeBytes) {
+        // Validate
+        if (sizeBytes > MAX_FILE_SIZE) {
+            throw new FileTooLargeException("Max size is " + MAX_FILE_SIZE + " bytes");
         }
-    
-    async def confirm_upload(self, file_id: str):
-        """Called after successful upload to trigger processing"""
-        file = await self._get_file_record(file_id)
-        
-        # Update status
-        await self._update_file_status(file_id, "processing")
-        
-        # Queue for processing
-        await self.sqs.send_message(
-            QueueUrl="file-processing-queue",
-            MessageBody=json.dumps({
-                "file_id": file_id,
-                "workspace_id": file.workspace_id,
-                "channel_id": file.channel_id,
-                "filename": file.filename,
-                "filetype": file.filetype
-            })
-        )
-    
-    async def get_file(
-        self, 
-        file_id: str, 
-        user_id: str
-    ) -> Optional[FileUpload]:
-        """Get file with access control"""
-        file = await self._get_file_record(file_id)
-        
-        if not file:
-            return None
-        
-        # Check access
-        if not await self._can_access_file(user_id, file):
-            raise AccessDeniedError("No access to this file")
-        
-        return file
-    
-    async def _can_access_file(self, user_id: str, file: FileUpload) -> bool:
-        """Check if user can access file (is member of channel)"""
-        return await self.vitess.fetchone(
-            """
-            SELECT 1 FROM channel_members
-            WHERE workspace_id = %(workspace_id)s
-              AND channel_id = %(channel_id)s
-              AND user_id = %(user_id)s
-            """,
-            {
-                "workspace_id": file.workspace_id,
-                "channel_id": file.channel_id,
-                "user_id": user_id
+
+        String mainType = contentType.split("/")[0];
+        if (!ALLOWED_TYPES.contains(mainType)) {
+            throw new InvalidFileTypeException("Type " + contentType + " not allowed");
+        }
+
+        // Generate file ID and path
+        String fileId = UUID.randomUUID().toString();
+        String s3Key = workspaceId + "/" + channelId + "/" + fileId + "/" + filename;
+
+        // Create file record
+        FileUpload fileRecord = new FileUpload();
+        fileRecord.setId(fileId);
+        fileRecord.setWorkspaceId(workspaceId);
+        fileRecord.setChannelId(channelId);
+        fileRecord.setUserId(userId);
+        fileRecord.setFilename(filename);
+        fileRecord.setFiletype(contentType);
+        fileRecord.setSizeBytes(sizeBytes);
+        fileRecord.setUrlPrivate(cdnUrl + "/" + s3Key);
+        fileRecord.setStatus("uploading");
+
+        saveFileRecord(fileRecord);
+
+        // Generate presigned URL using AWS SDK v2
+        PutObjectRequest putRequest = PutObjectRequest.builder()
+                .bucket("slack-files")
+                .key(s3Key)
+                .contentType(contentType)
+                .contentLength(sizeBytes)
+                .build();
+
+        PresignedPutObjectRequest presigned = s3Presigner.presignPutObject(b -> b
+                .putObjectRequest(putRequest)
+                .signatureDuration(Duration.ofHours(1)));
+
+        return Map.of(
+                "file_id", fileId,
+                "upload_url", presigned.url().toString()
+        );
+    }
+
+    public void confirmUpload(String fileId) throws Exception {
+        FileUpload file = getFileRecord(fileId);
+
+        // Update status
+        updateFileStatus(fileId, "processing");
+
+        // Queue for processing
+        sqs.sendMessage(SendMessageRequest.builder()
+                .queueUrl("file-processing-queue")
+                .messageBody(mapper.writeValueAsString(Map.of(
+                        "file_id", fileId,
+                        "workspace_id", file.getWorkspaceId(),
+                        "channel_id", file.getChannelId(),
+                        "filename", file.getFilename(),
+                        "filetype", file.getFiletype()
+                )))
+                .build());
+    }
+
+    public Optional<FileUpload> getFile(String fileId, String userId) {
+        FileUpload file = getFileRecord(fileId);
+
+        if (file == null) {
+            return Optional.empty();
+        }
+
+        // Check access
+        if (!canAccessFile(userId, file)) {
+            throw new AccessDeniedException("No access to this file");
+        }
+
+        return Optional.of(file);
+    }
+
+    private boolean canAccessFile(String userId, FileUpload file) {
+        return dsl.fetchExists(
+                dsl.selectOne()
+                        .from("channel_members")
+                        .where("workspace_id = ?", file.getWorkspaceId())
+                        .and("channel_id = ?", file.getChannelId())
+                        .and("user_id = ?", userId));
+    }
+}
+
+
+/**
+ * Processes uploaded files (thumbnails, text extraction, scanning).
+ */
+public class FileProcessor {
+
+    private final S3Presigner s3Presigner;
+    private final SearchIndexer searchIndexer;
+    private final AntivirusClient antivirus;
+
+    public FileProcessor(S3Presigner s3Presigner, SearchIndexer searchIndexer,
+                         AntivirusClient antivirus) {
+        this.s3Presigner = s3Presigner;
+        this.searchIndexer = searchIndexer;
+        this.antivirus = antivirus;
+    }
+
+    public void processFile(Map<String, Object> message) {
+        String fileId = (String) message.get("file_id");
+        String filetype = (String) message.get("filetype");
+
+        try {
+            // Virus scan
+            ScanResult scanResult = antivirus.scan((String) message.get("s3_key"));
+            if (!scanResult.isClean()) {
+                quarantineFile(fileId);
+                return;
             }
-        ) is not None
 
+            // Generate thumbnail for images/videos
+            if (filetype.startsWith("image/") || filetype.startsWith("video/")) {
+                generateThumbnail(fileId, message);
+            }
 
-class FileProcessor:
-    """Processes uploaded files (thumbnails, text extraction, scanning)"""
-    
-    def __init__(self, s3_client, search_indexer, antivirus_client):
-        self.s3 = s3_client
-        self.search = search_indexer
-        self.antivirus = antivirus_client
-    
-    async def process_file(self, message: dict):
-        """Process a single file"""
-        file_id = message["file_id"]
-        filetype = message["filetype"]
-        
-        try:
-            # Virus scan
-            scan_result = await self.antivirus.scan(message["s3_key"])
-            if not scan_result.is_clean:
-                await self._quarantine_file(file_id)
-                return
-            
-            # Generate thumbnail for images/videos
-            if filetype.startswith(("image/", "video/")):
-                await self._generate_thumbnail(file_id, message)
-            
-            # Extract text for searchable content
-            if self._is_searchable(filetype):
-                text = await self._extract_text(file_id, message)
-                if text:
-                    await self.search.index_file(
-                        file_id=file_id,
-                        workspace_id=message["workspace_id"],
-                        channel_id=message["channel_id"],
-                        filename=message["filename"],
-                        extracted_text=text
-                    )
-            
-            # Mark as ready
-            await self._update_status(file_id, "ready")
-            
-        except Exception as e:
-            await self._update_status(file_id, "error")
-            raise
-    
-    def _is_searchable(self, filetype: str) -> bool:
-        """Check if file type supports text extraction"""
-        searchable = [
-            "application/pdf",
-            "application/msword",
-            "application/vnd.openxmlformats-officedocument",
-            "text/"
-        ]
-        return any(filetype.startswith(t) for t in searchable)
+            // Extract text for searchable content
+            if (isSearchable(filetype)) {
+                String text = extractText(fileId, message);
+                if (text != null && !text.isEmpty()) {
+                    searchIndexer.indexFile(
+                            fileId,
+                            (String) message.get("workspace_id"),
+                            (String) message.get("channel_id"),
+                            (String) message.get("filename"),
+                            text);
+                }
+            }
+
+            // Mark as ready
+            updateStatus(fileId, "ready");
+
+        } catch (Exception e) {
+            updateStatus(fileId, "error");
+            throw new RuntimeException(e);
+        }
+    }
+
+    private boolean isSearchable(String filetype) {
+        return filetype.startsWith("application/pdf")
+                || filetype.startsWith("application/msword")
+                || filetype.startsWith("application/vnd.openxmlformats-officedocument")
+                || filetype.startsWith("text/");
+    }
+}
 ```
 
 ---
 
 ## Slack Connect (Cross-Workspace)
 
-```python
-from typing import List, Optional
-from dataclasses import dataclass
+```java
+import org.jooq.DSLContext;
+import io.lettuce.core.api.async.RedisAsyncCommands;
 
-@dataclass
-class SlackConnectChannel:
-    id: str
-    name: str
-    host_workspace_id: str  # Workspace that created the channel
-    connected_workspace_ids: List[str]
-    is_pending: bool
+import java.util.*;
+
+public class SlackConnectChannel {
+    private String id;
+    private String name;
+    private String hostWorkspaceId;       // Workspace that created the channel
+    private List<String> connectedWorkspaceIds;
+    private boolean pending;
+
+    // Constructor, getters, setters omitted for brevity
+}
 
 
-class SlackConnectService:
-    """
-    Manages channels shared between workspaces.
-    Special handling for multi-tenant message routing.
-    """
-    
-    def __init__(self, vitess_client, redis_client, message_service):
-        self.vitess = vitess_client
-        self.redis = redis_client
-        self.messages = message_service
-    
-    async def create_shared_channel(
-        self,
-        host_workspace_id: str,
-        channel_name: str,
-        creator_user_id: str
-    ) -> SlackConnectChannel:
-        """Create a channel that can be shared with other workspaces"""
-        channel_id = str(uuid.uuid4())
-        
-        channel = SlackConnectChannel(
-            id=channel_id,
-            name=channel_name,
-            host_workspace_id=host_workspace_id,
-            connected_workspace_ids=[host_workspace_id],
-            is_pending=False
-        )
-        
-        # Store in special cross-workspace keyspace
-        # This data is replicated, not sharded by workspace
-        await self.vitess.execute(
-            """
+/**
+ * Manages channels shared between workspaces.
+ * Special handling for multi-tenant message routing.
+ */
+public class SlackConnectService {
+
+    private final DSLContext dsl;
+    private final RedisAsyncCommands<String, String> redis;
+    private final MessageService messages;
+
+    public SlackConnectService(DSLContext dsl,
+                                RedisAsyncCommands<String, String> redis,
+                                MessageService messages) {
+        this.dsl = dsl;
+        this.redis = redis;
+        this.messages = messages;
+    }
+
+    public SlackConnectChannel createSharedChannel(String hostWorkspaceId,
+                                                    String channelName,
+                                                    String creatorUserId) {
+        String channelId = UUID.randomUUID().toString();
+
+        SlackConnectChannel channel = new SlackConnectChannel();
+        channel.setId(channelId);
+        channel.setName(channelName);
+        channel.setHostWorkspaceId(hostWorkspaceId);
+        channel.setConnectedWorkspaceIds(List.of(hostWorkspaceId));
+        channel.setPending(false);
+
+        // Store in special cross-workspace keyspace
+        // This data is replicated, not sharded by workspace
+        dsl.execute("""
             INSERT INTO slack_connect_channels (
                 id, name, host_workspace_id, created_at
-            ) VALUES (%(id)s, %(name)s, %(host_workspace_id)s, NOW())
-            """,
-            {"id": channel_id, "name": channel_name, "host_workspace_id": host_workspace_id},
-            keyspace="slack_connect"  # Global keyspace
-        )
-        
-        # Add host workspace as connected
-        await self._add_workspace_to_channel(channel_id, host_workspace_id)
-        
-        return channel
-    
-    async def invite_workspace(
-        self,
-        channel_id: str,
-        inviting_workspace_id: str,
-        target_workspace_id: str,
-        inviting_user_id: str
-    ) -> str:
-        """Send invitation to another workspace to join channel"""
-        # Verify inviting workspace is connected
-        channel = await self._get_channel(channel_id)
-        if inviting_workspace_id not in channel.connected_workspace_ids:
-            raise NotConnectedError("Workspace not connected to channel")
-        
-        # Create invitation
-        invite_id = str(uuid.uuid4())
-        
-        await self.vitess.execute(
-            """
+            ) VALUES (?, ?, ?, NOW())
+            """, channelId, channelName, hostWorkspaceId);
+
+        // Add host workspace as connected
+        addWorkspaceToChannel(channelId, hostWorkspaceId);
+
+        return channel;
+    }
+
+    public String inviteWorkspace(String channelId, String invitingWorkspaceId,
+                                   String targetWorkspaceId, String invitingUserId) {
+        // Verify inviting workspace is connected
+        SlackConnectChannel channel = getChannel(channelId);
+        if (!channel.getConnectedWorkspaceIds().contains(invitingWorkspaceId)) {
+            throw new NotConnectedException("Workspace not connected to channel");
+        }
+
+        // Create invitation
+        String inviteId = UUID.randomUUID().toString();
+
+        dsl.execute("""
             INSERT INTO slack_connect_invitations (
                 id, channel_id, inviting_workspace_id, target_workspace_id,
                 inviting_user_id, status, created_at
-            ) VALUES (%(id)s, %(channel_id)s, %(inviting)s, %(target)s,
-                     %(user)s, 'pending', NOW())
-            """,
-            {
-                "id": invite_id,
-                "channel_id": channel_id,
-                "inviting": inviting_workspace_id,
-                "target": target_workspace_id,
-                "user": inviting_user_id
-            },
-            keyspace="slack_connect"
-        )
-        
-        return invite_id
-    
-    async def accept_invitation(
-        self,
-        invite_id: str,
-        accepting_workspace_id: str,
-        accepting_user_id: str
-    ):
-        """Accept invitation to join shared channel"""
-        invite = await self._get_invitation(invite_id)
-        
-        if invite.target_workspace_id != accepting_workspace_id:
-            raise InvalidInvitationError("Invitation not for this workspace")
-        
-        # Add workspace to channel
-        await self._add_workspace_to_channel(
-            invite.channel_id,
-            accepting_workspace_id
-        )
-        
-        # Update invitation status
-        await self.vitess.execute(
-            """
+            ) VALUES (?, ?, ?, ?, ?, 'pending', NOW())
+            """, inviteId, channelId, invitingWorkspaceId,
+                targetWorkspaceId, invitingUserId);
+
+        return inviteId;
+    }
+
+    public void acceptInvitation(String inviteId, String acceptingWorkspaceId,
+                                  String acceptingUserId) {
+        var invite = getInvitation(inviteId);
+
+        if (!invite.getTargetWorkspaceId().equals(acceptingWorkspaceId)) {
+            throw new InvalidInvitationException("Invitation not for this workspace");
+        }
+
+        // Add workspace to channel
+        addWorkspaceToChannel(invite.getChannelId(), acceptingWorkspaceId);
+
+        // Update invitation status
+        dsl.execute("""
             UPDATE slack_connect_invitations
             SET status = 'accepted', accepted_at = NOW()
-            WHERE id = %(id)s
-            """,
-            {"id": invite_id},
-            keyspace="slack_connect"
-        )
-    
-    async def send_message_to_shared_channel(
-        self,
-        channel_id: str,
-        sender_workspace_id: str,
-        sender_user_id: str,
-        content: str
-    ):
-        """
-        Send message to shared channel.
-        Message must be visible in all connected workspaces.
-        """
-        channel = await self._get_channel(channel_id)
-        
-        if sender_workspace_id not in channel.connected_workspace_ids:
-            raise NotConnectedError("Workspace not connected to channel")
-        
-        # Store message in shared keyspace
-        message = await self.messages.send_message(
-            workspace_id="shared",  # Special shared keyspace
-            channel_id=channel_id,
-            user_id=sender_user_id,
-            content=content
-        )
-        
-        # Sync to all connected workspaces' search indices
-        for workspace_id in channel.connected_workspace_ids:
-            await self._sync_message_to_workspace(message, workspace_id)
-        
-        return message
+            WHERE id = ?
+            """, inviteId);
+    }
+
+    public Message sendMessageToSharedChannel(String channelId, String senderWorkspaceId,
+                                               String senderUserId, String content) {
+        /**
+         * Send message to shared channel.
+         * Message must be visible in all connected workspaces.
+         */
+        SlackConnectChannel channel = getChannel(channelId);
+
+        if (!channel.getConnectedWorkspaceIds().contains(senderWorkspaceId)) {
+            throw new NotConnectedException("Workspace not connected to channel");
+        }
+
+        // Store message in shared keyspace
+        Message message = messages.sendMessage(
+                "shared",  // Special shared keyspace
+                channelId,
+                senderUserId,
+                content,
+                null,
+                null);
+
+        // Sync to all connected workspaces' search indices
+        for (String workspaceId : channel.getConnectedWorkspaceIds()) {
+            syncMessageToWorkspace(message, workspaceId);
+        }
+
+        return message;
+    }
+}
 ```
 
 ---
@@ -1458,6 +1429,30 @@ class SlackConnectService:
 | **Search index size** | Petabytes |
 | **Files uploaded per day** | 1B+ |
 | **Uptime SLA** | 99.99% |
+
+---
+
+## Production Insights
+
+### Vitess Workspace-Level Sharding
+- Slack shards exclusively on `workspace_id`, guaranteeing all data for a single workspace lives on one shard. This eliminates cross-shard joins for the vast majority of queries (channel listing, message fetch, membership checks).
+- Large enterprise workspaces that outgrow a single shard are re-sharded into their own dedicated keyspace via Vitess `MoveTables`, performed online with zero downtime.
+- The `slack_connect` keyspace is intentionally unsharded (replicated) because shared-channel metadata must be visible across workspace boundaries.
+
+### Netty WebSocket Layer — 100K Connections per Host
+- Gateway servers use Netty's `EpollEventLoopGroup` with `SO_REUSEPORT` enabled, allowing multiple acceptor threads to bind to the same port and letting the kernel distribute incoming connections evenly across threads.
+- Each host maintains ~100K concurrent WebSocket connections at steady state. Back-pressure is managed through Netty's `ChannelOption.WRITE_BUFFER_WATER_MARK`; when the write buffer exceeds the high-water mark, the channel becomes non-writable and the gateway stops reading from Redis pub/sub for that connection until the buffer drains.
+- Idle connection reaping runs on a `HashedWheelTimer` with 30-second ticks; connections that miss two consecutive pings are closed server-side to reclaim file descriptors.
+
+### Message Ordering via `ts` Timestamp
+- Every message receives a `ts` value composed of `epoch_seconds.microseconds + 6-char random suffix`. Within a single workspace shard, this value is the **primary ordering key** and doubles as the message's unique ID.
+- Channel history queries (`ORDER BY ts DESC`) and cursor-based pagination (`WHERE ts < ?`) rely entirely on `ts`, making the query plan a simple index range scan on `(workspace_id, channel_id, ts)`.
+- Thread replies carry a `thread_ts` that references the parent message's `ts`. Fetching a full thread is a single index scan: `WHERE (ts = ? OR thread_ts = ?) ORDER BY ts ASC`.
+
+### Operational Considerations
+- Redis pub/sub fan-out is the primary hot path; Slack uses dedicated Redis clusters for pub/sub traffic, separate from session/presence storage, to isolate failure domains.
+- Elasticsearch indices are created per workspace. Workspaces on free plans share multi-tenant indices, while paid workspaces get dedicated indices for stronger isolation and independent scaling.
+- File processing (virus scan, thumbnail generation, text extraction) runs asynchronously via SQS + ECS tasks. A failed processing step writes to a dead-letter queue and does not block the message from being delivered — the file simply shows as "processing" until retried.
 
 ---
 
