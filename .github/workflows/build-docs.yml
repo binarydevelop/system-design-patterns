@@ -286,7 +286,7 @@ jobs:
           ]
 
           export default withMermaid({
-            title: 'Babushkai System Design Patterns',
+            title: 'System Design Patterns',
             description: 'A comprehensive guide to distributed systems and system design patterns',
             
             // Base URL for GitHub Pages (repo name)
@@ -301,9 +301,9 @@ jobs:
               ['link', { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+JP:wght@400;500;700&display=swap' }],
               // favicon href must include base path (base config is at line ~279)
               ['link', { rel: 'icon', type: 'image/svg+xml', href: '/system-design-patterns/logo.svg' }],
-              ['meta', { name: 'theme-color', content: '#E91E63' }],
+              ['meta', { name: 'theme-color', content: '#2563EB' }],
               ['meta', { property: 'og:type', content: 'website' }],
-              ['meta', { property: 'og:title', content: 'Babushkai System Design Patterns' }],
+              ['meta', { property: 'og:title', content: 'System Design Patterns' }],
               ['meta', { property: 'og:description', content: 'A comprehensive guide to distributed systems' }],
               ['meta', { property: 'og:image', content: 'https://babushkai.github.io/system-design-patterns/logo.svg' }],
               ['meta', { name: 'twitter:card', content: 'summary' }],
@@ -353,7 +353,7 @@ jobs:
                   },
                   returnToTopLabel: 'Back to top',
                   footer: {
-                    message: 'Built with depth by the Babushkai community. Released under the MIT License.',
+                    message: 'A practical reference for distributed system design. Released under the MIT License.',
                     copyright: 'Copyright 2024-present Babushkai'
                   },
                 }
@@ -612,7 +612,7 @@ jobs:
 
             themeConfig: {
               logo: '/logo.svg',
-              siteTitle: 'Babushkai System Design Patterns',
+              siteTitle: 'System Design Patterns',
               
               socialLinks: [
                 { icon: 'github', link: 'https://github.com/babushkai/system-design-patterns' }
@@ -641,12 +641,12 @@ jobs:
           mermaid: {
             theme: 'base',
             themeVariables: {
-              primaryColor: '#E91E63',
+              primaryColor: '#2563EB',
               primaryTextColor: '#ffffff',
-              primaryBorderColor: '#C2185B',
-              lineColor: '#FF4081',
-              secondaryColor: '#F8BBD9',
-              tertiaryColor: '#FCE4EC',
+              primaryBorderColor: '#1D4ED8',
+              lineColor: '#0F766E',
+              secondaryColor: '#DBEAFE',
+              tertiaryColor: '#FEF3C7',
               fontFamily: 'Inter, sans-serif',
             },
           },
@@ -664,128 +664,154 @@ jobs:
           layout: home
 
           hero:
-            name: "Babushk<span class='ai-accent'>a<span class='doll-i'>i</span></span>"
-            text: "System Design Patterns"
-            tagline: 18 sections · 116 articles · patterns used at Netflix, Uber, Stripe & Discord
+            name: "<span class='hero-title-line'>System Design</span><span class='hero-title-line'>Patterns</span>"
+            text: "<span class='hero-subtitle-line'>Distributed systems</span><span class='hero-subtitle-line'>field guide</span>"
+            tagline: 116 articles. 18 sections.
             image:
               src: /logo.svg
-              alt: Babushkai
+              alt: System topology mark
             actions:
               - theme: brand
-                text: Get Started
+                text: Start with Foundations
                 link: /01-foundations/01-acid-transactions
               - theme: alt
-                text: View on GitHub
-                link: https://github.com/babushkai/system-design-patterns
+                text: Case Studies
+                link: /08-case-studies/01-twitter
+              - theme: alt
+                text: Download PDF/EPUB
+                link: https://github.com/babushkai/system-design-patterns/releases/latest
 
           features:
             - icon:
                 src: /icons/foundations.svg
               title: Foundations
-              details: ACID transactions, CAP theorem, consistency models, and distributed time
+              details: Transactions, consistency, partitions, time, failure modes, and idempotency.
               link: /01-foundations/01-acid-transactions
             - icon:
                 src: /icons/database.svg
               title: Distributed Databases
-              details: Replication, partitioning, consensus algorithms, and distributed transactions
+              details: Replication, sharding, consensus, indexing, elections, and distributed transactions.
               link: /02-distributed-databases/01-single-leader-replication
             - icon:
                 src: /icons/storage.svg
               title: Storage Engines
-              details: B-trees, LSM trees, SSTables, write-ahead logging, and column storage
+              details: B-trees, LSM trees, SSTables, WAL, bloom filters, encoding, and column storage.
               link: /03-storage-engines/01-b-trees
             - icon:
                 src: /icons/caching.svg
               title: Caching
-              details: Cache strategies, invalidation patterns, and multi-tier caching architectures
+              details: Strategies, invalidation, distributed caches, stampedes, warming, and multi-tier systems.
               link: /04-caching/01-cache-strategies
             - icon:
                 src: /icons/messaging.svg
               title: Messaging Systems
-              details: Message queues, event sourcing, CQRS, and exactly-once delivery semantics
+              details: Queues, pub/sub, ordering, delivery guarantees, event sourcing, CQRS, and outbox flows.
               link: /05-messaging/01-message-queues
             - icon:
                 src: /icons/scaling.svg
               title: Scaling Patterns
-              details: Load balancing, sharding, rate limiting, circuit breakers, and backpressure
+              details: Load balancing, sharding, CDNs, rate limits, circuit breakers, backpressure, and autoscaling.
               link: /06-scaling/01-load-balancing
             - icon:
                 src: /icons/realtime.svg
               title: Real-Time Systems
-              details: Polling, SSE, WebSockets, WebRTC, and presence systems
+              details: Polling, long polling, SSE, WebSockets, WebRTC, and presence.
               link: /07-real-time/01-polling
             - icon:
                 src: /icons/casestudies.svg
               title: Case Studies
-              details: Architecture deep-dives into Twitter, Netflix, Uber, Stripe, and Discord
+              details: Production architecture notes for Twitter, Instagram, Uber, Netflix, Slack, Stripe, and more.
               link: /08-case-studies/01-twitter
             - icon:
                 src: /icons/whitepapers.svg
               title: Whitepapers
-              details: MapReduce, Dynamo, Spanner, Raft, Kafka, and Aurora paper summaries
+              details: MapReduce, Dynamo, Bigtable, Spanner, TAO, Kafka, Raft, Chubby, Aurora, and CockroachDB.
               link: /09-whitepapers/01-mapreduce
             - icon:
                 src: /icons/security.svg
               title: Security
-              details: Authentication, OAuth2, JWT, API security, zero trust, and encryption
+              details: Authentication, OAuth2, JWT, API security, zero trust, and encryption.
               link: /10-security/01-authentication-fundamentals
             - icon:
                 src: /icons/observability.svg
               title: Observability
-              details: Distributed tracing, metrics, monitoring, logging, and alerting
+              details: Tracing, metrics, monitoring, logging, alerting, and operational feedback loops.
               link: /11-observability/01-distributed-tracing
             - icon:
                 src: /icons/servicemesh.svg
               title: Service Mesh
-              details: Service discovery, API gateways, and the sidecar pattern
+              details: Service discovery, API gateways, sidecars, and runtime traffic control.
               link: /12-service-mesh/01-service-discovery
             - icon:
                 src: /icons/datapipelines.svg
               title: Data Pipelines
-              details: Batch processing, stream processing, and lambda/kappa architectures
+              details: Batch processing, stream processing, and lambda/kappa architectures.
               link: /13-data-pipelines/01-batch-processing
             - icon:
                 src: /icons/search.svg
               title: Search Systems
-              details: Inverted indexes, vector search, ranking algorithms, and typeahead
+              details: Inverted indexes, full-text search, vector search, ranking, relevance tuning, and typeahead.
               link: /14-search-systems/01-inverted-indexes
             - icon:
                 src: /icons/deployment.svg
               title: Deployment
-              details: Deployment strategies, blue-green, canary releases, and feature flags
+              details: Deployment strategies, progressive delivery, rollback thinking, and feature flags.
               link: /15-deployment/01-deployment-strategies
             - icon:
                 src: /icons/llm.svg
               title: LLM Systems
-              details: Agents, RAG, prompt engineering, fine-tuning, and context management
+              details: Agents, orchestration, multi-agent systems, RAG, infrastructure, prompts, fine-tuning, and context.
               link: /16-llm-systems/01-agent-fundamentals
             - icon:
                 src: /icons/graphql.svg
               title: GraphQL
-              details: Schema design, resolvers, DataLoader, subscriptions, and federation
+              details: Fundamentals, schema design, resolvers, caching, subscriptions, and federation.
               link: /17-graphql/01-graphql-fundamentals
+            - icon:
+                src: /icons/compound.svg
+              title: Compound Engineering
+              details: AI-native software architecture, coding agents, tool design, context engineering, and workflows.
+              link: /18-compound-engineering/01-compound-engineering-fundamentals
           ---
 
-          <div class="home-stats-bar">
-            <div class="home-stat">
+          <div class="home-overview" aria-label="Repository overview">
+            <a class="home-stat" href="/01-foundations/01-acid-transactions">
               <span class="home-stat-num">18</span>
               <span class="home-stat-label">Sections</span>
-            </div>
-            <div class="home-stat">
+            </a>
+            <a class="home-stat" href="/01-foundations/01-acid-transactions">
               <span class="home-stat-num">116</span>
               <span class="home-stat-label">Articles</span>
-            </div>
-            <div class="home-stat">
+            </a>
+            <a class="home-stat" href="/08-case-studies/01-twitter">
               <span class="home-stat-num">10</span>
               <span class="home-stat-label">Case Studies</span>
-            </div>
-            <div class="home-stat">
+            </a>
+            <a class="home-stat" href="/09-whitepapers/01-mapreduce">
               <span class="home-stat-num">10</span>
               <span class="home-stat-label">Whitepapers</span>
-            </div>
+            </a>
           </div>
 
-          <p class="home-about">Like the layers of a Matryoshka doll, great systems are built layer by layer. 116 articles covering distributed systems fundamentals through production-ready architectures used at Netflix, Uber, Stripe, and Discord.</p>
+          <div class="home-paths" aria-label="Learning paths">
+            <a class="home-path" href="/01-foundations/01-acid-transactions">
+              <span>Start here</span>
+              <strong>Foundations to trade-offs</strong>
+              <small>Build the vocabulary for consistency, failure, time, and distributed guarantees.</small>
+            </a>
+            <a class="home-path" href="/05-messaging/01-message-queues">
+              <span>Build systems</span>
+              <strong>Messaging, caching, scaling</strong>
+              <small>Move from concepts to the patterns that shape production services.</small>
+            </a>
+            <a class="home-path" href="/08-case-studies/01-twitter">
+              <span>Study production</span>
+              <strong>Real-world architectures</strong>
+              <small>Compare concrete systems and the constraints that drove their designs.</small>
+            </a>
+          </div>
+
+          <p class="home-about">Babushkai organizes system design as an engineering reference, not a list of trivia. Each section focuses on the problem, the forces that shape the solution, and the operational trade-offs that show up after launch.</p>
 
           <div class="home-download">
             <a href="https://github.com/babushkai/system-design-patterns/releases/latest" class="download-btn" target="_blank">
@@ -795,21 +821,31 @@ jobs:
           </div>
 
           <style>
-          .home-stats-bar {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 3rem;
-            padding: 2.5rem 0;
-            border-top: 1px solid var(--vp-c-divider);
-            flex-wrap: wrap;
+          .home-overview {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 1px;
+            max-width: 920px;
+            margin: 1.5rem auto 2.25rem;
+            border: 1px solid var(--vp-c-divider);
+            border-radius: 8px;
+            overflow: hidden;
+            background: var(--vp-c-divider);
           }
           .home-stat {
+            display: block;
+            padding: 1.1rem 1rem;
             text-align: center;
+            background: var(--vp-c-bg);
+            text-decoration: none;
+            transition: background 0.15s ease;
+          }
+          .home-stat:hover {
+            background: var(--vp-c-bg-soft);
           }
           .home-stat-num {
             display: block;
-            font-size: 2.5rem;
+            font-size: 2rem;
             font-weight: 700;
             color: var(--vp-c-brand-1);
             line-height: 1;
@@ -820,12 +856,53 @@ jobs:
             margin-top: 0.25rem;
             display: block;
           }
-          .home-about {
-            text-align: center;
-            max-width: 640px;
+          .home-paths {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 1rem;
+            max-width: 920px;
             margin: 0 auto 2rem;
+          }
+          .home-path {
+            min-height: 150px;
+            padding: 1rem;
+            border: 1px solid var(--vp-c-divider);
+            border-radius: 8px;
+            background: var(--vp-c-bg);
+            color: inherit;
+            text-decoration: none;
+            transition: border-color 0.15s ease, background 0.15s ease;
+          }
+          .home-path:hover {
+            border-color: var(--vp-c-brand-1);
+            background: var(--vp-c-bg-soft);
+          }
+          .home-path span {
+            display: block;
+            color: var(--vp-c-brand-2);
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+          }
+          .home-path strong {
+            display: block;
+            margin-top: 0.65rem;
+            color: var(--vp-c-text-1);
+            font-size: 1rem;
+          }
+          .home-path small {
+            display: block;
+            margin-top: 0.5rem;
             color: var(--vp-c-text-2);
-            line-height: 1.8;
+            font-size: 0.875rem;
+            line-height: 1.55;
+          }
+          .home-about {
+            max-width: 760px;
+            margin: 0 auto 2.25rem;
+            color: var(--vp-c-text-2);
+            line-height: 1.75;
+            text-align: center;
           }
           .home-download {
             text-align: center;
@@ -835,57 +912,58 @@ jobs:
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
-            padding: 0.75rem 1.5rem;
-            background: linear-gradient(135deg, #E91E63 0%, #FF4081 100%);
+            padding: 0.7rem 1rem;
+            background: var(--vp-c-brand-1);
             color: white;
             text-decoration: none;
             border-radius: 8px;
             font-weight: 600;
             font-size: 0.9rem;
-            transition: all 0.2s ease;
-            box-shadow: 0 4px 12px rgba(233, 30, 99, 0.3);
+            transition: background 0.15s ease;
           }
           .download-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(233, 30, 99, 0.4);
+            background: var(--vp-c-brand-2);
             color: white;
           }
           .download-btn svg {
             flex-shrink: 0;
           }
+          @media (max-width: 900px) {
+            .home-overview {
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .home-paths {
+              grid-template-columns: 1fr;
+            }
+          }
           @media (max-width: 640px) {
-            .home-stats-bar { gap: 1.5rem; }
-            .home-stat-num { font-size: 2rem; }
+            .home-overview {
+              margin-left: 1rem;
+              margin-right: 1rem;
+            }
+            .home-paths {
+              margin-left: 1rem;
+              margin-right: 1rem;
+            }
+            .home-stat-num {
+              font-size: 1.55rem;
+            }
           }
           </style>
           HOMEPAGE
 
-          # Generate Matryoshka doll logo SVG
+          # Generate system topology logo SVG
           cat > public/logo.svg << 'LOGO'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-            <!-- Outer doll body -->
-            <ellipse cx="50" cy="62" rx="35" ry="38" fill="#E91E63"/>
-            <!-- Outer doll head -->
-            <circle cx="50" cy="28" r="22" fill="#FFCCBC"/>
-            <!-- Hair/headscarf -->
-            <path d="M28 28 Q50 5 72 28 Q72 15 50 10 Q28 15 28 28" fill="#E91E63"/>
-            <!-- Face circle -->
-            <circle cx="50" cy="32" r="15" fill="#FFCCBC"/>
-            <!-- Eyes -->
-            <circle cx="44" cy="30" r="2" fill="#333"/>
-            <circle cx="56" cy="30" r="2" fill="#333"/>
-            <!-- Smile -->
-            <path d="M44 36 Q50 40 56 36" stroke="#333" stroke-width="1.5" fill="none"/>
-            <!-- Blush -->
-            <circle cx="40" cy="35" r="3" fill="#FFAB91" opacity="0.6"/>
-            <circle cx="60" cy="35" r="3" fill="#FFAB91" opacity="0.6"/>
-            <!-- Middle doll (nested) -->
-            <ellipse cx="50" cy="70" rx="20" ry="22" fill="#FF4081"/>
-            <!-- Inner doll (nested) -->
-            <ellipse cx="50" cy="75" rx="12" ry="14" fill="#F8BBD9"/>
-            <!-- Decorative pattern -->
-            <circle cx="50" cy="68" r="6" fill="#FCE4EC"/>
-            <circle cx="50" cy="68" r="3" fill="#E91E63"/>
+            <rect x="10" y="10" width="80" height="80" rx="16" fill="#F8FAFC"/>
+            <path d="M26 31h48M26 50h48M26 69h48M31 26v48M50 26v48M69 26v48" stroke="#CBD5E1" stroke-width="2"/>
+            <circle cx="31" cy="31" r="7" fill="#2563EB"/>
+            <circle cx="69" cy="31" r="7" fill="#0F766E"/>
+            <circle cx="50" cy="50" r="9" fill="#111827"/>
+            <circle cx="31" cy="69" r="7" fill="#D97706"/>
+            <circle cx="69" cy="69" r="7" fill="#2563EB"/>
+            <path d="M37 31h26M36 66l28-29M37 69h26" stroke="#111827" stroke-width="4" stroke-linecap="round"/>
+            <rect x="10" y="10" width="80" height="80" rx="16" fill="none" stroke="#111827" stroke-width="3"/>
           </svg>
           LOGO
 
@@ -894,70 +972,70 @@ jobs:
 
           cat > public/icons/foundations.svg << 'ICON_FOUNDATIONS'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
-            <rect x="6" y="32" width="36" height="8" rx="2" fill="#E91E63"/>
-            <rect x="10" y="22" width="28" height="8" rx="2" fill="#FF4081"/>
-            <rect x="14" y="12" width="20" height="8" rx="2" fill="#F8BBD9"/>
-            <polygon points="24,4 34,12 14,12" fill="#E91E63"/>
+            <rect x="6" y="32" width="36" height="8" rx="2" fill="#2563EB"/>
+            <rect x="10" y="22" width="28" height="8" rx="2" fill="#0F766E"/>
+            <rect x="14" y="12" width="20" height="8" rx="2" fill="#DBEAFE"/>
+            <polygon points="24,4 34,12 14,12" fill="#2563EB"/>
           </svg>
           ICON_FOUNDATIONS
 
           cat > public/icons/database.svg << 'ICON_DATABASE'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
-            <ellipse cx="24" cy="12" rx="16" ry="6" fill="#E91E63"/>
-            <path d="M8 12v8c0 3.3 7.2 6 16 6s16-2.7 16-6v-8" stroke="#E91E63" stroke-width="3" fill="none"/>
-            <ellipse cx="24" cy="20" rx="16" ry="6" fill="none" stroke="#FF4081" stroke-width="2"/>
-            <path d="M8 20v8c0 3.3 7.2 6 16 6s16-2.7 16-6v-8" stroke="#E91E63" stroke-width="3" fill="none"/>
-            <ellipse cx="24" cy="28" rx="16" ry="6" fill="none" stroke="#FF4081" stroke-width="2"/>
-            <path d="M8 28v8c0 3.3 7.2 6 16 6s16-2.7 16-6v-8" stroke="#E91E63" stroke-width="3" fill="none"/>
-            <ellipse cx="24" cy="36" rx="16" ry="6" fill="#F8BBD9"/>
+            <ellipse cx="24" cy="12" rx="16" ry="6" fill="#2563EB"/>
+            <path d="M8 12v8c0 3.3 7.2 6 16 6s16-2.7 16-6v-8" stroke="#2563EB" stroke-width="3" fill="none"/>
+            <ellipse cx="24" cy="20" rx="16" ry="6" fill="none" stroke="#0F766E" stroke-width="2"/>
+            <path d="M8 20v8c0 3.3 7.2 6 16 6s16-2.7 16-6v-8" stroke="#2563EB" stroke-width="3" fill="none"/>
+            <ellipse cx="24" cy="28" rx="16" ry="6" fill="none" stroke="#0F766E" stroke-width="2"/>
+            <path d="M8 28v8c0 3.3 7.2 6 16 6s16-2.7 16-6v-8" stroke="#2563EB" stroke-width="3" fill="none"/>
+            <ellipse cx="24" cy="36" rx="16" ry="6" fill="#DBEAFE"/>
           </svg>
           ICON_DATABASE
 
           cat > public/icons/caching.svg << 'ICON_CACHING'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
-            <circle cx="24" cy="24" r="18" stroke="#E91E63" stroke-width="3" fill="none"/>
-            <circle cx="24" cy="24" r="12" stroke="#FF4081" stroke-width="2" fill="none"/>
-            <circle cx="24" cy="24" r="6" fill="#E91E63"/>
-            <path d="M24 6v4M24 38v4M6 24h4M38 24h4" stroke="#E91E63" stroke-width="2" stroke-linecap="round"/>
-            <path d="M11 11l3 3M34 34l3 3M11 37l3-3M34 14l3-3" stroke="#FF4081" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="24" cy="24" r="18" stroke="#2563EB" stroke-width="3" fill="none"/>
+            <circle cx="24" cy="24" r="12" stroke="#0F766E" stroke-width="2" fill="none"/>
+            <circle cx="24" cy="24" r="6" fill="#2563EB"/>
+            <path d="M24 6v4M24 38v4M6 24h4M38 24h4" stroke="#2563EB" stroke-width="2" stroke-linecap="round"/>
+            <path d="M11 11l3 3M34 34l3 3M11 37l3-3M34 14l3-3" stroke="#0F766E" stroke-width="2" stroke-linecap="round"/>
           </svg>
           ICON_CACHING
 
           cat > public/icons/messaging.svg << 'ICON_MESSAGING'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
-            <rect x="4" y="8" width="20" height="14" rx="3" fill="#E91E63"/>
-            <polygon points="8,22 12,28 16,22" fill="#E91E63"/>
-            <rect x="24" y="18" width="20" height="14" rx="3" fill="#FF4081"/>
-            <polygon points="28,32 32,38 36,32" fill="#FF4081"/>
+            <rect x="4" y="8" width="20" height="14" rx="3" fill="#2563EB"/>
+            <polygon points="8,22 12,28 16,22" fill="#2563EB"/>
+            <rect x="24" y="18" width="20" height="14" rx="3" fill="#0F766E"/>
+            <polygon points="28,32 32,38 36,32" fill="#0F766E"/>
             <path d="M14 14h6M14 18h4" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
             <path d="M34 24h6M34 28h4" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
-            <circle cx="38" cy="12" r="6" fill="#F8BBD9" stroke="#E91E63" stroke-width="2"/>
-            <path d="M36 12h4M38 10v4" stroke="#E91E63" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="38" cy="12" r="6" fill="#DBEAFE" stroke="#2563EB" stroke-width="2"/>
+            <path d="M36 12h4M38 10v4" stroke="#2563EB" stroke-width="2" stroke-linecap="round"/>
           </svg>
           ICON_MESSAGING
 
           cat > public/icons/scaling.svg << 'ICON_SCALING'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
-            <rect x="4" y="28" width="8" height="16" rx="2" fill="#F8BBD9"/>
-            <rect x="14" y="20" width="8" height="24" rx="2" fill="#FF4081"/>
-            <rect x="24" y="12" width="8" height="32" rx="2" fill="#E91E63"/>
-            <rect x="34" y="4" width="8" height="40" rx="2" fill="#C2185B"/>
-            <path d="M6 26l8-8 8 8 8-8 8-8" stroke="#E91E63" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-            <circle cx="6" cy="26" r="2" fill="#E91E63"/>
-            <circle cx="14" cy="18" r="2" fill="#E91E63"/>
-            <circle cx="22" cy="26" r="2" fill="#E91E63"/>
-            <circle cx="30" cy="18" r="2" fill="#E91E63"/>
-            <circle cx="38" cy="10" r="2" fill="#E91E63"/>
+            <rect x="4" y="28" width="8" height="16" rx="2" fill="#DBEAFE"/>
+            <rect x="14" y="20" width="8" height="24" rx="2" fill="#0F766E"/>
+            <rect x="24" y="12" width="8" height="32" rx="2" fill="#2563EB"/>
+            <rect x="34" y="4" width="8" height="40" rx="2" fill="#1E40AF"/>
+            <path d="M6 26l8-8 8 8 8-8 8-8" stroke="#2563EB" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <circle cx="6" cy="26" r="2" fill="#2563EB"/>
+            <circle cx="14" cy="18" r="2" fill="#2563EB"/>
+            <circle cx="22" cy="26" r="2" fill="#2563EB"/>
+            <circle cx="30" cy="18" r="2" fill="#2563EB"/>
+            <circle cx="38" cy="10" r="2" fill="#2563EB"/>
           </svg>
           ICON_SCALING
 
           cat > public/icons/casestudies.svg << 'ICON_CASESTUDIES'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
-            <rect x="6" y="6" width="36" height="36" rx="4" fill="none" stroke="#E91E63" stroke-width="3"/>
-            <rect x="10" y="10" width="12" height="12" rx="2" fill="#E91E63"/>
-            <rect x="26" y="10" width="12" height="12" rx="2" fill="#FF4081"/>
-            <rect x="10" y="26" width="12" height="12" rx="2" fill="#FF4081"/>
-            <rect x="26" y="26" width="12" height="12" rx="2" fill="#F8BBD9"/>
+            <rect x="6" y="6" width="36" height="36" rx="4" fill="none" stroke="#2563EB" stroke-width="3"/>
+            <rect x="10" y="10" width="12" height="12" rx="2" fill="#2563EB"/>
+            <rect x="26" y="10" width="12" height="12" rx="2" fill="#0F766E"/>
+            <rect x="10" y="26" width="12" height="12" rx="2" fill="#0F766E"/>
+            <rect x="26" y="26" width="12" height="12" rx="2" fill="#DBEAFE"/>
             <circle cx="16" cy="16" r="3" fill="#fff"/>
             <circle cx="32" cy="16" r="3" fill="#fff"/>
             <circle cx="16" cy="32" r="3" fill="#fff"/>
@@ -967,158 +1045,168 @@ jobs:
 
           cat > public/icons/whitepapers.svg << 'ICON_WHITEPAPERS'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
-            <path d="M12 4h18l10 10v30a2 2 0 01-2 2H12a2 2 0 01-2-2V6a2 2 0 012-2z" fill="#F8BBD9" stroke="#E91E63" stroke-width="2"/>
-            <path d="M30 4v10h10" fill="#E91E63"/>
-            <path d="M30 4l10 10" stroke="#E91E63" stroke-width="2"/>
-            <path d="M16 20h16M16 26h16M16 32h12" stroke="#E91E63" stroke-width="2" stroke-linecap="round"/>
-            <circle cx="36" cy="36" r="8" fill="#E91E63"/>
+            <path d="M12 4h18l10 10v30a2 2 0 01-2 2H12a2 2 0 01-2-2V6a2 2 0 012-2z" fill="#DBEAFE" stroke="#2563EB" stroke-width="2"/>
+            <path d="M30 4v10h10" fill="#2563EB"/>
+            <path d="M30 4l10 10" stroke="#2563EB" stroke-width="2"/>
+            <path d="M16 20h16M16 26h16M16 32h12" stroke="#2563EB" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="36" cy="36" r="8" fill="#2563EB"/>
             <path d="M33 36h6M36 33v6" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
           </svg>
           ICON_WHITEPAPERS
 
           cat > public/icons/llm.svg << 'ICON_LLM'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
-            <circle cx="24" cy="24" r="18" fill="none" stroke="#E91E63" stroke-width="3"/>
-            <circle cx="24" cy="24" r="10" fill="#F8BBD9"/>
-            <circle cx="24" cy="24" r="4" fill="#E91E63"/>
-            <circle cx="24" cy="8" r="4" fill="#FF4081"/>
-            <circle cx="24" cy="40" r="4" fill="#FF4081"/>
-            <circle cx="10" cy="16" r="3" fill="#FF4081"/>
-            <circle cx="38" cy="16" r="3" fill="#FF4081"/>
-            <circle cx="10" cy="32" r="3" fill="#FF4081"/>
-            <circle cx="38" cy="32" r="3" fill="#FF4081"/>
-            <path d="M24 14v-2M24 36v2M14 18l-2-1M34 18l2-1M14 30l-2 1M34 30l2 1" stroke="#E91E63" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="24" cy="24" r="18" fill="none" stroke="#2563EB" stroke-width="3"/>
+            <circle cx="24" cy="24" r="10" fill="#DBEAFE"/>
+            <circle cx="24" cy="24" r="4" fill="#2563EB"/>
+            <circle cx="24" cy="8" r="4" fill="#0F766E"/>
+            <circle cx="24" cy="40" r="4" fill="#0F766E"/>
+            <circle cx="10" cy="16" r="3" fill="#0F766E"/>
+            <circle cx="38" cy="16" r="3" fill="#0F766E"/>
+            <circle cx="10" cy="32" r="3" fill="#0F766E"/>
+            <circle cx="38" cy="32" r="3" fill="#0F766E"/>
+            <path d="M24 14v-2M24 36v2M14 18l-2-1M34 18l2-1M14 30l-2 1M34 30l2 1" stroke="#2563EB" stroke-width="2" stroke-linecap="round"/>
           </svg>
           ICON_LLM
 
           cat > public/icons/storage.svg << 'ICON_STORAGE'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
             <!-- B-Tree / LSM Tree representation -->
-            <rect x="18" y="4" width="12" height="8" rx="2" fill="#E91E63"/>
-            <rect x="6" y="18" width="12" height="8" rx="2" fill="#FF4081"/>
-            <rect x="30" y="18" width="12" height="8" rx="2" fill="#FF4081"/>
-            <rect x="2" y="32" width="10" height="8" rx="2" fill="#F8BBD9"/>
-            <rect x="14" y="32" width="10" height="8" rx="2" fill="#F8BBD9"/>
-            <rect x="26" y="32" width="10" height="8" rx="2" fill="#F8BBD9"/>
-            <rect x="38" y="32" width="8" height="8" rx="2" fill="#F8BBD9"/>
-            <path d="M24 12v6M12 18v-2l12-4 12 4v2M7 32v-6l5-2M19 32v-6M31 32v-6M42 32v-6l-5-2" stroke="#E91E63" stroke-width="2"/>
+            <rect x="18" y="4" width="12" height="8" rx="2" fill="#2563EB"/>
+            <rect x="6" y="18" width="12" height="8" rx="2" fill="#0F766E"/>
+            <rect x="30" y="18" width="12" height="8" rx="2" fill="#0F766E"/>
+            <rect x="2" y="32" width="10" height="8" rx="2" fill="#DBEAFE"/>
+            <rect x="14" y="32" width="10" height="8" rx="2" fill="#DBEAFE"/>
+            <rect x="26" y="32" width="10" height="8" rx="2" fill="#DBEAFE"/>
+            <rect x="38" y="32" width="8" height="8" rx="2" fill="#DBEAFE"/>
+            <path d="M24 12v6M12 18v-2l12-4 12 4v2M7 32v-6l5-2M19 32v-6M31 32v-6M42 32v-6l-5-2" stroke="#2563EB" stroke-width="2"/>
           </svg>
           ICON_STORAGE
 
           cat > public/icons/realtime.svg << 'ICON_REALTIME'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
             <!-- Lightning bolt / Real-time pulse -->
-            <circle cx="24" cy="24" r="20" fill="none" stroke="#F8BBD9" stroke-width="2"/>
-            <circle cx="24" cy="24" r="14" fill="none" stroke="#FF4081" stroke-width="2"/>
-            <path d="M26 8l-4 14h8l-6 18" fill="#E91E63"/>
-            <path d="M26 8l-4 14h8l-6 18" stroke="#C2185B" stroke-width="1" fill="none"/>
-            <circle cx="8" cy="24" r="3" fill="#E91E63"/>
-            <circle cx="40" cy="24" r="3" fill="#E91E63"/>
-            <path d="M11 24h5M32 24h5" stroke="#E91E63" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="24" cy="24" r="20" fill="none" stroke="#DBEAFE" stroke-width="2"/>
+            <circle cx="24" cy="24" r="14" fill="none" stroke="#0F766E" stroke-width="2"/>
+            <path d="M26 8l-4 14h8l-6 18" fill="#2563EB"/>
+            <path d="M26 8l-4 14h8l-6 18" stroke="#1E40AF" stroke-width="1" fill="none"/>
+            <circle cx="8" cy="24" r="3" fill="#2563EB"/>
+            <circle cx="40" cy="24" r="3" fill="#2563EB"/>
+            <path d="M11 24h5M32 24h5" stroke="#2563EB" stroke-width="2" stroke-linecap="round"/>
           </svg>
           ICON_REALTIME
 
           cat > public/icons/security.svg << 'ICON_SECURITY'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
             <!-- Shield with lock -->
-            <path d="M24 4L6 12v12c0 11 8 18 18 22 10-4 18-11 18-22V12L24 4z" fill="#F8BBD9" stroke="#E91E63" stroke-width="2"/>
-            <path d="M24 4L6 12v12c0 11 8 18 18 22" fill="#FF4081"/>
-            <rect x="17" y="20" width="14" height="12" rx="2" fill="#E91E63"/>
+            <path d="M24 4L6 12v12c0 11 8 18 18 22 10-4 18-11 18-22V12L24 4z" fill="#DBEAFE" stroke="#2563EB" stroke-width="2"/>
+            <path d="M24 4L6 12v12c0 11 8 18 18 22" fill="#0F766E"/>
+            <rect x="17" y="20" width="14" height="12" rx="2" fill="#2563EB"/>
             <circle cx="24" cy="25" r="2" fill="#fff"/>
             <path d="M24 25v4" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
-            <path d="M19 20v-3a5 5 0 0110 0v3" stroke="#E91E63" stroke-width="2" fill="none"/>
+            <path d="M19 20v-3a5 5 0 0110 0v3" stroke="#2563EB" stroke-width="2" fill="none"/>
           </svg>
           ICON_SECURITY
 
           cat > public/icons/observability.svg << 'ICON_OBSERVABILITY'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
             <!-- Eye with metrics -->
-            <ellipse cx="24" cy="24" rx="20" ry="12" fill="none" stroke="#E91E63" stroke-width="2"/>
-            <circle cx="24" cy="24" r="8" fill="#FF4081"/>
-            <circle cx="24" cy="24" r="4" fill="#E91E63"/>
+            <ellipse cx="24" cy="24" rx="20" ry="12" fill="none" stroke="#2563EB" stroke-width="2"/>
+            <circle cx="24" cy="24" r="8" fill="#0F766E"/>
+            <circle cx="24" cy="24" r="4" fill="#2563EB"/>
             <circle cx="24" cy="24" r="2" fill="#fff"/>
-            <path d="M4 24c4-8 11-12 20-12s16 4 20 12" stroke="#E91E63" stroke-width="2" fill="none"/>
-            <path d="M4 24c4 8 11 12 20 12s16-4 20-12" stroke="#E91E63" stroke-width="2" fill="none"/>
+            <path d="M4 24c4-8 11-12 20-12s16 4 20 12" stroke="#2563EB" stroke-width="2" fill="none"/>
+            <path d="M4 24c4 8 11 12 20 12s16-4 20-12" stroke="#2563EB" stroke-width="2" fill="none"/>
             <!-- Metrics lines -->
-            <path d="M6 38l6-4 6 2 6-6 6 4 6-2 6 3" stroke="#FF4081" stroke-width="2" stroke-linecap="round" fill="none"/>
+            <path d="M6 38l6-4 6 2 6-6 6 4 6-2 6 3" stroke="#0F766E" stroke-width="2" stroke-linecap="round" fill="none"/>
           </svg>
           ICON_OBSERVABILITY
 
           cat > public/icons/servicemesh.svg << 'ICON_SERVICEMESH'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
             <!-- Interconnected hexagon nodes -->
-            <circle cx="24" cy="8" r="6" fill="#E91E63"/>
-            <circle cx="8" cy="24" r="6" fill="#FF4081"/>
-            <circle cx="40" cy="24" r="6" fill="#FF4081"/>
-            <circle cx="12" cy="40" r="6" fill="#F8BBD9" stroke="#E91E63" stroke-width="2"/>
-            <circle cx="36" cy="40" r="6" fill="#F8BBD9" stroke="#E91E63" stroke-width="2"/>
-            <circle cx="24" cy="28" r="6" fill="#E91E63"/>
+            <circle cx="24" cy="8" r="6" fill="#2563EB"/>
+            <circle cx="8" cy="24" r="6" fill="#0F766E"/>
+            <circle cx="40" cy="24" r="6" fill="#0F766E"/>
+            <circle cx="12" cy="40" r="6" fill="#DBEAFE" stroke="#2563EB" stroke-width="2"/>
+            <circle cx="36" cy="40" r="6" fill="#DBEAFE" stroke="#2563EB" stroke-width="2"/>
+            <circle cx="24" cy="28" r="6" fill="#2563EB"/>
             <!-- Connection lines -->
-            <path d="M24 14v8M14 24h4M30 24h4M18 34l4-4M28 32l4 4M12 34v-4M36 34v-4" stroke="#E91E63" stroke-width="2" stroke-linecap="round"/>
-            <path d="M20 12l-8 8M28 12l8 8" stroke="#FF4081" stroke-width="2" stroke-linecap="round"/>
+            <path d="M24 14v8M14 24h4M30 24h4M18 34l4-4M28 32l4 4M12 34v-4M36 34v-4" stroke="#2563EB" stroke-width="2" stroke-linecap="round"/>
+            <path d="M20 12l-8 8M28 12l8 8" stroke="#0F766E" stroke-width="2" stroke-linecap="round"/>
           </svg>
           ICON_SERVICEMESH
 
           cat > public/icons/datapipelines.svg << 'ICON_DATAPIPELINES'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
             <!-- Data flow pipeline -->
-            <rect x="2" y="18" width="10" height="12" rx="2" fill="#E91E63"/>
-            <rect x="36" y="18" width="10" height="12" rx="2" fill="#E91E63"/>
-            <rect x="19" y="8" width="10" height="10" rx="2" fill="#FF4081"/>
-            <rect x="19" y="30" width="10" height="10" rx="2" fill="#FF4081"/>
+            <rect x="2" y="18" width="10" height="12" rx="2" fill="#2563EB"/>
+            <rect x="36" y="18" width="10" height="12" rx="2" fill="#2563EB"/>
+            <rect x="19" y="8" width="10" height="10" rx="2" fill="#0F766E"/>
+            <rect x="19" y="30" width="10" height="10" rx="2" fill="#0F766E"/>
             <!-- Arrows/Flow -->
-            <path d="M12 24h7M29 13h-5l-5 5 5 6h5M29 35h-5l-5-5 5-6h5" stroke="#E91E63" stroke-width="2" fill="none"/>
-            <path d="M29 24h7" stroke="#E91E63" stroke-width="2"/>
-            <polygon points="34,21 34,27 38,24" fill="#E91E63"/>
+            <path d="M12 24h7M29 13h-5l-5 5 5 6h5M29 35h-5l-5-5 5-6h5" stroke="#2563EB" stroke-width="2" fill="none"/>
+            <path d="M29 24h7" stroke="#2563EB" stroke-width="2"/>
+            <polygon points="34,21 34,27 38,24" fill="#2563EB"/>
             <!-- Processing circles -->
-            <circle cx="24" cy="24" r="4" fill="#F8BBD9" stroke="#E91E63" stroke-width="2"/>
+            <circle cx="24" cy="24" r="4" fill="#DBEAFE" stroke="#2563EB" stroke-width="2"/>
           </svg>
           ICON_DATAPIPELINES
 
           cat > public/icons/search.svg << 'ICON_SEARCH'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
             <!-- Magnifying glass over document -->
-            <rect x="6" y="4" width="24" height="32" rx="2" fill="#F8BBD9" stroke="#E91E63" stroke-width="2"/>
-            <path d="M12 12h12M12 18h12M12 24h8" stroke="#FF4081" stroke-width="2" stroke-linecap="round"/>
-            <circle cx="32" cy="32" r="10" fill="#fff" stroke="#E91E63" stroke-width="3"/>
-            <circle cx="32" cy="32" r="5" fill="#F8BBD9"/>
-            <path d="M39 39l6 6" stroke="#E91E63" stroke-width="3" stroke-linecap="round"/>
+            <rect x="6" y="4" width="24" height="32" rx="2" fill="#DBEAFE" stroke="#2563EB" stroke-width="2"/>
+            <path d="M12 12h12M12 18h12M12 24h8" stroke="#0F766E" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="32" cy="32" r="10" fill="#fff" stroke="#2563EB" stroke-width="3"/>
+            <circle cx="32" cy="32" r="5" fill="#DBEAFE"/>
+            <path d="M39 39l6 6" stroke="#2563EB" stroke-width="3" stroke-linecap="round"/>
           </svg>
           ICON_SEARCH
 
           cat > public/icons/deployment.svg << 'ICON_DEPLOYMENT'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
             <!-- Rocket deployment -->
-            <path d="M24 4c-6 6-8 14-8 22h16c0-8-2-16-8-22z" fill="#E91E63"/>
-            <ellipse cx="24" cy="26" rx="8" ry="3" fill="#FF4081"/>
-            <circle cx="24" cy="16" r="4" fill="#F8BBD9"/>
-            <circle cx="24" cy="16" r="2" fill="#E91E63"/>
+            <path d="M24 4c-6 6-8 14-8 22h16c0-8-2-16-8-22z" fill="#2563EB"/>
+            <ellipse cx="24" cy="26" rx="8" ry="3" fill="#0F766E"/>
+            <circle cx="24" cy="16" r="4" fill="#DBEAFE"/>
+            <circle cx="24" cy="16" r="2" fill="#2563EB"/>
             <!-- Rocket fins -->
-            <path d="M16 26l-4 8h6z" fill="#FF4081"/>
-            <path d="M32 26l4 8h-6z" fill="#FF4081"/>
+            <path d="M16 26l-4 8h6z" fill="#0F766E"/>
+            <path d="M32 26l4 8h-6z" fill="#0F766E"/>
             <!-- Exhaust flames -->
-            <path d="M20 34l4 10 4-10" fill="#F8BBD9"/>
-            <path d="M22 34l2 6 2-6" fill="#FF4081"/>
+            <path d="M20 34l4 10 4-10" fill="#DBEAFE"/>
+            <path d="M22 34l2 6 2-6" fill="#0F766E"/>
             <!-- Deployment arrow -->
-            <path d="M38 18v8M34 22l4 4 4-4" stroke="#E91E63" stroke-width="2" stroke-linecap="round"/>
+            <path d="M38 18v8M34 22l4 4 4-4" stroke="#2563EB" stroke-width="2" stroke-linecap="round"/>
           </svg>
           ICON_DEPLOYMENT
 
           cat > public/icons/graphql.svg << 'ICON_GRAPHQL'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
             <!-- GraphQL logo inspired -->
-            <polygon points="24,4 42,14 42,34 24,44 6,34 6,14" fill="none" stroke="#E91E63" stroke-width="2"/>
-            <polygon points="24,10 36,17 36,31 24,38 12,31 12,17" fill="#F8BBD9" stroke="#E91E63" stroke-width="2"/>
-            <circle cx="24" cy="4" r="3" fill="#E91E63"/>
-            <circle cx="42" cy="14" r="3" fill="#FF4081"/>
-            <circle cx="42" cy="34" r="3" fill="#FF4081"/>
-            <circle cx="24" cy="44" r="3" fill="#E91E63"/>
-            <circle cx="6" cy="34" r="3" fill="#FF4081"/>
-            <circle cx="6" cy="14" r="3" fill="#FF4081"/>
-            <circle cx="24" cy="24" r="5" fill="#E91E63"/>
-            <path d="M24 10v8M24 30v8M12 17l8 4M28 27l8 4M12 31l8-4M28 21l8-4" stroke="#E91E63" stroke-width="1.5"/>
+            <polygon points="24,4 42,14 42,34 24,44 6,34 6,14" fill="none" stroke="#2563EB" stroke-width="2"/>
+            <polygon points="24,10 36,17 36,31 24,38 12,31 12,17" fill="#DBEAFE" stroke="#2563EB" stroke-width="2"/>
+            <circle cx="24" cy="4" r="3" fill="#2563EB"/>
+            <circle cx="42" cy="14" r="3" fill="#0F766E"/>
+            <circle cx="42" cy="34" r="3" fill="#0F766E"/>
+            <circle cx="24" cy="44" r="3" fill="#2563EB"/>
+            <circle cx="6" cy="34" r="3" fill="#0F766E"/>
+            <circle cx="6" cy="14" r="3" fill="#0F766E"/>
+            <circle cx="24" cy="24" r="5" fill="#2563EB"/>
+            <path d="M24 10v8M24 30v8M12 17l8 4M28 27l8 4M12 31l8-4M28 21l8-4" stroke="#2563EB" stroke-width="1.5"/>
           </svg>
           ICON_GRAPHQL
+
+          cat > public/icons/compound.svg << 'ICON_COMPOUND'
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+            <rect x="6" y="6" width="36" height="36" rx="6" fill="#F8FAFC" stroke="#111827" stroke-width="2"/>
+            <path d="M14 16h12M14 24h20M14 32h10" stroke="#2563EB" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="34" cy="16" r="4" fill="#0F766E"/>
+            <circle cx="30" cy="32" r="4" fill="#D97706"/>
+            <path d="M30 20l-4 8M34 20l-4 8" stroke="#111827" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          ICON_COMPOUND
 
           # Generate 404 page
           cat > 404.md << 'NOTFOUND'
@@ -1131,9 +1219,9 @@ jobs:
           </script>
 
           <div class="not-found">
-            <img :src="withBase('/logo.svg')" alt="Babushkai" class="not-found-logo" />
+            <img :src="withBase('/logo.svg')" alt="System topology mark" class="not-found-logo" />
             <h1>404</h1>
-            <p>This layer of the doll doesn't exist yet.</p>
+            <p>This route is not in the system map.</p>
             <a :href="withBase('/')" class="not-found-btn">Back to Home</a>
           </div>
           NOTFOUND
@@ -1192,83 +1280,105 @@ jobs:
           THEME
 
           cat > .vitepress/theme/custom.css << 'CUSTOMCSS'
-          /* Pink theme to match Matryoshka logo */
+          /* Documentation interface theme */
           :root {
             --vp-font-family-base: 'Inter', sans-serif;
             --vp-font-family-mono: 'JetBrains Mono', monospace;
-            --vp-c-brand-1: #E91E63;
-            --vp-c-brand-2: #D81B60;
-            --vp-c-brand-3: #C2185B;
-            --vp-c-brand-soft: rgba(233, 30, 99, 0.14);
-            
-            /* Hero gradient */
+            --vp-c-brand-1: #2563EB;
+            --vp-c-brand-2: #0F766E;
+            --vp-c-brand-3: #D97706;
+            --vp-c-brand-soft: rgba(37, 99, 235, 0.12);
+            --sdp-c-ink: #111827;
+            --sdp-c-data: #2563EB;
+            --sdp-c-stream: #0F766E;
+            --sdp-c-decision: #D97706;
+
             --vp-home-hero-name-color: transparent;
-            --vp-home-hero-name-background: linear-gradient(135deg, #E91E63 0%, #FF4081 100%);
-            
-            /* Button colors */
-            --vp-button-brand-border: #E91E63;
+            --vp-home-hero-name-background: linear-gradient(135deg, #2563EB 0%, #0F766E 58%, #D97706 100%);
+
+            --vp-button-brand-border: #2563EB;
             --vp-button-brand-text: #fff;
-            --vp-button-brand-bg: #E91E63;
-            --vp-button-brand-hover-border: #D81B60;
+            --vp-button-brand-bg: #2563EB;
+            --vp-button-brand-hover-border: #0F766E;
             --vp-button-brand-hover-text: #fff;
-            --vp-button-brand-hover-bg: #D81B60;
-            --vp-button-brand-active-border: #C2185B;
+            --vp-button-brand-hover-bg: #0F766E;
+            --vp-button-brand-active-border: #1D4ED8;
             --vp-button-brand-active-text: #fff;
-            --vp-button-brand-active-bg: #C2185B;
+            --vp-button-brand-active-bg: #1D4ED8;
           }
 
           .dark {
-            --vp-c-brand-1: #FF4081;
-            --vp-c-brand-2: #E91E63;
-            --vp-c-brand-3: #F8BBD9;
-            --vp-c-brand-soft: rgba(255, 64, 129, 0.16);
-            
-            --vp-button-brand-border: #FF4081;
+            --vp-c-brand-1: #60A5FA;
+            --vp-c-brand-2: #2DD4BF;
+            --vp-c-brand-3: #FBBF24;
+            --vp-c-brand-soft: rgba(96, 165, 250, 0.16);
+            --sdp-c-ink: #F8FAFC;
+            --sdp-c-data: #60A5FA;
+            --sdp-c-stream: #2DD4BF;
+            --sdp-c-decision: #FBBF24;
+
+            --vp-button-brand-border: #60A5FA;
             --vp-button-brand-text: #fff;
-            --vp-button-brand-bg: #FF4081;
-            --vp-button-brand-hover-border: #E91E63;
+            --vp-button-brand-bg: #2563EB;
+            --vp-button-brand-hover-border: #0F766E;
             --vp-button-brand-hover-text: #fff;
-            --vp-button-brand-hover-bg: #E91E63;
+            --vp-button-brand-hover-bg: #0F766E;
           }
 
-          /* AI accent styling in Babushkai - "i" as Matryoshka doll */
-          .ai-accent {
-            color: var(--vp-c-brand-1);
-            font-weight: inherit;
-            font-style: italic;
+          .VPHero .name,
+          .VPHero .text {
+            letter-spacing: 0;
           }
 
-          .doll-i {
-            display: inline-block;
-            position: relative;
-            font-style: normal;
-            color: transparent;
-            width: 0.5em;
+          .hero-title-line {
+            display: block;
           }
 
-          .doll-i::before {
-            content: '';
-            position: absolute;
-            top: 0.15em;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 0.35em;
-            height: 0.35em;
-            background: #FFCCBC;
-            border-radius: 50%;
-            border: 2px solid #E91E63;
+          .hero-subtitle-line {
+            display: block;
           }
 
-          .doll-i::after {
-            content: '';
-            position: absolute;
-            top: 0.5em;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 0.45em;
-            height: 0.6em;
-            background: #E91E63;
-            border-radius: 50% 50% 45% 45%;
+          .VPHome {
+            overflow-x: hidden;
+          }
+
+          .VPHero .text {
+            max-width: 820px;
+          }
+
+          .VPHero .tagline {
+            max-width: 700px;
+          }
+
+          .VPHero .image-src {
+            max-width: 220px;
+          }
+
+          .VPButton {
+            border-radius: 8px !important;
+          }
+
+          .VPButton.brand {
+            box-shadow: none;
+          }
+
+          .VPHero .actions {
+            flex-wrap: wrap;
+          }
+
+          .VPHomeFeatures .container {
+            max-width: 1160px;
+          }
+
+          .VPFeature {
+            border-radius: 8px !important;
+            border-color: var(--vp-c-divider) !important;
+            transition: border-color 0.15s ease, background 0.15s ease;
+          }
+
+          .VPFeature:hover {
+            border-color: var(--vp-c-brand-1) !important;
+            background: var(--vp-c-bg-soft);
           }
 
           /* Custom styled tip/warning/info containers */
@@ -1306,15 +1416,15 @@ jobs:
             height: 18px;
           }
 
-          /* Code blocks with pink accent */
+          /* Code blocks with a restrained accent */
           .vp-doc div[class*='language-'] {
-            border-left: 3px solid var(--vp-c-brand-1);
+            border-left: 2px solid var(--vp-c-brand-1);
           }
 
           /* Table header styling */
           .vp-doc table th {
-            background-color: var(--vp-c-brand-soft);
-            border-bottom: 2px solid var(--vp-c-brand-1);
+            background-color: var(--vp-c-bg-soft);
+            border-bottom: 2px solid var(--vp-c-divider);
           }
 
           /* Link styling */
@@ -1340,18 +1450,8 @@ jobs:
           .vp-doc h2#tl-dr,
           .vp-doc h2#tldr {
             color: var(--vp-c-brand-1);
-            border-bottom: 2px solid var(--vp-c-brand-1);
+            border-bottom: 2px solid var(--vp-c-divider);
             padding-bottom: 0.5rem;
-          }
-
-          /* Feature cards on homepage - add subtle animation */
-          .VPFeature {
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-          }
-
-          .VPFeature:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 24px rgba(233, 30, 99, 0.15);
           }
 
           /* Footer branding */
@@ -1430,7 +1530,7 @@ jobs:
 
           /* Nav accent border */
           .VPNav {
-            border-bottom: 2px solid var(--vp-c-brand-1) !important;
+            border-bottom: 1px solid var(--vp-c-divider) !important;
           }
 
           /* 404 page */
@@ -1479,6 +1579,115 @@ jobs:
             border-radius: 8px;
             border: 1px solid var(--vp-c-divider);
             overflow-x: auto;
+          }
+
+          @media (max-width: 640px) {
+            html,
+            body {
+              overflow-x: hidden;
+            }
+
+            .VPHomeHero,
+            .VPHomeFeatures {
+              overflow-x: hidden;
+            }
+
+            .VPNavBarTitle {
+              min-width: 0;
+            }
+
+            .VPNavBarTitle .title {
+              max-width: 190px;
+              overflow: hidden;
+              text-overflow: ellipsis;
+              font-size: 0.875rem;
+              white-space: nowrap;
+            }
+
+            .VPHero .container,
+            .VPHero .main,
+            .VPHero .name,
+            .VPHero .text,
+            .VPHero .tagline {
+              width: 100%;
+              max-width: calc(100vw - 48px) !important;
+              box-sizing: border-box;
+            }
+
+            .VPHero .name,
+            .VPHero .text,
+            .VPHero .tagline {
+              margin-left: auto;
+              margin-right: auto;
+              overflow-wrap: anywhere;
+              overflow: visible !important;
+              white-space: normal;
+            }
+
+            .VPHero .name,
+            .VPHero .text {
+              max-width: 330px;
+            }
+
+            .VPHero .name {
+              font-size: 2.25rem !important;
+              line-height: 1.08;
+            }
+
+            .VPHero .text {
+              font-size: 1.55rem !important;
+              line-height: 1.15;
+            }
+
+            .VPHero .actions {
+              width: 100%;
+              max-width: calc(100vw - 48px);
+              flex-direction: column;
+              justify-content: center;
+              align-items: center;
+              gap: 0.75rem;
+            }
+
+            .VPHero .action {
+              margin: 0 !important;
+              padding-top: 0 !important;
+            }
+
+            .VPButton {
+              width: min(100%, 260px);
+              min-width: 0;
+              white-space: normal;
+            }
+
+            .VPHomeFeatures .container,
+            .VPHomeFeatures .items,
+            .VPHomeFeatures .item,
+            .VPFeature {
+              width: 100% !important;
+              max-width: calc(100vw - 48px) !important;
+              box-sizing: border-box;
+            }
+
+            .VPHomeFeatures .container {
+              padding-left: 0 !important;
+              padding-right: 0 !important;
+            }
+
+            .VPHomeFeatures .items {
+              margin-left: auto !important;
+              margin-right: auto !important;
+            }
+
+            .VPFeature .title,
+            .VPFeature .details {
+              overflow: visible !important;
+              overflow-wrap: anywhere;
+            }
+
+            .VPFeature .details {
+              max-width: 260px;
+              line-height: 1.55;
+            }
           }
 
           CUSTOMCSS
