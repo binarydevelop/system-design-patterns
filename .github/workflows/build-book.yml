@@ -151,7 +151,7 @@ jobs:
             "07-real-time/03-server-sent-events.md"
             "07-real-time/04-websockets.md"
             "07-real-time/05-webrtc.md"
-            "07-real-time/06-presence-systems.md"
+            "07-real-time/06-presence.md"
             # Part 8: Case Studies
             "08-case-studies/01-twitter.md"
             "08-case-studies/02-instagram.md"

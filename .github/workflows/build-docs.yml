@@ -666,7 +666,7 @@ jobs:
           hero:
             name: "Babushk<span class='ai-accent'>a<span class='doll-i'>i</span></span>"
             text: "System Design Patterns"
-            tagline: 18 sections · 118 articles · patterns used at Netflix, Uber, Stripe & Discord
+            tagline: 18 sections · 116 articles · patterns used at Netflix, Uber, Stripe & Discord
             image:
               src: /logo.svg
               alt: Babushkai
@@ -772,7 +772,7 @@ jobs:
               <span class="home-stat-label">Sections</span>
             </div>
             <div class="home-stat">
-              <span class="home-stat-num">118</span>
+              <span class="home-stat-num">116</span>
               <span class="home-stat-label">Articles</span>
             </div>
             <div class="home-stat">
@@ -785,7 +785,7 @@ jobs:
             </div>
           </div>
 
-          <p class="home-about">Like the layers of a Matryoshka doll, great systems are built layer by layer. 118 articles covering distributed systems fundamentals through production-ready architectures used at Netflix, Uber, Stripe, and Discord.</p>
+          <p class="home-about">Like the layers of a Matryoshka doll, great systems are built layer by layer. 116 articles covering distributed systems fundamentals through production-ready architectures used at Netflix, Uber, Stripe, and Discord.</p>
 
           <div class="home-download">
             <a href="https://github.com/babushkai/system-design-patterns/releases/latest" class="download-btn" target="_blank">

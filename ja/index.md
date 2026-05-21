@@ -4,7 +4,7 @@ layout: home
 hero:
   name: "Babushkai"
   text: "システム設計パターン"
-  tagline: 18セクション · 118記事 · Netflix、Uber、Stripe、Discordで使用されるパターン
+  tagline: 18セクション · 116記事 · Netflix、Uber、Stripe、Discordで使用されるパターン
   image:
     src: /logo.svg
     alt: Babushkai
@@ -79,7 +79,7 @@ features:
     <span class="stat-label">セクション</span>
   </div>
   <div class="stat-item">
-    <span class="stat-number">118</span>
+    <span class="stat-number">116</span>
     <span class="stat-label">記事</span>
   </div>
   <div class="stat-item">
