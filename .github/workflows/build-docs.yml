@@ -661,292 +661,405 @@ jobs:
           # Generate English homepage
           cat > index.md << 'HOMEPAGE'
           ---
-          layout: home
-
-          hero:
-            name: "<span class='hero-title-line'>System Design</span><span class='hero-title-line'>Patterns</span>"
-            text: "<span class='hero-subtitle-line'>Distributed systems</span><span class='hero-subtitle-line'>field guide</span>"
-            tagline: 116 articles. 18 sections.
-            image:
-              src: /logo.svg
-              alt: System topology mark
-            actions:
-              - theme: brand
-                text: Start with Foundations
-                link: /01-foundations/01-acid-transactions
-              - theme: alt
-                text: Case Studies
-                link: /08-case-studies/01-twitter
-              - theme: alt
-                text: Download PDF/EPUB
-                link: https://github.com/babushkai/system-design-patterns/releases/latest
-
-          features:
-            - icon:
-                src: /icons/foundations.svg
-              title: Foundations
-              details: Transactions, consistency, partitions, time, failure modes, and idempotency.
-              link: /01-foundations/01-acid-transactions
-            - icon:
-                src: /icons/database.svg
-              title: Distributed Databases
-              details: Replication, sharding, consensus, indexing, elections, and distributed transactions.
-              link: /02-distributed-databases/01-single-leader-replication
-            - icon:
-                src: /icons/storage.svg
-              title: Storage Engines
-              details: B-trees, LSM trees, SSTables, WAL, bloom filters, encoding, and column storage.
-              link: /03-storage-engines/01-b-trees
-            - icon:
-                src: /icons/caching.svg
-              title: Caching
-              details: Strategies, invalidation, distributed caches, stampedes, warming, and multi-tier systems.
-              link: /04-caching/01-cache-strategies
-            - icon:
-                src: /icons/messaging.svg
-              title: Messaging Systems
-              details: Queues, pub/sub, ordering, delivery guarantees, event sourcing, CQRS, and outbox flows.
-              link: /05-messaging/01-message-queues
-            - icon:
-                src: /icons/scaling.svg
-              title: Scaling Patterns
-              details: Load balancing, sharding, CDNs, rate limits, circuit breakers, backpressure, and autoscaling.
-              link: /06-scaling/01-load-balancing
-            - icon:
-                src: /icons/realtime.svg
-              title: Real-Time Systems
-              details: Polling, long polling, SSE, WebSockets, WebRTC, and presence.
-              link: /07-real-time/01-polling
-            - icon:
-                src: /icons/casestudies.svg
-              title: Case Studies
-              details: Production architecture notes for Twitter, Instagram, Uber, Netflix, Slack, Stripe, and more.
-              link: /08-case-studies/01-twitter
-            - icon:
-                src: /icons/whitepapers.svg
-              title: Whitepapers
-              details: MapReduce, Dynamo, Bigtable, Spanner, TAO, Kafka, Raft, Chubby, Aurora, and CockroachDB.
-              link: /09-whitepapers/01-mapreduce
-            - icon:
-                src: /icons/security.svg
-              title: Security
-              details: Authentication, OAuth2, JWT, API security, zero trust, and encryption.
-              link: /10-security/01-authentication-fundamentals
-            - icon:
-                src: /icons/observability.svg
-              title: Observability
-              details: Tracing, metrics, monitoring, logging, alerting, and operational feedback loops.
-              link: /11-observability/01-distributed-tracing
-            - icon:
-                src: /icons/servicemesh.svg
-              title: Service Mesh
-              details: Service discovery, API gateways, sidecars, and runtime traffic control.
-              link: /12-service-mesh/01-service-discovery
-            - icon:
-                src: /icons/datapipelines.svg
-              title: Data Pipelines
-              details: Batch processing, stream processing, and lambda/kappa architectures.
-              link: /13-data-pipelines/01-batch-processing
-            - icon:
-                src: /icons/search.svg
-              title: Search Systems
-              details: Inverted indexes, full-text search, vector search, ranking, relevance tuning, and typeahead.
-              link: /14-search-systems/01-inverted-indexes
-            - icon:
-                src: /icons/deployment.svg
-              title: Deployment
-              details: Deployment strategies, progressive delivery, rollback thinking, and feature flags.
-              link: /15-deployment/01-deployment-strategies
-            - icon:
-                src: /icons/llm.svg
-              title: LLM Systems
-              details: Agents, orchestration, multi-agent systems, RAG, infrastructure, prompts, fine-tuning, and context.
-              link: /16-llm-systems/01-agent-fundamentals
-            - icon:
-                src: /icons/graphql.svg
-              title: GraphQL
-              details: Fundamentals, schema design, resolvers, caching, subscriptions, and federation.
-              link: /17-graphql/01-graphql-fundamentals
-            - icon:
-                src: /icons/compound.svg
-              title: Compound Engineering
-              details: AI-native software architecture, coding agents, tool design, context engineering, and workflows.
-              link: /18-compound-engineering/01-compound-engineering-fundamentals
+          layout: page
+          aside: false
+          sidebar: false
+          title: System Design Patterns
           ---
 
-          <div class="home-overview" aria-label="Repository overview">
-            <a class="home-stat" href="/01-foundations/01-acid-transactions">
-              <span class="home-stat-num">18</span>
-              <span class="home-stat-label">Sections</span>
-            </a>
-            <a class="home-stat" href="/01-foundations/01-acid-transactions">
-              <span class="home-stat-num">116</span>
-              <span class="home-stat-label">Articles</span>
-            </a>
-            <a class="home-stat" href="/08-case-studies/01-twitter">
-              <span class="home-stat-num">10</span>
-              <span class="home-stat-label">Case Studies</span>
-            </a>
-            <a class="home-stat" href="/09-whitepapers/01-mapreduce">
-              <span class="home-stat-num">10</span>
-              <span class="home-stat-label">Whitepapers</span>
-            </a>
-          </div>
+          <main class="sdp-shell">
+            <section class="sdp-cover" aria-labelledby="sdp-title">
+              <div class="sdp-cover-main">
+                <p class="sdp-kicker">Distributed systems reference</p>
+                <h1 id="sdp-title">Design decisions, failure modes, production trade-offs.</h1>
+                <p class="sdp-lede">A dense field guide for building and reviewing system architectures. Start with guarantees, move through storage and messaging, then compare real production systems and papers.</p>
+                <div class="sdp-cover-actions" aria-label="Primary paths">
+                  <a class="sdp-primary" href="/01-foundations/01-acid-transactions">Start the guide</a>
+                  <a href="/08-case-studies/01-twitter">Production case studies</a>
+                  <a href="https://github.com/babushkai/system-design-patterns/releases/latest" target="_blank">PDF / EPUB</a>
+                </div>
+              </div>
+              <aside class="sdp-system-board" aria-label="System map">
+                <div class="sdp-board-header">
+                  <span>System map</span>
+                  <strong>18 sections</strong>
+                </div>
+                <div class="sdp-node-grid">
+                  <a class="sdp-node is-core" href="/01-foundations/01-acid-transactions">Foundations</a>
+                  <a class="sdp-node is-data" href="/02-distributed-databases/01-single-leader-replication">Replication</a>
+                  <a class="sdp-node is-data" href="/03-storage-engines/01-b-trees">Storage</a>
+                  <a class="sdp-node is-runtime" href="/04-caching/01-cache-strategies">Caching</a>
+                  <a class="sdp-node is-runtime" href="/05-messaging/01-message-queues">Messaging</a>
+                  <a class="sdp-node is-runtime" href="/06-scaling/01-load-balancing">Scaling</a>
+                  <a class="sdp-node is-edge" href="/07-real-time/01-polling">Real-time</a>
+                  <a class="sdp-node is-edge" href="/10-security/01-authentication-fundamentals">Security</a>
+                  <a class="sdp-node is-edge" href="/11-observability/01-distributed-tracing">Ops</a>
+                </div>
+                <div class="sdp-board-footer">
+                  <span>116 articles</span>
+                  <span>10 case studies</span>
+                  <span>10 papers</span>
+                </div>
+              </aside>
+            </section>
 
-          <div class="home-paths" aria-label="Learning paths">
-            <a class="home-path" href="/01-foundations/01-acid-transactions">
-              <span>Start here</span>
-              <strong>Foundations to trade-offs</strong>
-              <small>Build the vocabulary for consistency, failure, time, and distributed guarantees.</small>
-            </a>
-            <a class="home-path" href="/05-messaging/01-message-queues">
-              <span>Build systems</span>
-              <strong>Messaging, caching, scaling</strong>
-              <small>Move from concepts to the patterns that shape production services.</small>
-            </a>
-            <a class="home-path" href="/08-case-studies/01-twitter">
-              <span>Study production</span>
-              <strong>Real-world architectures</strong>
-              <small>Compare concrete systems and the constraints that drove their designs.</small>
-            </a>
-          </div>
+            <section class="sdp-lanes" aria-label="Learning lanes">
+              <a href="/01-foundations/01-acid-transactions">
+                <span>01</span>
+                <strong>Reason from guarantees</strong>
+                <small>ACID, CAP, consistency, clocks, partitions, idempotency.</small>
+              </a>
+              <a href="/04-caching/01-cache-strategies">
+                <span>02</span>
+                <strong>Choose the data path</strong>
+                <small>Storage engines, caches, queues, streams, indexes, search.</small>
+              </a>
+              <a href="/06-scaling/01-load-balancing">
+                <span>03</span>
+                <strong>Operate under pressure</strong>
+                <small>Scaling, real-time delivery, security, observability, deployment.</small>
+              </a>
+              <a href="/08-case-studies/01-twitter">
+                <span>04</span>
+                <strong>Compare production systems</strong>
+                <small>Case studies, whitepapers, and modern LLM architecture patterns.</small>
+              </a>
+            </section>
 
-          <p class="home-about">Babushkai organizes system design as an engineering reference, not a list of trivia. Each section focuses on the problem, the forces that shape the solution, and the operational trade-offs that show up after launch.</p>
+            <section class="sdp-section-matrix" aria-labelledby="sdp-matrix-title">
+              <div class="sdp-section-heading">
+                <p class="sdp-kicker">Browse by decision area</p>
+                <h2 id="sdp-matrix-title">Architecture map</h2>
+              </div>
+              <div class="sdp-matrix">
+                <a href="/01-foundations/01-acid-transactions"><span>01</span><strong>Foundations</strong><small>Transactions, consistency, time, failure, partitions</small></a>
+                <a href="/02-distributed-databases/01-single-leader-replication"><span>02</span><strong>Distributed Databases</strong><small>Replication, sharding, indexes, consensus</small></a>
+                <a href="/03-storage-engines/01-b-trees"><span>03</span><strong>Storage Engines</strong><small>B-trees, LSM, WAL, encoding, bloom filters</small></a>
+                <a href="/04-caching/01-cache-strategies"><span>04</span><strong>Caching</strong><small>Invalidation, stampedes, warming, multi-tier caches</small></a>
+                <a href="/05-messaging/01-message-queues"><span>05</span><strong>Messaging</strong><small>Queues, pub/sub, ordering, outbox, DLQs</small></a>
+                <a href="/06-scaling/01-load-balancing"><span>06</span><strong>Scaling</strong><small>Load balancing, rate limits, breakers, backpressure</small></a>
+                <a href="/07-real-time/01-polling"><span>07</span><strong>Real-Time</strong><small>Polling, SSE, WebSockets, WebRTC, presence</small></a>
+                <a href="/08-case-studies/01-twitter"><span>08</span><strong>Case Studies</strong><small>Twitter, Uber, Netflix, Slack, Stripe, Discord</small></a>
+                <a href="/09-whitepapers/01-mapreduce"><span>09</span><strong>Whitepapers</strong><small>MapReduce, Dynamo, Spanner, Raft, Kafka</small></a>
+                <a href="/10-security/01-authentication-fundamentals"><span>10</span><strong>Security</strong><small>Auth, OAuth2, JWT, API security, zero trust</small></a>
+                <a href="/11-observability/01-distributed-tracing"><span>11</span><strong>Observability</strong><small>Tracing, metrics, logs, alerts, operations</small></a>
+                <a href="/12-service-mesh/01-service-discovery"><span>12</span><strong>Service Mesh</strong><small>Discovery, gateways, sidecars, traffic control</small></a>
+                <a href="/13-data-pipelines/01-batch-processing"><span>13</span><strong>Data Pipelines</strong><small>Batch, streams, lambda, kappa</small></a>
+                <a href="/14-search-systems/01-inverted-indexes"><span>14</span><strong>Search Systems</strong><small>Indexes, relevance, ranking, autocomplete</small></a>
+                <a href="/15-deployment/01-deployment-strategies"><span>15</span><strong>Deployment</strong><small>Strategies, feature flags, rollouts</small></a>
+                <a href="/16-llm-systems/01-agent-fundamentals"><span>16</span><strong>LLM Systems</strong><small>Agents, RAG, prompts, infrastructure, context</small></a>
+                <a href="/17-graphql/01-graphql-fundamentals"><span>17</span><strong>GraphQL</strong><small>Schemas, resolvers, caching, federation</small></a>
+                <a href="/18-compound-engineering/01-compound-engineering-fundamentals"><span>18</span><strong>Compound Engineering</strong><small>AI-native architecture, coding agents, workflows</small></a>
+              </div>
+            </section>
 
-          <div class="home-download">
-            <a href="https://github.com/babushkai/system-design-patterns/releases/latest" class="download-btn" target="_blank">
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              Download PDF/EPUB
-            </a>
-          </div>
+            <section class="sdp-reference-rail" aria-label="Reference shortcuts">
+              <a href="/09-whitepapers/07-raft"><span>Paper trail</span><strong>Raft, Dynamo, Spanner, Kafka</strong></a>
+              <a href="/08-case-studies/04-netflix"><span>Production systems</span><strong>Netflix, Slack, Discord, Stripe</strong></a>
+              <a href="/16-llm-systems/04-rag-patterns"><span>Modern systems</span><strong>RAG, agents, orchestration</strong></a>
+            </section>
+          </main>
 
           <style>
-          .home-overview {
+          .VPDoc .content,
+          .VPDoc .content-container {
+            width: 100% !important;
+            min-width: 0 !important;
+            max-width: none !important;
+            box-sizing: border-box;
+            overflow-x: clip;
+          }
+          .VPDoc .container {
+            width: 100% !important;
+            min-width: 0 !important;
+            padding: 0 !important;
+            max-width: none !important;
+            box-sizing: border-box;
+            overflow-x: clip;
+          }
+          .VPDoc .main {
+            width: 100% !important;
+            min-width: 0 !important;
+            padding: 0 !important;
+            box-sizing: border-box;
+            overflow-x: clip;
+          }
+          .VPDoc {
+            width: 100% !important;
+            min-width: 0 !important;
+            padding: 0 !important;
+            overflow-x: clip;
+          }
+          .vp-doc h1,
+          .vp-doc h2,
+          .vp-doc p {
+            margin: 0;
+          }
+          .sdp-shell {
+            box-sizing: border-box;
+            min-height: 100vh;
+            width: 100%;
+            margin: -32px 0 0;
+            padding: 72px clamp(20px, 4vw, 64px) 56px;
+            overflow-x: clip;
+            color: var(--vp-c-text-1);
+            background:
+              linear-gradient(90deg, color-mix(in srgb, var(--vp-c-brand-1) 10%, transparent) 1px, transparent 1px),
+              linear-gradient(0deg, color-mix(in srgb, var(--vp-c-brand-2) 8%, transparent) 1px, transparent 1px),
+              var(--vp-c-bg);
+            background-size: 44px 44px;
+          }
+          .sdp-cover {
             display: grid;
+            width: 100%;
+            min-width: 0;
+            grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+            gap: clamp(28px, 5vw, 72px);
+            align-items: stretch;
+            max-width: 1240px;
+            margin: 0 auto;
+          }
+          .sdp-cover-main {
+            min-width: 0;
+            padding: clamp(28px, 5vw, 64px);
+            border: 1px solid var(--vp-c-divider);
+            border-radius: 8px;
+            background: color-mix(in srgb, var(--vp-c-bg) 92%, var(--vp-c-bg-soft));
+          }
+          .sdp-kicker {
+            color: var(--vp-c-brand-2);
+            font-size: 0.8rem;
+            font-weight: 800;
+            letter-spacing: 0;
+            text-transform: uppercase;
+          }
+          .sdp-cover h1 {
+            white-space: normal;
+            max-width: 900px;
+            margin-top: 18px;
+            font-size: clamp(2.6rem, 6vw, 6.2rem);
+            line-height: 0.95;
+            letter-spacing: 0;
+          }
+          .sdp-lede {
+            max-width: 720px;
+            margin-top: 24px !important;
+            color: var(--vp-c-text-2);
+            font-size: clamp(1rem, 1.5vw, 1.22rem);
+            line-height: 1.7;
+          }
+          .sdp-cover-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 34px;
+          }
+          .sdp-cover-actions a,
+          .sdp-reference-rail a {
+            display: block;
+            padding: 0.82rem 1rem;
+            border: 1px solid var(--vp-c-divider);
+            border-radius: 8px;
+            color: var(--vp-c-text-1);
+            text-decoration: none;
+            background: var(--vp-c-bg);
+          }
+          .sdp-cover-actions a:hover,
+          .sdp-reference-rail a:hover,
+          .sdp-lanes a:hover,
+          .sdp-matrix a:hover {
+            border-color: var(--vp-c-brand-1);
+          }
+          .sdp-cover-actions .sdp-primary {
+            border-color: var(--vp-c-brand-1);
+            color: #fff;
+            background: var(--vp-c-brand-1);
+          }
+          .sdp-system-board {
+            display: flex;
+            min-width: 0;
+            min-height: 460px;
+            flex-direction: column;
+            justify-content: space-between;
+            overflow: hidden;
+            padding: 22px;
+            border: 1px solid var(--vp-c-divider);
+            border-radius: 8px;
+            background: color-mix(in srgb, var(--vp-c-bg-soft) 80%, transparent);
+          }
+          .sdp-board-header,
+          .sdp-board-footer {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 12px;
+            color: var(--vp-c-text-2);
+            font-size: 0.85rem;
+          }
+          .sdp-board-header strong {
+            color: var(--vp-c-text-1);
+          }
+          .sdp-board-footer {
+            grid-template-columns: repeat(3, 1fr);
+          }
+          .sdp-node-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            margin: 28px 0;
+          }
+          .sdp-node {
+            min-height: 84px;
+            padding: 12px;
+            border: 1px solid var(--vp-c-divider);
+            border-radius: 8px;
+            color: var(--vp-c-text-1);
+            font-weight: 700;
+            overflow-wrap: anywhere;
+            text-decoration: none;
+            background: var(--vp-c-bg);
+          }
+          .sdp-node.is-core { border-top: 4px solid var(--vp-c-brand-1); }
+          .sdp-node.is-data { border-top: 4px solid var(--sdp-c-data); }
+          .sdp-node.is-runtime { border-top: 4px solid var(--sdp-c-stream); }
+          .sdp-node.is-edge { border-top: 4px solid var(--sdp-c-decision); }
+          .sdp-lanes,
+          .sdp-reference-rail {
+            display: grid;
+            min-width: 0;
             grid-template-columns: repeat(4, minmax(0, 1fr));
             gap: 1px;
-            max-width: 920px;
-            margin: 1.5rem auto 2.25rem;
+            max-width: 1240px;
+            margin: 28px auto 0;
             border: 1px solid var(--vp-c-divider);
             border-radius: 8px;
             overflow: hidden;
             background: var(--vp-c-divider);
           }
-          .home-stat {
+          .sdp-lanes a {
             display: block;
-            padding: 1.1rem 1rem;
-            text-align: center;
+            min-height: 160px;
+            padding: 20px;
             background: var(--vp-c-bg);
+            color: var(--vp-c-text-1);
             text-decoration: none;
-            transition: background 0.15s ease;
           }
-          .home-stat:hover {
-            background: var(--vp-c-bg-soft);
-          }
-          .home-stat-num {
-            display: block;
-            font-size: 2rem;
-            font-weight: 700;
-            color: var(--vp-c-brand-1);
-            line-height: 1;
-          }
-          .home-stat-label {
-            font-size: 0.875rem;
-            color: var(--vp-c-text-2);
-            margin-top: 0.25rem;
-            display: block;
-          }
-          .home-paths {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 1rem;
-            max-width: 920px;
-            margin: 0 auto 2rem;
-          }
-          .home-path {
-            min-height: 150px;
-            padding: 1rem;
-            border: 1px solid var(--vp-c-divider);
-            border-radius: 8px;
-            background: var(--vp-c-bg);
-            color: inherit;
-            text-decoration: none;
-            transition: border-color 0.15s ease, background 0.15s ease;
-          }
-          .home-path:hover {
-            border-color: var(--vp-c-brand-1);
-            background: var(--vp-c-bg-soft);
-          }
-          .home-path span {
+          .sdp-lanes span,
+          .sdp-matrix span,
+          .sdp-reference-rail span {
             display: block;
             color: var(--vp-c-brand-2);
             font-size: 0.75rem;
-            font-weight: 700;
+            font-weight: 800;
             text-transform: uppercase;
           }
-          .home-path strong {
+          .sdp-lanes strong,
+          .sdp-matrix strong,
+          .sdp-reference-rail strong {
             display: block;
-            margin-top: 0.65rem;
-            color: var(--vp-c-text-1);
-            font-size: 1rem;
+            margin-top: 10px;
+            font-size: 1.04rem;
           }
-          .home-path small {
+          .sdp-lanes small,
+          .sdp-matrix small {
             display: block;
-            margin-top: 0.5rem;
+            margin-top: 12px;
             color: var(--vp-c-text-2);
-            font-size: 0.875rem;
-            line-height: 1.55;
+            line-height: 1.6;
           }
-          .home-about {
-            max-width: 760px;
-            margin: 0 auto 2.25rem;
-            color: var(--vp-c-text-2);
-            line-height: 1.75;
-            text-align: center;
+          .sdp-section-matrix {
+            max-width: 1240px;
+            margin: 72px auto 0;
           }
-          .home-download {
-            text-align: center;
-            padding-bottom: 3rem;
+          .sdp-section-heading {
+            display: flex;
+            align-items: end;
+            justify-content: space-between;
+            gap: 24px;
+            margin-bottom: 18px;
           }
-          .download-btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.7rem 1rem;
-            background: var(--vp-c-brand-1);
-            color: white;
-            text-decoration: none;
+          .sdp-section-heading h2 {
+            font-size: clamp(2rem, 4vw, 4rem);
+            line-height: 1;
+            letter-spacing: 0;
+          }
+          .sdp-matrix {
+            display: grid;
+            min-width: 0;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 1px;
+            border: 1px solid var(--vp-c-divider);
             border-radius: 8px;
-            font-weight: 600;
-            font-size: 0.9rem;
-            transition: background 0.15s ease;
+            overflow: hidden;
+            background: var(--vp-c-divider);
           }
-          .download-btn:hover {
-            background: var(--vp-c-brand-2);
-            color: white;
+          .sdp-matrix a {
+            min-height: 150px;
+            padding: 18px;
+            color: var(--vp-c-text-1);
+            text-decoration: none;
+            background: var(--vp-c-bg);
           }
-          .download-btn svg {
-            flex-shrink: 0;
+          .sdp-reference-rail {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            margin-bottom: 20px;
           }
-          @media (max-width: 900px) {
-            .home-overview {
-              grid-template-columns: repeat(2, minmax(0, 1fr));
-            }
-            .home-paths {
+          @media (max-width: 1080px) {
+            .sdp-cover {
               grid-template-columns: 1fr;
             }
+            .sdp-system-board {
+              min-height: auto;
+            }
+            .sdp-lanes {
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .sdp-matrix {
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
           }
-          @media (max-width: 640px) {
-            .home-overview {
-              margin-left: 1rem;
-              margin-right: 1rem;
+          @media (max-width: 680px) {
+            .sdp-shell {
+              margin-top: -24px;
+              padding: 32px 16px 40px;
+              background-size: 32px 32px;
             }
-            .home-paths {
-              margin-left: 1rem;
-              margin-right: 1rem;
+            .sdp-cover-main {
+              padding: 22px;
             }
-            .home-stat-num {
-              font-size: 1.55rem;
+            .sdp-cover h1 {
+              font-size: clamp(1.82rem, 9.4vw, 2.3rem);
+              line-height: 1.02;
+              overflow-wrap: anywhere;
+              word-break: break-word;
+            }
+            .sdp-lede {
+              font-size: 0.98rem;
+            }
+            .sdp-cover-actions {
+              flex-direction: column;
+            }
+            .sdp-cover-actions a {
+              text-align: center;
+            }
+            .sdp-node-grid {
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .sdp-board-footer,
+            .sdp-board-header,
+            .sdp-lanes,
+            .sdp-matrix,
+            .sdp-reference-rail {
+              grid-template-columns: 1fr;
+            }
+            .sdp-section-heading {
+              display: block;
+            }
+            .sdp-section-heading h2 {
+              margin-top: 10px;
+            }
+            .sdp-matrix a,
+            .sdp-lanes a {
+              min-height: auto;
             }
           }
           </style>
@@ -1293,9 +1406,6 @@ jobs:
             --sdp-c-stream: #0F766E;
             --sdp-c-decision: #D97706;
 
-            --vp-home-hero-name-color: transparent;
-            --vp-home-hero-name-background: linear-gradient(135deg, #2563EB 0%, #0F766E 58%, #D97706 100%);
-
             --vp-button-brand-border: #2563EB;
             --vp-button-brand-text: #fff;
             --vp-button-brand-bg: #2563EB;
@@ -1325,60 +1435,12 @@ jobs:
             --vp-button-brand-hover-bg: #0F766E;
           }
 
-          .VPHero .name,
-          .VPHero .text {
-            letter-spacing: 0;
-          }
-
-          .hero-title-line {
-            display: block;
-          }
-
-          .hero-subtitle-line {
-            display: block;
-          }
-
-          .VPHome {
-            overflow-x: hidden;
-          }
-
-          .VPHero .text {
-            max-width: 820px;
-          }
-
-          .VPHero .tagline {
-            max-width: 700px;
-          }
-
-          .VPHero .image-src {
-            max-width: 220px;
-          }
-
           .VPButton {
             border-radius: 8px !important;
           }
 
           .VPButton.brand {
             box-shadow: none;
-          }
-
-          .VPHero .actions {
-            flex-wrap: wrap;
-          }
-
-          .VPHomeFeatures .container {
-            max-width: 1160px;
-          }
-
-          .VPFeature {
-            border-radius: 8px !important;
-            border-color: var(--vp-c-divider) !important;
-            transition: border-color 0.15s ease, background 0.15s ease;
-          }
-
-          .VPFeature:hover {
-            border-color: var(--vp-c-brand-1) !important;
-            background: var(--vp-c-bg-soft);
           }
 
           /* Custom styled tip/warning/info containers */
@@ -1587,11 +1649,6 @@ jobs:
               overflow-x: hidden;
             }
 
-            .VPHomeHero,
-            .VPHomeFeatures {
-              overflow-x: hidden;
-            }
-
             .VPNavBarTitle {
               min-width: 0;
             }
@@ -1604,89 +1661,10 @@ jobs:
               white-space: nowrap;
             }
 
-            .VPHero .container,
-            .VPHero .main,
-            .VPHero .name,
-            .VPHero .text,
-            .VPHero .tagline {
-              width: 100%;
-              max-width: calc(100vw - 48px) !important;
-              box-sizing: border-box;
-            }
-
-            .VPHero .name,
-            .VPHero .text,
-            .VPHero .tagline {
-              margin-left: auto;
-              margin-right: auto;
-              overflow-wrap: anywhere;
-              overflow: visible !important;
-              white-space: normal;
-            }
-
-            .VPHero .name,
-            .VPHero .text {
-              max-width: 330px;
-            }
-
-            .VPHero .name {
-              font-size: 2.25rem !important;
-              line-height: 1.08;
-            }
-
-            .VPHero .text {
-              font-size: 1.55rem !important;
-              line-height: 1.15;
-            }
-
-            .VPHero .actions {
-              width: 100%;
-              max-width: calc(100vw - 48px);
-              flex-direction: column;
-              justify-content: center;
-              align-items: center;
-              gap: 0.75rem;
-            }
-
-            .VPHero .action {
-              margin: 0 !important;
-              padding-top: 0 !important;
-            }
-
             .VPButton {
               width: min(100%, 260px);
               min-width: 0;
               white-space: normal;
-            }
-
-            .VPHomeFeatures .container,
-            .VPHomeFeatures .items,
-            .VPHomeFeatures .item,
-            .VPFeature {
-              width: 100% !important;
-              max-width: calc(100vw - 48px) !important;
-              box-sizing: border-box;
-            }
-
-            .VPHomeFeatures .container {
-              padding-left: 0 !important;
-              padding-right: 0 !important;
-            }
-
-            .VPHomeFeatures .items {
-              margin-left: auto !important;
-              margin-right: auto !important;
-            }
-
-            .VPFeature .title,
-            .VPFeature .details {
-              overflow: visible !important;
-              overflow-wrap: anywhere;
-            }
-
-            .VPFeature .details {
-              max-width: 260px;
-              line-height: 1.55;
             }
           }
 
