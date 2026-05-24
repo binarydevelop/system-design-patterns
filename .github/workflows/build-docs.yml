@@ -674,8 +674,8 @@ jobs:
                 <h1 id="sdp-title">Design decisions, failure modes, production trade-offs.</h1>
                 <p class="sdp-lede">A dense field guide for building and reviewing system architectures. Start with guarantees, move through storage and messaging, then compare real production systems and papers.</p>
                 <div class="sdp-cover-actions" aria-label="Primary paths">
-                  <a class="sdp-primary" href="/01-foundations/01-acid-transactions">Start the guide</a>
-                  <a href="/08-case-studies/01-twitter">Production case studies</a>
+                  <a class="sdp-primary" href="/system-design-patterns/01-foundations/01-acid-transactions">Start the guide</a>
+                  <a href="/system-design-patterns/08-case-studies/01-twitter">Production case studies</a>
                   <a href="https://github.com/babushkai/system-design-patterns/releases/latest" target="_blank">PDF / EPUB</a>
                 </div>
               </div>
@@ -685,15 +685,15 @@ jobs:
                   <strong>18 sections</strong>
                 </div>
                 <div class="sdp-node-grid">
-                  <a class="sdp-node is-core" href="/01-foundations/01-acid-transactions">Foundations</a>
-                  <a class="sdp-node is-data" href="/02-distributed-databases/01-single-leader-replication">Replication</a>
-                  <a class="sdp-node is-data" href="/03-storage-engines/01-b-trees">Storage</a>
-                  <a class="sdp-node is-runtime" href="/04-caching/01-cache-strategies">Caching</a>
-                  <a class="sdp-node is-runtime" href="/05-messaging/01-message-queues">Messaging</a>
-                  <a class="sdp-node is-runtime" href="/06-scaling/01-load-balancing">Scaling</a>
-                  <a class="sdp-node is-edge" href="/07-real-time/01-polling">Real-time</a>
-                  <a class="sdp-node is-edge" href="/10-security/01-authentication-fundamentals">Security</a>
-                  <a class="sdp-node is-edge" href="/11-observability/01-distributed-tracing">Ops</a>
+                  <a class="sdp-node is-core" href="/system-design-patterns/01-foundations/01-acid-transactions">Foundations</a>
+                  <a class="sdp-node is-data" href="/system-design-patterns/02-distributed-databases/01-single-leader-replication">Replication</a>
+                  <a class="sdp-node is-data" href="/system-design-patterns/03-storage-engines/01-b-trees">Storage</a>
+                  <a class="sdp-node is-runtime" href="/system-design-patterns/04-caching/01-cache-strategies">Caching</a>
+                  <a class="sdp-node is-runtime" href="/system-design-patterns/05-messaging/01-message-queues">Messaging</a>
+                  <a class="sdp-node is-runtime" href="/system-design-patterns/06-scaling/01-load-balancing">Scaling</a>
+                  <a class="sdp-node is-edge" href="/system-design-patterns/07-real-time/01-polling">Real-time</a>
+                  <a class="sdp-node is-edge" href="/system-design-patterns/10-security/01-authentication-fundamentals">Security</a>
+                  <a class="sdp-node is-edge" href="/system-design-patterns/11-observability/01-distributed-tracing">Ops</a>
                 </div>
                 <div class="sdp-board-footer">
                   <span>116 articles</span>
@@ -704,22 +704,22 @@ jobs:
             </section>
 
             <section class="sdp-lanes" aria-label="Learning lanes">
-              <a href="/01-foundations/01-acid-transactions">
+              <a href="/system-design-patterns/01-foundations/01-acid-transactions">
                 <span>01</span>
                 <strong>Reason from guarantees</strong>
                 <small>ACID, CAP, consistency, clocks, partitions, idempotency.</small>
               </a>
-              <a href="/04-caching/01-cache-strategies">
+              <a href="/system-design-patterns/04-caching/01-cache-strategies">
                 <span>02</span>
                 <strong>Choose the data path</strong>
                 <small>Storage engines, caches, queues, streams, indexes, search.</small>
               </a>
-              <a href="/06-scaling/01-load-balancing">
+              <a href="/system-design-patterns/06-scaling/01-load-balancing">
                 <span>03</span>
                 <strong>Operate under pressure</strong>
                 <small>Scaling, real-time delivery, security, observability, deployment.</small>
               </a>
-              <a href="/08-case-studies/01-twitter">
+              <a href="/system-design-patterns/08-case-studies/01-twitter">
                 <span>04</span>
                 <strong>Compare production systems</strong>
                 <small>Case studies, whitepapers, and modern LLM architecture patterns.</small>
@@ -732,31 +732,31 @@ jobs:
                 <h2 id="sdp-matrix-title">Architecture map</h2>
               </div>
               <div class="sdp-matrix">
-                <a href="/01-foundations/01-acid-transactions"><span>01</span><strong>Foundations</strong><small>Transactions, consistency, time, failure, partitions</small></a>
-                <a href="/02-distributed-databases/01-single-leader-replication"><span>02</span><strong>Distributed Databases</strong><small>Replication, sharding, indexes, consensus</small></a>
-                <a href="/03-storage-engines/01-b-trees"><span>03</span><strong>Storage Engines</strong><small>B-trees, LSM, WAL, encoding, bloom filters</small></a>
-                <a href="/04-caching/01-cache-strategies"><span>04</span><strong>Caching</strong><small>Invalidation, stampedes, warming, multi-tier caches</small></a>
-                <a href="/05-messaging/01-message-queues"><span>05</span><strong>Messaging</strong><small>Queues, pub/sub, ordering, outbox, DLQs</small></a>
-                <a href="/06-scaling/01-load-balancing"><span>06</span><strong>Scaling</strong><small>Load balancing, rate limits, breakers, backpressure</small></a>
-                <a href="/07-real-time/01-polling"><span>07</span><strong>Real-Time</strong><small>Polling, SSE, WebSockets, WebRTC, presence</small></a>
-                <a href="/08-case-studies/01-twitter"><span>08</span><strong>Case Studies</strong><small>Twitter, Uber, Netflix, Slack, Stripe, Discord</small></a>
-                <a href="/09-whitepapers/01-mapreduce"><span>09</span><strong>Whitepapers</strong><small>MapReduce, Dynamo, Spanner, Raft, Kafka</small></a>
-                <a href="/10-security/01-authentication-fundamentals"><span>10</span><strong>Security</strong><small>Auth, OAuth2, JWT, API security, zero trust</small></a>
-                <a href="/11-observability/01-distributed-tracing"><span>11</span><strong>Observability</strong><small>Tracing, metrics, logs, alerts, operations</small></a>
-                <a href="/12-service-mesh/01-service-discovery"><span>12</span><strong>Service Mesh</strong><small>Discovery, gateways, sidecars, traffic control</small></a>
-                <a href="/13-data-pipelines/01-batch-processing"><span>13</span><strong>Data Pipelines</strong><small>Batch, streams, lambda, kappa</small></a>
-                <a href="/14-search-systems/01-inverted-indexes"><span>14</span><strong>Search Systems</strong><small>Indexes, relevance, ranking, autocomplete</small></a>
-                <a href="/15-deployment/01-deployment-strategies"><span>15</span><strong>Deployment</strong><small>Strategies, feature flags, rollouts</small></a>
-                <a href="/16-llm-systems/01-agent-fundamentals"><span>16</span><strong>LLM Systems</strong><small>Agents, RAG, prompts, infrastructure, context</small></a>
-                <a href="/17-graphql/01-graphql-fundamentals"><span>17</span><strong>GraphQL</strong><small>Schemas, resolvers, caching, federation</small></a>
-                <a href="/18-compound-engineering/01-compound-engineering-fundamentals"><span>18</span><strong>Compound Engineering</strong><small>AI-native architecture, coding agents, workflows</small></a>
+                <a href="/system-design-patterns/01-foundations/01-acid-transactions"><span>01</span><strong>Foundations</strong><small>Transactions, consistency, time, failure, partitions</small></a>
+                <a href="/system-design-patterns/02-distributed-databases/01-single-leader-replication"><span>02</span><strong>Distributed Databases</strong><small>Replication, sharding, indexes, consensus</small></a>
+                <a href="/system-design-patterns/03-storage-engines/01-b-trees"><span>03</span><strong>Storage Engines</strong><small>B-trees, LSM, WAL, encoding, bloom filters</small></a>
+                <a href="/system-design-patterns/04-caching/01-cache-strategies"><span>04</span><strong>Caching</strong><small>Invalidation, stampedes, warming, multi-tier caches</small></a>
+                <a href="/system-design-patterns/05-messaging/01-message-queues"><span>05</span><strong>Messaging</strong><small>Queues, pub/sub, ordering, outbox, DLQs</small></a>
+                <a href="/system-design-patterns/06-scaling/01-load-balancing"><span>06</span><strong>Scaling</strong><small>Load balancing, rate limits, breakers, backpressure</small></a>
+                <a href="/system-design-patterns/07-real-time/01-polling"><span>07</span><strong>Real-Time</strong><small>Polling, SSE, WebSockets, WebRTC, presence</small></a>
+                <a href="/system-design-patterns/08-case-studies/01-twitter"><span>08</span><strong>Case Studies</strong><small>Twitter, Uber, Netflix, Slack, Stripe, Discord</small></a>
+                <a href="/system-design-patterns/09-whitepapers/01-mapreduce"><span>09</span><strong>Whitepapers</strong><small>MapReduce, Dynamo, Spanner, Raft, Kafka</small></a>
+                <a href="/system-design-patterns/10-security/01-authentication-fundamentals"><span>10</span><strong>Security</strong><small>Auth, OAuth2, JWT, API security, zero trust</small></a>
+                <a href="/system-design-patterns/11-observability/01-distributed-tracing"><span>11</span><strong>Observability</strong><small>Tracing, metrics, logs, alerts, operations</small></a>
+                <a href="/system-design-patterns/12-service-mesh/01-service-discovery"><span>12</span><strong>Service Mesh</strong><small>Discovery, gateways, sidecars, traffic control</small></a>
+                <a href="/system-design-patterns/13-data-pipelines/01-batch-processing"><span>13</span><strong>Data Pipelines</strong><small>Batch, streams, lambda, kappa</small></a>
+                <a href="/system-design-patterns/14-search-systems/01-inverted-indexes"><span>14</span><strong>Search Systems</strong><small>Indexes, relevance, ranking, autocomplete</small></a>
+                <a href="/system-design-patterns/15-deployment/01-deployment-strategies"><span>15</span><strong>Deployment</strong><small>Strategies, feature flags, rollouts</small></a>
+                <a href="/system-design-patterns/16-llm-systems/01-agent-fundamentals"><span>16</span><strong>LLM Systems</strong><small>Agents, RAG, prompts, infrastructure, context</small></a>
+                <a href="/system-design-patterns/17-graphql/01-graphql-fundamentals"><span>17</span><strong>GraphQL</strong><small>Schemas, resolvers, caching, federation</small></a>
+                <a href="/system-design-patterns/18-compound-engineering/01-compound-engineering-fundamentals"><span>18</span><strong>Compound Engineering</strong><small>AI-native architecture, coding agents, workflows</small></a>
               </div>
             </section>
 
             <section class="sdp-reference-rail" aria-label="Reference shortcuts">
-              <a href="/09-whitepapers/07-raft"><span>Paper trail</span><strong>Raft, Dynamo, Spanner, Kafka</strong></a>
-              <a href="/08-case-studies/04-netflix"><span>Production systems</span><strong>Netflix, Slack, Discord, Stripe</strong></a>
-              <a href="/16-llm-systems/04-rag-patterns"><span>Modern systems</span><strong>RAG, agents, orchestration</strong></a>
+              <a href="/system-design-patterns/09-whitepapers/07-raft"><span>Paper trail</span><strong>Raft, Dynamo, Spanner, Kafka</strong></a>
+              <a href="/system-design-patterns/08-case-studies/04-netflix"><span>Production systems</span><strong>Netflix, Slack, Discord, Stripe</strong></a>
+              <a href="/system-design-patterns/16-llm-systems/04-rag-patterns"><span>Modern systems</span><strong>RAG, agents, orchestration</strong></a>
             </section>
           </main>
 

@@ -31,7 +31,13 @@ STAT_COUNT_RE = re.compile(
 BOOK_CHAPTER_RE = re.compile(r"""["']((?:ja/)?\d{2}-[^"']+\.md)["']""")
 VITEPRESS_LINK_RE = re.compile(r"""link:\s*["']([^"']+)["']""")
 VITEPRESS_ASSET_RE = re.compile(r"""src:\s*["']?(/(?:icons/[^"'\s]+|logo)\.svg)["']?""")
+VITEPRESS_BASE_RE = re.compile(r"""base:\s*["']([^"']+)["']""")
 GENERATED_ASSET_RE = re.compile(r"""cat > public/([^"'\s]+\.svg)""")
+HTML_ROOT_HREF_RE = re.compile(r"""\shref=["'](/[^"'#?]*)["']""")
+HOMEPAGE_SOURCES = [
+    Path(".github/workflows/build-docs.yml"),
+    Path("ja/index.md"),
+]
 
 
 def rel(path: Path) -> str:
@@ -226,6 +232,40 @@ def validate_generated_assets(errors: list[str]) -> None:
                     errors.append(f"{rel(path)}:{lineno}: missing generated asset: /{target}")
 
 
+def validate_homepage_html_links(errors: list[str]) -> None:
+    workflow = ROOT / ".github/workflows/build-docs.yml"
+    if not workflow.exists():
+        return
+
+    base_match = VITEPRESS_BASE_RE.search(workflow.read_text(encoding="utf-8"))
+    if not base_match:
+        errors.append(f"{rel(workflow)}: missing VitePress base setting")
+        return
+    site_base = base_match.group(1)
+
+    for relative in HOMEPAGE_SOURCES:
+        path = ROOT / relative
+        if not path.exists():
+            continue
+
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            for match in HTML_ROOT_HREF_RE.finditer(line):
+                link = match.group(1)
+                if not link.startswith(site_base):
+                    errors.append(
+                        f"{rel(path)}:{lineno}: raw HTML link must include site base "
+                        f"{site_base}: {link}"
+                    )
+                    continue
+
+                target = "/" + link[len(site_base) :]
+                if target == "/":
+                    continue
+                candidates = local_candidates(path, target)
+                if candidates and not any(candidate.exists() for candidate in candidates):
+                    errors.append(f"{rel(path)}:{lineno}: missing homepage link target: {link}")
+
+
 def main() -> int:
     errors: list[str] = []
 
@@ -236,6 +276,7 @@ def main() -> int:
     validate_book_workflow_paths(errors)
     validate_vitepress_workflow_links(errors)
     validate_generated_assets(errors)
+    validate_homepage_html_links(errors)
 
     if errors:
         for error in errors:

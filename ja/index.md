@@ -12,8 +12,8 @@ title: システム設計パターン
       <h1 id="sdp-title">設計判断、障害モード、本番運用のトレードオフ。</h1>
       <p class="sdp-lede">システムアーキテクチャを設計し、レビューするための高密度なフィールドガイドです。保証から始め、ストレージとメッセージングをたどり、実運用システムと論文で判断を比較します。</p>
       <div class="sdp-cover-actions" aria-label="主要な導線">
-        <a class="sdp-primary" href="/ja/01-foundations/01-acid-transactions">ガイドを始める</a>
-        <a href="/ja/08-case-studies/01-twitter">ケーススタディ</a>
+        <a class="sdp-primary" href="/system-design-patterns/ja/01-foundations/01-acid-transactions">ガイドを始める</a>
+        <a href="/system-design-patterns/ja/08-case-studies/01-twitter">ケーススタディ</a>
         <a href="https://github.com/babushkai/system-design-patterns/releases/latest" target="_blank">PDF / EPUB</a>
       </div>
     </div>
@@ -23,15 +23,15 @@ title: システム設計パターン
         <strong>18セクション</strong>
       </div>
       <div class="sdp-node-grid">
-        <a class="sdp-node is-core" href="/ja/01-foundations/01-acid-transactions">基礎</a>
-        <a class="sdp-node is-data" href="/ja/02-distributed-databases/01-single-leader-replication">レプリケーション</a>
-        <a class="sdp-node is-data" href="/ja/03-storage-engines/01-b-trees">ストレージ</a>
-        <a class="sdp-node is-runtime" href="/ja/04-caching/01-cache-strategies">キャッシュ</a>
-        <a class="sdp-node is-runtime" href="/ja/05-messaging/01-message-queues">メッセージング</a>
-        <a class="sdp-node is-runtime" href="/ja/06-scaling/01-load-balancing">スケーリング</a>
-        <a class="sdp-node is-edge" href="/ja/07-real-time/01-polling">リアルタイム</a>
-        <a class="sdp-node is-edge" href="/ja/10-security/01-authentication-fundamentals">セキュリティ</a>
-        <a class="sdp-node is-edge" href="/ja/11-observability/01-distributed-tracing">運用</a>
+        <a class="sdp-node is-core" href="/system-design-patterns/ja/01-foundations/01-acid-transactions">基礎</a>
+        <a class="sdp-node is-data" href="/system-design-patterns/ja/02-distributed-databases/01-single-leader-replication">レプリケーション</a>
+        <a class="sdp-node is-data" href="/system-design-patterns/ja/03-storage-engines/01-b-trees">ストレージ</a>
+        <a class="sdp-node is-runtime" href="/system-design-patterns/ja/04-caching/01-cache-strategies">キャッシュ</a>
+        <a class="sdp-node is-runtime" href="/system-design-patterns/ja/05-messaging/01-message-queues">メッセージング</a>
+        <a class="sdp-node is-runtime" href="/system-design-patterns/ja/06-scaling/01-load-balancing">スケーリング</a>
+        <a class="sdp-node is-edge" href="/system-design-patterns/ja/07-real-time/01-polling">リアルタイム</a>
+        <a class="sdp-node is-edge" href="/system-design-patterns/ja/10-security/01-authentication-fundamentals">セキュリティ</a>
+        <a class="sdp-node is-edge" href="/system-design-patterns/ja/11-observability/01-distributed-tracing">運用</a>
       </div>
       <div class="sdp-board-footer">
         <span>116記事</span>
@@ -42,22 +42,22 @@ title: システム設計パターン
   </section>
 
   <section class="sdp-lanes" aria-label="学習レーン">
-    <a href="/ja/01-foundations/01-acid-transactions">
+    <a href="/system-design-patterns/ja/01-foundations/01-acid-transactions">
       <span>01</span>
       <strong>保証から考える</strong>
       <small>ACID、CAP、整合性、クロック、分断、冪等性。</small>
     </a>
-    <a href="/ja/04-caching/01-cache-strategies">
+    <a href="/system-design-patterns/ja/04-caching/01-cache-strategies">
       <span>02</span>
       <strong>データ経路を選ぶ</strong>
       <small>ストレージエンジン、キャッシュ、キュー、ストリーム、インデックス、検索。</small>
     </a>
-    <a href="/ja/06-scaling/01-load-balancing">
+    <a href="/system-design-patterns/ja/06-scaling/01-load-balancing">
       <span>03</span>
       <strong>負荷の中で運用する</strong>
       <small>スケーリング、リアルタイム配信、セキュリティ、オブザーバビリティ、デプロイ。</small>
     </a>
-    <a href="/ja/08-case-studies/01-twitter">
+    <a href="/system-design-patterns/ja/08-case-studies/01-twitter">
       <span>04</span>
       <strong>本番システムで比較する</strong>
       <small>ケーススタディ、ホワイトペーパー、LLMシステムの現代的な設計パターン。</small>
@@ -70,31 +70,31 @@ title: システム設計パターン
       <h2 id="sdp-matrix-title">Architecture map</h2>
     </div>
     <div class="sdp-matrix">
-      <a href="/ja/01-foundations/01-acid-transactions"><span>01</span><strong>基礎</strong><small>トランザクション、整合性、時間、障害、分断</small></a>
-      <a href="/ja/02-distributed-databases/01-single-leader-replication"><span>02</span><strong>分散データベース</strong><small>レプリケーション、シャーディング、インデックス、合意</small></a>
-      <a href="/ja/03-storage-engines/01-b-trees"><span>03</span><strong>ストレージエンジン</strong><small>B木、LSM、WAL、エンコーディング、Bloom Filter</small></a>
-      <a href="/ja/04-caching/01-cache-strategies"><span>04</span><strong>キャッシュ</strong><small>無効化、スタンピード、ウォーミング、多層キャッシュ</small></a>
-      <a href="/ja/05-messaging/01-message-queues"><span>05</span><strong>メッセージング</strong><small>キュー、Pub/Sub、順序、Outbox、DLQ</small></a>
-      <a href="/ja/06-scaling/01-load-balancing"><span>06</span><strong>スケーリング</strong><small>ロードバランシング、レート制限、サーキットブレーカー、バックプレッシャー</small></a>
-      <a href="/ja/07-real-time/01-polling"><span>07</span><strong>リアルタイム</strong><small>Polling、SSE、WebSocket、WebRTC、プレゼンス</small></a>
-      <a href="/ja/08-case-studies/01-twitter"><span>08</span><strong>ケーススタディ</strong><small>Twitter、Uber、Netflix、Slack、Stripe、Discord</small></a>
-      <a href="/ja/09-whitepapers/01-mapreduce"><span>09</span><strong>ホワイトペーパー</strong><small>MapReduce、Dynamo、Spanner、Raft、Kafka</small></a>
-      <a href="/ja/10-security/01-authentication-fundamentals"><span>10</span><strong>セキュリティ</strong><small>認証、OAuth2、JWT、APIセキュリティ、ゼロトラスト</small></a>
-      <a href="/ja/11-observability/01-distributed-tracing"><span>11</span><strong>オブザーバビリティ</strong><small>トレーシング、メトリクス、ログ、アラート、運用</small></a>
-      <a href="/ja/12-service-mesh/01-service-discovery"><span>12</span><strong>サービスメッシュ</strong><small>ディスカバリ、ゲートウェイ、サイドカー、トラフィック制御</small></a>
-      <a href="/ja/13-data-pipelines/01-batch-processing"><span>13</span><strong>データパイプライン</strong><small>バッチ、ストリーム、Lambda、Kappa</small></a>
-      <a href="/ja/14-search-systems/01-inverted-indexes"><span>14</span><strong>検索システム</strong><small>インデックス、関連性、ランキング、オートコンプリート</small></a>
-      <a href="/ja/15-deployment/01-deployment-strategies"><span>15</span><strong>デプロイメント</strong><small>戦略、フィーチャーフラグ、ロールアウト</small></a>
-      <a href="/ja/16-llm-systems/01-agent-fundamentals"><span>16</span><strong>LLMシステム</strong><small>エージェント、RAG、プロンプト、基盤、コンテキスト</small></a>
-      <a href="/ja/17-graphql/01-graphql-fundamentals"><span>17</span><strong>GraphQL</strong><small>スキーマ、リゾルバー、キャッシュ、フェデレーション</small></a>
-      <a href="/ja/18-compound-engineering/01-compound-engineering-fundamentals"><span>18</span><strong>コンパウンドエンジニアリング</strong><small>AIネイティブ設計、コーディングエージェント、ワークフロー</small></a>
+      <a href="/system-design-patterns/ja/01-foundations/01-acid-transactions"><span>01</span><strong>基礎</strong><small>トランザクション、整合性、時間、障害、分断</small></a>
+      <a href="/system-design-patterns/ja/02-distributed-databases/01-single-leader-replication"><span>02</span><strong>分散データベース</strong><small>レプリケーション、シャーディング、インデックス、合意</small></a>
+      <a href="/system-design-patterns/ja/03-storage-engines/01-b-trees"><span>03</span><strong>ストレージエンジン</strong><small>B木、LSM、WAL、エンコーディング、Bloom Filter</small></a>
+      <a href="/system-design-patterns/ja/04-caching/01-cache-strategies"><span>04</span><strong>キャッシュ</strong><small>無効化、スタンピード、ウォーミング、多層キャッシュ</small></a>
+      <a href="/system-design-patterns/ja/05-messaging/01-message-queues"><span>05</span><strong>メッセージング</strong><small>キュー、Pub/Sub、順序、Outbox、DLQ</small></a>
+      <a href="/system-design-patterns/ja/06-scaling/01-load-balancing"><span>06</span><strong>スケーリング</strong><small>ロードバランシング、レート制限、サーキットブレーカー、バックプレッシャー</small></a>
+      <a href="/system-design-patterns/ja/07-real-time/01-polling"><span>07</span><strong>リアルタイム</strong><small>Polling、SSE、WebSocket、WebRTC、プレゼンス</small></a>
+      <a href="/system-design-patterns/ja/08-case-studies/01-twitter"><span>08</span><strong>ケーススタディ</strong><small>Twitter、Uber、Netflix、Slack、Stripe、Discord</small></a>
+      <a href="/system-design-patterns/ja/09-whitepapers/01-mapreduce"><span>09</span><strong>ホワイトペーパー</strong><small>MapReduce、Dynamo、Spanner、Raft、Kafka</small></a>
+      <a href="/system-design-patterns/ja/10-security/01-authentication-fundamentals"><span>10</span><strong>セキュリティ</strong><small>認証、OAuth2、JWT、APIセキュリティ、ゼロトラスト</small></a>
+      <a href="/system-design-patterns/ja/11-observability/01-distributed-tracing"><span>11</span><strong>オブザーバビリティ</strong><small>トレーシング、メトリクス、ログ、アラート、運用</small></a>
+      <a href="/system-design-patterns/ja/12-service-mesh/01-service-discovery"><span>12</span><strong>サービスメッシュ</strong><small>ディスカバリ、ゲートウェイ、サイドカー、トラフィック制御</small></a>
+      <a href="/system-design-patterns/ja/13-data-pipelines/01-batch-processing"><span>13</span><strong>データパイプライン</strong><small>バッチ、ストリーム、Lambda、Kappa</small></a>
+      <a href="/system-design-patterns/ja/14-search-systems/01-inverted-indexes"><span>14</span><strong>検索システム</strong><small>インデックス、関連性、ランキング、オートコンプリート</small></a>
+      <a href="/system-design-patterns/ja/15-deployment/01-deployment-strategies"><span>15</span><strong>デプロイメント</strong><small>戦略、フィーチャーフラグ、ロールアウト</small></a>
+      <a href="/system-design-patterns/ja/16-llm-systems/01-agent-fundamentals"><span>16</span><strong>LLMシステム</strong><small>エージェント、RAG、プロンプト、基盤、コンテキスト</small></a>
+      <a href="/system-design-patterns/ja/17-graphql/01-graphql-fundamentals"><span>17</span><strong>GraphQL</strong><small>スキーマ、リゾルバー、キャッシュ、フェデレーション</small></a>
+      <a href="/system-design-patterns/ja/18-compound-engineering/01-compound-engineering-fundamentals"><span>18</span><strong>コンパウンドエンジニアリング</strong><small>AIネイティブ設計、コーディングエージェント、ワークフロー</small></a>
     </div>
   </section>
 
   <section class="sdp-reference-rail" aria-label="参照ショートカット">
-    <a href="/ja/09-whitepapers/07-raft"><span>Paper trail</span><strong>Raft、Dynamo、Spanner、Kafka</strong></a>
-    <a href="/ja/08-case-studies/04-netflix"><span>Production systems</span><strong>Netflix、Slack、Discord、Stripe</strong></a>
-    <a href="/ja/16-llm-systems/04-rag-patterns"><span>Modern systems</span><strong>RAG、エージェント、オーケストレーション</strong></a>
+    <a href="/system-design-patterns/ja/09-whitepapers/07-raft"><span>Paper trail</span><strong>Raft、Dynamo、Spanner、Kafka</strong></a>
+    <a href="/system-design-patterns/ja/08-case-studies/04-netflix"><span>Production systems</span><strong>Netflix、Slack、Discord、Stripe</strong></a>
+    <a href="/system-design-patterns/ja/16-llm-systems/04-rag-patterns"><span>Modern systems</span><strong>RAG、エージェント、オーケストレーション</strong></a>
   </section>
 </main>
 
