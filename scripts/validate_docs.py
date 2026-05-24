@@ -30,6 +30,8 @@ STAT_COUNT_RE = re.compile(
 )
 BOOK_CHAPTER_RE = re.compile(r"""["']((?:ja/)?\d{2}-[^"']+\.md)["']""")
 VITEPRESS_LINK_RE = re.compile(r"""link:\s*["']([^"']+)["']""")
+VITEPRESS_ASSET_RE = re.compile(r"""src:\s*["']?(/(?:icons/[^"'\s]+|logo)\.svg)["']?""")
+GENERATED_ASSET_RE = re.compile(r"""cat > public/([^"'\s]+\.svg)""")
 
 
 def rel(path: Path) -> str:
@@ -206,6 +208,24 @@ def validate_vitepress_workflow_links(errors: list[str]) -> None:
                 errors.append(f"{rel(path)}:{lineno}: missing VitePress link target: {link}")
 
 
+def validate_generated_assets(errors: list[str]) -> None:
+    workflow = ROOT / ".github/workflows/build-docs.yml"
+    if not workflow.exists():
+        return
+
+    generated = set(GENERATED_ASSET_RE.findall(workflow.read_text(encoding="utf-8")))
+    files = [workflow, ROOT / "ja/index.md"]
+
+    for path in files:
+        if not path.exists():
+            continue
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            for match in VITEPRESS_ASSET_RE.finditer(line):
+                target = match.group(1).lstrip("/")
+                if target not in generated:
+                    errors.append(f"{rel(path)}:{lineno}: missing generated asset: /{target}")
+
+
 def main() -> int:
     errors: list[str] = []
 
@@ -215,6 +235,7 @@ def main() -> int:
     validate_frontmatter(errors)
     validate_book_workflow_paths(errors)
     validate_vitepress_workflow_links(errors)
+    validate_generated_assets(errors)
 
     if errors:
         for error in errors:
