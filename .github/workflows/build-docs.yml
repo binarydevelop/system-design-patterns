@@ -34,6 +34,9 @@ jobs:
           mkdir -p .vitepress
           mkdir -p public
 
+          # Custom domain for GitHub Pages
+          printf 'design.babushkai.com\n' > public/CNAME
+
           # Generate package.json
           cat > package.json << 'PKGJSON'
           {
@@ -289,8 +292,8 @@ jobs:
             title: 'System Design Patterns',
             description: 'A comprehensive guide to distributed systems and system design patterns',
             
-            // Base URL for GitHub Pages (repo name)
-            base: '/system-design-patterns/',
+            // Base URL for the custom domain
+            base: '/',
             
             // Ignore dead links in README.md (original repo content)
             ignoreDeadLinks: true,
@@ -299,13 +302,13 @@ jobs:
               ['link', { rel: 'preconnect', href: 'https://fonts.googleapis.com' }],
               ['link', { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' }],
               ['link', { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+JP:wght@400;500;700&display=swap' }],
-              // favicon href must include base path (base config is at line ~279)
-              ['link', { rel: 'icon', type: 'image/svg+xml', href: '/system-design-patterns/logo.svg' }],
+              // favicon is served from the custom domain root
+              ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }],
               ['meta', { name: 'theme-color', content: '#2563EB' }],
               ['meta', { property: 'og:type', content: 'website' }],
               ['meta', { property: 'og:title', content: 'System Design Patterns' }],
               ['meta', { property: 'og:description', content: 'A comprehensive guide to distributed systems' }],
-              ['meta', { property: 'og:image', content: 'https://babushkai.github.io/system-design-patterns/logo.svg' }],
+              ['meta', { property: 'og:image', content: 'https://design.babushkai.com/logo.svg' }],
               ['meta', { name: 'twitter:card', content: 'summary' }],
             ],
 
@@ -681,8 +684,8 @@ jobs:
                   <h1 id="atlas-title"><span>System</span><span>Design</span><span>Patterns</span></h1>
                   <p class="atlas-deck">Trace a request through guarantees, storage, queues, failure, and recovery. A working reference for architecture reviews and production decisions.</p>
                   <nav class="atlas-actions" aria-label="Primary paths">
-                    <a class="atlas-start" href="/system-design-patterns/01-foundations/01-acid-transactions">Begin at guarantees <b>&rarr;</b></a>
-                    <a href="/system-design-patterns/08-case-studies/01-twitter">Study production</a>
+                    <a class="atlas-start" href="/01-foundations/01-acid-transactions">Begin at guarantees <b>&rarr;</b></a>
+                    <a href="/08-case-studies/01-twitter">Study production</a>
                     <a href="https://github.com/babushkai/system-design-patterns/releases/latest" target="_blank">PDF / EPUB</a>
                   </nav>
                 </header>
@@ -690,15 +693,15 @@ jobs:
                   <p class="atlas-map-title">Select a subsystem <strong>Live index / 09 nodes</strong></p>
                   <div class="atlas-map">
                     <span class="atlas-core"><strong>Request</strong><small>flow</small></span>
-                    <a class="atlas-node atlas-n1" href="/system-design-patterns/01-foundations/01-acid-transactions"><small>01</small><strong>Guarantees</strong></a>
-                    <a class="atlas-node atlas-n2" href="/system-design-patterns/02-distributed-databases/01-single-leader-replication"><small>02</small><strong>Replicate</strong></a>
-                    <a class="atlas-node atlas-n3" href="/system-design-patterns/03-storage-engines/01-b-trees"><small>03</small><strong>Persist</strong></a>
-                    <a class="atlas-node atlas-n4" href="/system-design-patterns/04-caching/01-cache-strategies"><small>04</small><strong>Cache</strong></a>
-                    <a class="atlas-node atlas-n5" href="/system-design-patterns/05-messaging/01-message-queues"><small>05</small><strong>Queue</strong></a>
-                    <a class="atlas-node atlas-n6" href="/system-design-patterns/06-scaling/01-load-balancing"><small>06</small><strong>Scale</strong></a>
-                    <a class="atlas-node atlas-n7" href="/system-design-patterns/07-real-time/01-polling"><small>07</small><strong>Stream</strong></a>
-                    <a class="atlas-node atlas-n8" href="/system-design-patterns/10-security/01-authentication-fundamentals"><small>10</small><strong>Secure</strong></a>
-                    <a class="atlas-node atlas-n9" href="/system-design-patterns/11-observability/01-distributed-tracing"><small>11</small><strong>Observe</strong></a>
+                    <a class="atlas-node atlas-n1" href="/01-foundations/01-acid-transactions"><small>01</small><strong>Guarantees</strong></a>
+                    <a class="atlas-node atlas-n2" href="/02-distributed-databases/01-single-leader-replication"><small>02</small><strong>Replicate</strong></a>
+                    <a class="atlas-node atlas-n3" href="/03-storage-engines/01-b-trees"><small>03</small><strong>Persist</strong></a>
+                    <a class="atlas-node atlas-n4" href="/04-caching/01-cache-strategies"><small>04</small><strong>Cache</strong></a>
+                    <a class="atlas-node atlas-n5" href="/05-messaging/01-message-queues"><small>05</small><strong>Queue</strong></a>
+                    <a class="atlas-node atlas-n6" href="/06-scaling/01-load-balancing"><small>06</small><strong>Scale</strong></a>
+                    <a class="atlas-node atlas-n7" href="/07-real-time/01-polling"><small>07</small><strong>Stream</strong></a>
+                    <a class="atlas-node atlas-n8" href="/10-security/01-authentication-fundamentals"><small>10</small><strong>Secure</strong></a>
+                    <a class="atlas-node atlas-n9" href="/11-observability/01-distributed-tracing"><small>11</small><strong>Observe</strong></a>
                   </div>
                 </nav>
               </div>
@@ -716,10 +719,10 @@ jobs:
                 <h2 id="atlas-paths-title">Follow the pressure through the system.</h2>
               </header>
               <nav class="atlas-route-list">
-                <a href="/system-design-patterns/01-foundations/01-acid-transactions"><span>01 / Guarantees</span><strong>Consistency before scale</strong><small>ACID &rarr; CAP &rarr; replication</small><b>&rarr;</b></a>
-                <a href="/system-design-patterns/04-caching/01-cache-strategies"><span>02 / Latency</span><strong>Data on the hot path</strong><small>Storage &rarr; cache &rarr; invalidation</small><b>&rarr;</b></a>
-                <a href="/system-design-patterns/05-messaging/01-message-queues"><span>03 / Throughput</span><strong>Delivery under load</strong><small>Queues &rarr; ordering &rarr; backpressure</small><b>&rarr;</b></a>
-                <a href="/system-design-patterns/08-case-studies/01-twitter"><span>04 / Evidence</span><strong>Architecture in production</strong><small>Systems &rarr; papers &rarr; trade-offs</small><b>&rarr;</b></a>
+                <a href="/01-foundations/01-acid-transactions"><span>01 / Guarantees</span><strong>Consistency before scale</strong><small>ACID &rarr; CAP &rarr; replication</small><b>&rarr;</b></a>
+                <a href="/04-caching/01-cache-strategies"><span>02 / Latency</span><strong>Data on the hot path</strong><small>Storage &rarr; cache &rarr; invalidation</small><b>&rarr;</b></a>
+                <a href="/05-messaging/01-message-queues"><span>03 / Throughput</span><strong>Delivery under load</strong><small>Queues &rarr; ordering &rarr; backpressure</small><b>&rarr;</b></a>
+                <a href="/08-case-studies/01-twitter"><span>04 / Evidence</span><strong>Architecture in production</strong><small>Systems &rarr; papers &rarr; trade-offs</small><b>&rarr;</b></a>
               </nav>
             </section>
 
@@ -729,24 +732,24 @@ jobs:
                 <h2 id="atlas-library-title">Every domain in the fieldbook.</h2>
               </header>
               <nav class="atlas-index" aria-label="Architecture sections">
-                <a href="/system-design-patterns/01-foundations/01-acid-transactions"><span>01</span><strong>Foundations</strong><small>Guarantees and failure</small></a>
-                <a href="/system-design-patterns/02-distributed-databases/01-single-leader-replication"><span>02</span><strong>Distributed Databases</strong><small>Replication and consensus</small></a>
-                <a href="/system-design-patterns/03-storage-engines/01-b-trees"><span>03</span><strong>Storage Engines</strong><small>Indexes and persistence</small></a>
-                <a href="/system-design-patterns/04-caching/01-cache-strategies"><span>04</span><strong>Caching</strong><small>Latency and invalidation</small></a>
-                <a href="/system-design-patterns/05-messaging/01-message-queues"><span>05</span><strong>Messaging</strong><small>Delivery and ordering</small></a>
-                <a href="/system-design-patterns/06-scaling/01-load-balancing"><span>06</span><strong>Scaling</strong><small>Load and protection</small></a>
-                <a href="/system-design-patterns/07-real-time/01-polling"><span>07</span><strong>Real-Time</strong><small>Streams and presence</small></a>
-                <a href="/system-design-patterns/08-case-studies/01-twitter"><span>08</span><strong>Case Studies</strong><small>Production evidence</small></a>
-                <a href="/system-design-patterns/09-whitepapers/01-mapreduce"><span>09</span><strong>Whitepapers</strong><small>Foundational designs</small></a>
-                <a href="/system-design-patterns/10-security/01-authentication-fundamentals"><span>10</span><strong>Security</strong><small>Trust and identity</small></a>
-                <a href="/system-design-patterns/11-observability/01-distributed-tracing"><span>11</span><strong>Observability</strong><small>Trace and response</small></a>
-                <a href="/system-design-patterns/12-service-mesh/01-service-discovery"><span>12</span><strong>Service Mesh</strong><small>Runtime traffic</small></a>
-                <a href="/system-design-patterns/13-data-pipelines/01-batch-processing"><span>13</span><strong>Data Pipelines</strong><small>Batch and streams</small></a>
-                <a href="/system-design-patterns/14-search-systems/01-inverted-indexes"><span>14</span><strong>Search Systems</strong><small>Retrieve and rank</small></a>
-                <a href="/system-design-patterns/15-deployment/01-deployment-strategies"><span>15</span><strong>Deployment</strong><small>Release and recover</small></a>
-                <a href="/system-design-patterns/16-llm-systems/01-agent-fundamentals"><span>16</span><strong>LLM Systems</strong><small>Agents and context</small></a>
-                <a href="/system-design-patterns/17-graphql/01-graphql-fundamentals"><span>17</span><strong>GraphQL</strong><small>Schemas and federation</small></a>
-                <a href="/system-design-patterns/18-compound-engineering/01-compound-engineering-fundamentals"><span>18</span><strong>Compound Engineering</strong><small>AI-native workflows</small></a>
+                <a href="/01-foundations/01-acid-transactions"><span>01</span><strong>Foundations</strong><small>Guarantees and failure</small></a>
+                <a href="/02-distributed-databases/01-single-leader-replication"><span>02</span><strong>Distributed Databases</strong><small>Replication and consensus</small></a>
+                <a href="/03-storage-engines/01-b-trees"><span>03</span><strong>Storage Engines</strong><small>Indexes and persistence</small></a>
+                <a href="/04-caching/01-cache-strategies"><span>04</span><strong>Caching</strong><small>Latency and invalidation</small></a>
+                <a href="/05-messaging/01-message-queues"><span>05</span><strong>Messaging</strong><small>Delivery and ordering</small></a>
+                <a href="/06-scaling/01-load-balancing"><span>06</span><strong>Scaling</strong><small>Load and protection</small></a>
+                <a href="/07-real-time/01-polling"><span>07</span><strong>Real-Time</strong><small>Streams and presence</small></a>
+                <a href="/08-case-studies/01-twitter"><span>08</span><strong>Case Studies</strong><small>Production evidence</small></a>
+                <a href="/09-whitepapers/01-mapreduce"><span>09</span><strong>Whitepapers</strong><small>Foundational designs</small></a>
+                <a href="/10-security/01-authentication-fundamentals"><span>10</span><strong>Security</strong><small>Trust and identity</small></a>
+                <a href="/11-observability/01-distributed-tracing"><span>11</span><strong>Observability</strong><small>Trace and response</small></a>
+                <a href="/12-service-mesh/01-service-discovery"><span>12</span><strong>Service Mesh</strong><small>Runtime traffic</small></a>
+                <a href="/13-data-pipelines/01-batch-processing"><span>13</span><strong>Data Pipelines</strong><small>Batch and streams</small></a>
+                <a href="/14-search-systems/01-inverted-indexes"><span>14</span><strong>Search Systems</strong><small>Retrieve and rank</small></a>
+                <a href="/15-deployment/01-deployment-strategies"><span>15</span><strong>Deployment</strong><small>Release and recover</small></a>
+                <a href="/16-llm-systems/01-agent-fundamentals"><span>16</span><strong>LLM Systems</strong><small>Agents and context</small></a>
+                <a href="/17-graphql/01-graphql-fundamentals"><span>17</span><strong>GraphQL</strong><small>Schemas and federation</small></a>
+                <a href="/18-compound-engineering/01-compound-engineering-fundamentals"><span>18</span><strong>Compound Engineering</strong><small>AI-native workflows</small></a>
               </nav>
             </section>
 
@@ -756,9 +759,9 @@ jobs:
                 <h2 id="atlas-evidence-title">Compare ideas against deployed systems.</h2>
               </header>
               <nav>
-                <a href="/system-design-patterns/09-whitepapers/07-raft"><span>Paper trail</span><strong>Raft, Dynamo, Spanner, Kafka</strong><b>&rarr;</b></a>
-                <a href="/system-design-patterns/08-case-studies/04-netflix"><span>Production systems</span><strong>Netflix, Slack, Discord, Stripe</strong><b>&rarr;</b></a>
-                <a href="/system-design-patterns/16-llm-systems/04-rag-patterns"><span>Modern systems</span><strong>RAG, agents, orchestration</strong><b>&rarr;</b></a>
+                <a href="/09-whitepapers/07-raft"><span>Paper trail</span><strong>Raft, Dynamo, Spanner, Kafka</strong><b>&rarr;</b></a>
+                <a href="/08-case-studies/04-netflix"><span>Production systems</span><strong>Netflix, Slack, Discord, Stripe</strong><b>&rarr;</b></a>
+                <a href="/16-llm-systems/04-rag-patterns"><span>Modern systems</span><strong>RAG, agents, orchestration</strong><b>&rarr;</b></a>
               </nav>
             </section>
           </main>
@@ -1840,7 +1843,7 @@ jobs:
             display: inline-block;
             width: 16px;
             height: 16px;
-            background: url('/system-design-patterns/logo.svg') no-repeat center;
+            background: url('/logo.svg') no-repeat center;
             background-size: contain;
             margin-right: 0.5rem;
             vertical-align: middle;

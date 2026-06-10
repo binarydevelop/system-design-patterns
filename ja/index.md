@@ -19,8 +19,8 @@ title: システム設計パターン
         <h1 id="atlas-title"><span>システム</span><span>設計</span><span>パターン</span></h1>
         <p class="atlas-deck">リクエストが、保証、ストレージ、キュー、障害、復旧を通過する経路をたどる。設計レビューと本番判断のための実務リファレンス。</p>
         <nav class="atlas-actions" aria-label="主要な導線">
-          <a class="atlas-start" href="/system-design-patterns/ja/01-foundations/01-acid-transactions">保証から始める <b>&rarr;</b></a>
-          <a href="/system-design-patterns/ja/08-case-studies/01-twitter">本番事例を読む</a>
+          <a class="atlas-start" href="/ja/01-foundations/01-acid-transactions">保証から始める <b>&rarr;</b></a>
+          <a href="/ja/08-case-studies/01-twitter">本番事例を読む</a>
           <a href="https://github.com/babushkai/system-design-patterns/releases/latest" target="_blank">PDF / EPUB</a>
         </nav>
       </header>
@@ -28,15 +28,15 @@ title: システム設計パターン
         <p class="atlas-map-title">サブシステムを選択 <strong>Live index / 09 nodes</strong></p>
         <div class="atlas-map">
           <span class="atlas-core"><strong>Request</strong><small>flow</small></span>
-          <a class="atlas-node atlas-n1" href="/system-design-patterns/ja/01-foundations/01-acid-transactions"><small>01</small><strong>保証</strong></a>
-          <a class="atlas-node atlas-n2" href="/system-design-patterns/ja/02-distributed-databases/01-single-leader-replication"><small>02</small><strong>複製</strong></a>
-          <a class="atlas-node atlas-n3" href="/system-design-patterns/ja/03-storage-engines/01-b-trees"><small>03</small><strong>永続化</strong></a>
-          <a class="atlas-node atlas-n4" href="/system-design-patterns/ja/04-caching/01-cache-strategies"><small>04</small><strong>キャッシュ</strong></a>
-          <a class="atlas-node atlas-n5" href="/system-design-patterns/ja/05-messaging/01-message-queues"><small>05</small><strong>キュー</strong></a>
-          <a class="atlas-node atlas-n6" href="/system-design-patterns/ja/06-scaling/01-load-balancing"><small>06</small><strong>拡張</strong></a>
-          <a class="atlas-node atlas-n7" href="/system-design-patterns/ja/07-real-time/01-polling"><small>07</small><strong>配信</strong></a>
-          <a class="atlas-node atlas-n8" href="/system-design-patterns/ja/10-security/01-authentication-fundamentals"><small>10</small><strong>保護</strong></a>
-          <a class="atlas-node atlas-n9" href="/system-design-patterns/ja/11-observability/01-distributed-tracing"><small>11</small><strong>観測</strong></a>
+          <a class="atlas-node atlas-n1" href="/ja/01-foundations/01-acid-transactions"><small>01</small><strong>保証</strong></a>
+          <a class="atlas-node atlas-n2" href="/ja/02-distributed-databases/01-single-leader-replication"><small>02</small><strong>複製</strong></a>
+          <a class="atlas-node atlas-n3" href="/ja/03-storage-engines/01-b-trees"><small>03</small><strong>永続化</strong></a>
+          <a class="atlas-node atlas-n4" href="/ja/04-caching/01-cache-strategies"><small>04</small><strong>キャッシュ</strong></a>
+          <a class="atlas-node atlas-n5" href="/ja/05-messaging/01-message-queues"><small>05</small><strong>キュー</strong></a>
+          <a class="atlas-node atlas-n6" href="/ja/06-scaling/01-load-balancing"><small>06</small><strong>拡張</strong></a>
+          <a class="atlas-node atlas-n7" href="/ja/07-real-time/01-polling"><small>07</small><strong>配信</strong></a>
+          <a class="atlas-node atlas-n8" href="/ja/10-security/01-authentication-fundamentals"><small>10</small><strong>保護</strong></a>
+          <a class="atlas-node atlas-n9" href="/ja/11-observability/01-distributed-tracing"><small>11</small><strong>観測</strong></a>
         </div>
       </nav>
     </div>
@@ -54,10 +54,10 @@ title: システム設計パターン
       <h2 id="atlas-paths-title">圧力がシステムを通過する経路をたどる。</h2>
     </header>
     <nav class="atlas-route-list">
-      <a href="/system-design-patterns/ja/01-foundations/01-acid-transactions"><span>01 / 保証</span><strong>規模の前に整合性</strong><small>ACID &rarr; CAP &rarr; レプリケーション</small><b>&rarr;</b></a>
-      <a href="/system-design-patterns/ja/04-caching/01-cache-strategies"><span>02 / レイテンシ</span><strong>ホットパス上のデータ</strong><small>ストレージ &rarr; キャッシュ &rarr; 無効化</small><b>&rarr;</b></a>
-      <a href="/system-design-patterns/ja/05-messaging/01-message-queues"><span>03 / スループット</span><strong>負荷下の配信</strong><small>キュー &rarr; 順序 &rarr; バックプレッシャー</small><b>&rarr;</b></a>
-      <a href="/system-design-patterns/ja/08-case-studies/01-twitter"><span>04 / 証拠</span><strong>本番のアーキテクチャ</strong><small>実例 &rarr; 論文 &rarr; トレードオフ</small><b>&rarr;</b></a>
+      <a href="/ja/01-foundations/01-acid-transactions"><span>01 / 保証</span><strong>規模の前に整合性</strong><small>ACID &rarr; CAP &rarr; レプリケーション</small><b>&rarr;</b></a>
+      <a href="/ja/04-caching/01-cache-strategies"><span>02 / レイテンシ</span><strong>ホットパス上のデータ</strong><small>ストレージ &rarr; キャッシュ &rarr; 無効化</small><b>&rarr;</b></a>
+      <a href="/ja/05-messaging/01-message-queues"><span>03 / スループット</span><strong>負荷下の配信</strong><small>キュー &rarr; 順序 &rarr; バックプレッシャー</small><b>&rarr;</b></a>
+      <a href="/ja/08-case-studies/01-twitter"><span>04 / 証拠</span><strong>本番のアーキテクチャ</strong><small>実例 &rarr; 論文 &rarr; トレードオフ</small><b>&rarr;</b></a>
     </nav>
   </section>
 
@@ -67,24 +67,24 @@ title: システム設計パターン
       <h2 id="atlas-library-title">フィールドブックの全領域。</h2>
     </header>
     <nav class="atlas-index" aria-label="アーキテクチャ領域">
-      <a href="/system-design-patterns/ja/01-foundations/01-acid-transactions"><span>01</span><strong>基礎</strong><small>保証と障害</small></a>
-      <a href="/system-design-patterns/ja/02-distributed-databases/01-single-leader-replication"><span>02</span><strong>分散データベース</strong><small>複製と合意</small></a>
-      <a href="/system-design-patterns/ja/03-storage-engines/01-b-trees"><span>03</span><strong>ストレージエンジン</strong><small>索引と永続化</small></a>
-      <a href="/system-design-patterns/ja/04-caching/01-cache-strategies"><span>04</span><strong>キャッシュ</strong><small>レイテンシと無効化</small></a>
-      <a href="/system-design-patterns/ja/05-messaging/01-message-queues"><span>05</span><strong>メッセージング</strong><small>配信と順序</small></a>
-      <a href="/system-design-patterns/ja/06-scaling/01-load-balancing"><span>06</span><strong>スケーリング</strong><small>負荷と保護</small></a>
-      <a href="/system-design-patterns/ja/07-real-time/01-polling"><span>07</span><strong>リアルタイム</strong><small>ストリームとプレゼンス</small></a>
-      <a href="/system-design-patterns/ja/08-case-studies/01-twitter"><span>08</span><strong>ケーススタディ</strong><small>本番の証拠</small></a>
-      <a href="/system-design-patterns/ja/09-whitepapers/01-mapreduce"><span>09</span><strong>ホワイトペーパー</strong><small>基礎設計</small></a>
-      <a href="/system-design-patterns/ja/10-security/01-authentication-fundamentals"><span>10</span><strong>セキュリティ</strong><small>信頼と認証</small></a>
-      <a href="/system-design-patterns/ja/11-observability/01-distributed-tracing"><span>11</span><strong>オブザーバビリティ</strong><small>追跡と対応</small></a>
-      <a href="/system-design-patterns/ja/12-service-mesh/01-service-discovery"><span>12</span><strong>サービスメッシュ</strong><small>実行時トラフィック</small></a>
-      <a href="/system-design-patterns/ja/13-data-pipelines/01-batch-processing"><span>13</span><strong>データパイプライン</strong><small>バッチとストリーム</small></a>
-      <a href="/system-design-patterns/ja/14-search-systems/01-inverted-indexes"><span>14</span><strong>検索システム</strong><small>検索と順位付け</small></a>
-      <a href="/system-design-patterns/ja/15-deployment/01-deployment-strategies"><span>15</span><strong>デプロイメント</strong><small>リリースと復旧</small></a>
-      <a href="/system-design-patterns/ja/16-llm-systems/01-agent-fundamentals"><span>16</span><strong>LLMシステム</strong><small>エージェントと文脈</small></a>
-      <a href="/system-design-patterns/ja/17-graphql/01-graphql-fundamentals"><span>17</span><strong>GraphQL</strong><small>スキーマと連携</small></a>
-      <a href="/system-design-patterns/ja/18-compound-engineering/01-compound-engineering-fundamentals"><span>18</span><strong>コンパウンドエンジニアリング</strong><small>AIネイティブワークフロー</small></a>
+      <a href="/ja/01-foundations/01-acid-transactions"><span>01</span><strong>基礎</strong><small>保証と障害</small></a>
+      <a href="/ja/02-distributed-databases/01-single-leader-replication"><span>02</span><strong>分散データベース</strong><small>複製と合意</small></a>
+      <a href="/ja/03-storage-engines/01-b-trees"><span>03</span><strong>ストレージエンジン</strong><small>索引と永続化</small></a>
+      <a href="/ja/04-caching/01-cache-strategies"><span>04</span><strong>キャッシュ</strong><small>レイテンシと無効化</small></a>
+      <a href="/ja/05-messaging/01-message-queues"><span>05</span><strong>メッセージング</strong><small>配信と順序</small></a>
+      <a href="/ja/06-scaling/01-load-balancing"><span>06</span><strong>スケーリング</strong><small>負荷と保護</small></a>
+      <a href="/ja/07-real-time/01-polling"><span>07</span><strong>リアルタイム</strong><small>ストリームとプレゼンス</small></a>
+      <a href="/ja/08-case-studies/01-twitter"><span>08</span><strong>ケーススタディ</strong><small>本番の証拠</small></a>
+      <a href="/ja/09-whitepapers/01-mapreduce"><span>09</span><strong>ホワイトペーパー</strong><small>基礎設計</small></a>
+      <a href="/ja/10-security/01-authentication-fundamentals"><span>10</span><strong>セキュリティ</strong><small>信頼と認証</small></a>
+      <a href="/ja/11-observability/01-distributed-tracing"><span>11</span><strong>オブザーバビリティ</strong><small>追跡と対応</small></a>
+      <a href="/ja/12-service-mesh/01-service-discovery"><span>12</span><strong>サービスメッシュ</strong><small>実行時トラフィック</small></a>
+      <a href="/ja/13-data-pipelines/01-batch-processing"><span>13</span><strong>データパイプライン</strong><small>バッチとストリーム</small></a>
+      <a href="/ja/14-search-systems/01-inverted-indexes"><span>14</span><strong>検索システム</strong><small>検索と順位付け</small></a>
+      <a href="/ja/15-deployment/01-deployment-strategies"><span>15</span><strong>デプロイメント</strong><small>リリースと復旧</small></a>
+      <a href="/ja/16-llm-systems/01-agent-fundamentals"><span>16</span><strong>LLMシステム</strong><small>エージェントと文脈</small></a>
+      <a href="/ja/17-graphql/01-graphql-fundamentals"><span>17</span><strong>GraphQL</strong><small>スキーマと連携</small></a>
+      <a href="/ja/18-compound-engineering/01-compound-engineering-fundamentals"><span>18</span><strong>コンパウンドエンジニアリング</strong><small>AIネイティブワークフロー</small></a>
     </nav>
   </section>
 
@@ -94,9 +94,9 @@ title: システム設計パターン
       <h2 id="atlas-evidence-title">運用済みシステムで設計を比較する。</h2>
     </header>
     <nav>
-      <a href="/system-design-patterns/ja/09-whitepapers/07-raft"><span>Paper trail</span><strong>Raft、Dynamo、Spanner、Kafka</strong><b>&rarr;</b></a>
-      <a href="/system-design-patterns/ja/08-case-studies/04-netflix"><span>Production systems</span><strong>Netflix、Slack、Discord、Stripe</strong><b>&rarr;</b></a>
-      <a href="/system-design-patterns/ja/16-llm-systems/04-rag-patterns"><span>Modern systems</span><strong>RAG、エージェント、オーケストレーション</strong><b>&rarr;</b></a>
+      <a href="/ja/09-whitepapers/07-raft"><span>Paper trail</span><strong>Raft、Dynamo、Spanner、Kafka</strong><b>&rarr;</b></a>
+      <a href="/ja/08-case-studies/04-netflix"><span>Production systems</span><strong>Netflix、Slack、Discord、Stripe</strong><b>&rarr;</b></a>
+      <a href="/ja/16-llm-systems/04-rag-patterns"><span>Modern systems</span><strong>RAG、エージェント、オーケストレーション</strong><b>&rarr;</b></a>
     </nav>
   </section>
 </main>
