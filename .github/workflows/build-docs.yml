@@ -74,6 +74,7 @@ jobs:
                 { text: 'Failure Modes', link: '/01-foundations/06-failure-modes' },
                 { text: 'Network Partitions', link: '/01-foundations/07-network-partitions' },
                 { text: 'Idempotency', link: '/01-foundations/08-idempotency' },
+                { text: 'Distributed Locks', link: '/01-foundations/09-distributed-locks' },
               ]
             },
             {
@@ -128,6 +129,7 @@ jobs:
                 { text: 'CQRS', link: '/05-messaging/06-cqrs' },
                 { text: 'Outbox Pattern', link: '/05-messaging/07-outbox-pattern' },
                 { text: 'Dead Letter Queues', link: '/05-messaging/08-dead-letter-queues' },
+                { text: 'Saga Pattern', link: '/05-messaging/09-saga-pattern' },
               ]
             },
             {
@@ -142,6 +144,8 @@ jobs:
                 { text: 'Circuit Breakers', link: '/06-scaling/06-circuit-breakers' },
                 { text: 'Backpressure', link: '/06-scaling/07-backpressure' },
                 { text: 'Auto-Scaling', link: '/06-scaling/08-auto-scaling' },
+                { text: 'Multi-Region Architecture', link: '/06-scaling/09-multi-region-architecture' },
+                { text: 'Retries & Hedging', link: '/06-scaling/10-retries-timeouts-hedging' },
               ]
             },
             {
@@ -198,6 +202,7 @@ jobs:
                 { text: 'API Security', link: '/10-security/04-api-security' },
                 { text: 'Zero Trust Architecture', link: '/10-security/05-zero-trust-architecture' },
                 { text: 'Encryption', link: '/10-security/06-encryption' },
+                { text: 'Authorization Patterns', link: '/10-security/07-authorization-patterns' },
               ]
             },
             {
@@ -208,6 +213,7 @@ jobs:
                 { text: 'Metrics & Monitoring', link: '/11-observability/02-metrics-monitoring' },
                 { text: 'Logging', link: '/11-observability/03-logging' },
                 { text: 'Alerting', link: '/11-observability/04-alerting' },
+                { text: 'SLOs & Error Budgets', link: '/11-observability/05-slos-error-budgets' },
               ]
             },
             {
@@ -226,6 +232,7 @@ jobs:
                 { text: 'Batch Processing', link: '/13-data-pipelines/01-batch-processing' },
                 { text: 'Stream Processing', link: '/13-data-pipelines/02-stream-processing' },
                 { text: 'Lambda & Kappa Architecture', link: '/13-data-pipelines/03-lambda-kappa-architecture' },
+                { text: 'Change Data Capture', link: '/13-data-pipelines/04-change-data-capture' },
               ]
             },
             {
@@ -246,6 +253,8 @@ jobs:
               items: [
                 { text: 'Deployment Strategies', link: '/15-deployment/01-deployment-strategies' },
                 { text: 'Feature Flags', link: '/15-deployment/02-feature-flags' },
+                { text: 'Database Migrations', link: '/15-deployment/03-database-migrations' },
+                { text: 'CI/CD & GitOps', link: '/15-deployment/04-cicd-gitops' },
               ]
             },
             {
@@ -385,6 +394,7 @@ jobs:
                           { text: '障害モード', link: '/ja/01-foundations/06-failure-modes' },
                           { text: 'ネットワーク分断', link: '/ja/01-foundations/07-network-partitions' },
                           { text: '冪等性', link: '/ja/01-foundations/08-idempotency' },
+                          { text: '分散ロック', link: '/ja/01-foundations/09-distributed-locks' },
                         ]
                       },
                       {
@@ -439,6 +449,7 @@ jobs:
                           { text: 'CQRS', link: '/ja/05-messaging/06-cqrs' },
                           { text: 'Outboxパターン', link: '/ja/05-messaging/07-outbox-pattern' },
                           { text: 'デッドレターキュー', link: '/ja/05-messaging/08-dead-letter-queues' },
+                          { text: 'Sagaパターン', link: '/ja/05-messaging/09-saga-pattern' },
                         ]
                       },
                       {
@@ -453,6 +464,8 @@ jobs:
                           { text: 'サーキットブレーカー', link: '/ja/06-scaling/06-circuit-breakers' },
                           { text: 'バックプレッシャー', link: '/ja/06-scaling/07-backpressure' },
                           { text: 'オートスケーリング', link: '/ja/06-scaling/08-auto-scaling' },
+                          { text: 'マルチリージョン', link: '/ja/06-scaling/09-multi-region-architecture' },
+                          { text: 'リトライとヘッジング', link: '/ja/06-scaling/10-retries-timeouts-hedging' },
                         ]
                       },
                       {
@@ -509,6 +522,7 @@ jobs:
                           { text: 'APIセキュリティ', link: '/ja/10-security/04-api-security' },
                           { text: 'ゼロトラストアーキテクチャ', link: '/ja/10-security/05-zero-trust-architecture' },
                           { text: '暗号化', link: '/ja/10-security/06-encryption' },
+                          { text: '認可パターン', link: '/ja/10-security/07-authorization-patterns' },
                         ]
                       },
                       {
@@ -519,6 +533,7 @@ jobs:
                           { text: 'メトリクスとモニタリング', link: '/ja/11-observability/02-metrics-monitoring' },
                           { text: 'ロギング', link: '/ja/11-observability/03-logging' },
                           { text: 'アラート', link: '/ja/11-observability/04-alerting' },
+                          { text: 'SLOとエラーバジェット', link: '/ja/11-observability/05-slos-error-budgets' },
                         ]
                       },
                       {
@@ -537,6 +552,7 @@ jobs:
                           { text: 'バッチ処理', link: '/ja/13-data-pipelines/01-batch-processing' },
                           { text: 'ストリーム処理', link: '/ja/13-data-pipelines/02-stream-processing' },
                           { text: 'Lambda/Kappaアーキテクチャ', link: '/ja/13-data-pipelines/03-lambda-kappa-architecture' },
+                          { text: 'チェンジデータキャプチャ', link: '/ja/13-data-pipelines/04-change-data-capture' },
                         ]
                       },
                       {
@@ -557,6 +573,8 @@ jobs:
                         items: [
                           { text: 'デプロイメント戦略', link: '/ja/15-deployment/01-deployment-strategies' },
                           { text: 'フィーチャーフラグ', link: '/ja/15-deployment/02-feature-flags' },
+                          { text: 'DBマイグレーション', link: '/ja/15-deployment/03-database-migrations' },
+                          { text: 'CI/CDとGitOps', link: '/ja/15-deployment/04-cicd-gitops' },
                         ]
                       },
                       {
@@ -708,7 +726,7 @@ jobs:
                 </nav>
               </div>
               <div class="atlas-metrics" aria-label="Reference statistics">
-                <p><strong>116</strong><span>documented articles</span></p>
+                <p><strong>126</strong><span>documented articles</span></p>
                 <p><strong>18</strong><span>design domains</span></p>
                 <p><strong>10</strong><span>production studies</span></p>
                 <p><strong>10</strong><span>foundational papers</span></p>
