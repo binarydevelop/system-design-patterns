@@ -149,6 +149,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Prompt Engineering](16-llm-systems/06-prompt-engineering.md)
 - [Fine-Tuning Patterns](16-llm-systems/07-fine-tuning-patterns.md)
 - [Context Management](16-llm-systems/08-context-management.md)
+- [Harness Engineering](16-llm-systems/09-harness-engineering.md)
 
 ### Part 17: GraphQL
 - [GraphQL Fundamentals](17-graphql/01-graphql-fundamentals.md)

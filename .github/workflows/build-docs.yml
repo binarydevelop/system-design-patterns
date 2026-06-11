@@ -260,6 +260,7 @@ jobs:
                 { text: 'Prompt Engineering', link: '/16-llm-systems/06-prompt-engineering' },
                 { text: 'Fine-Tuning Patterns', link: '/16-llm-systems/07-fine-tuning-patterns' },
                 { text: 'Context Management', link: '/16-llm-systems/08-context-management' },
+                { text: 'Harness Engineering', link: '/16-llm-systems/09-harness-engineering' },
               ]
             },
             {
@@ -570,6 +571,7 @@ jobs:
                           { text: 'プロンプトエンジニアリング', link: '/ja/16-llm-systems/06-prompt-engineering' },
                           { text: 'ファインチューニング', link: '/ja/16-llm-systems/07-fine-tuning-patterns' },
                           { text: 'コンテキスト管理', link: '/ja/16-llm-systems/08-context-management' },
+                          { text: 'ハーネスエンジニアリング', link: '/ja/16-llm-systems/09-harness-engineering' },
                         ]
                       },
                       {
