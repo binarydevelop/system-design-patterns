@@ -103,6 +103,7 @@ jobs:
             "01-foundations/07-network-partitions.md"
             "01-foundations/08-idempotency.md"
             "01-foundations/09-distributed-locks.md"
+            "01-foundations/10-capacity-planning.md"
             # Part 2: Distributed Databases
             "02-distributed-databases/01-single-leader-replication.md"
             "02-distributed-databases/02-multi-leader-replication.md"
@@ -113,6 +114,7 @@ jobs:
             "02-distributed-databases/07-distributed-transactions.md"
             "02-distributed-databases/08-consensus-algorithms.md"
             "02-distributed-databases/09-leader-election.md"
+            "02-distributed-databases/10-data-modeling.md"
             # Part 3: Storage Engines
             "03-storage-engines/01-b-trees.md"
             "03-storage-engines/02-lsm-trees.md"
@@ -152,6 +154,7 @@ jobs:
             "06-scaling/10-retries-timeouts-hedging.md"
             "06-scaling/11-cell-based-architecture.md"
             "06-scaling/12-multi-tenancy.md"
+            "06-scaling/13-dns-and-connection-management.md"
             # Part 7: Real-Time
             "07-real-time/01-polling.md"
             "07-real-time/02-long-polling.md"
@@ -205,6 +208,7 @@ jobs:
             "11-observability/04-alerting.md"
             "11-observability/05-slos-error-budgets.md"
             "11-observability/06-finops-cost-engineering.md"
+            "11-observability/07-incident-management.md"
             # Part 12: Service Mesh
             "12-service-mesh/01-service-discovery.md"
             "12-service-mesh/02-api-gateway.md"
@@ -229,6 +233,7 @@ jobs:
             "15-deployment/03-database-migrations.md"
             "15-deployment/04-cicd-gitops.md"
             "15-deployment/05-disaster-recovery.md"
+            "15-deployment/06-migration-strategies.md"
             # Part 16: LLM Systems
             "16-llm-systems/01-agent-fundamentals.md"
             "16-llm-systems/02-orchestration-patterns.md"

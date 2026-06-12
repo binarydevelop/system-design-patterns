@@ -24,6 +24,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Network Partitions](01-foundations/07-network-partitions.md)
 - [Idempotency](01-foundations/08-idempotency.md)
 - [Distributed Locks](01-foundations/09-distributed-locks.md)
+- [Capacity Planning and Estimation](01-foundations/10-capacity-planning.md)
 
 ### Part 2: Distributed Databases
 - [Single-Leader Replication](02-distributed-databases/01-single-leader-replication.md)
@@ -35,6 +36,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Distributed Transactions](02-distributed-databases/07-distributed-transactions.md)
 - [Consensus Algorithms](02-distributed-databases/08-consensus-algorithms.md)
 - [Leader Election](02-distributed-databases/09-leader-election.md)
+- [Data Modeling for Access Patterns](02-distributed-databases/10-data-modeling.md)
 
 ### Part 3: Storage Engines
 - [B-Trees](03-storage-engines/01-b-trees.md)
@@ -78,6 +80,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Retries, Timeouts, and Hedging](06-scaling/10-retries-timeouts-hedging.md)
 - [Cell-Based Architecture and Shuffle Sharding](06-scaling/11-cell-based-architecture.md)
 - [Multi-Tenancy Patterns](06-scaling/12-multi-tenancy.md)
+- [DNS and Connection Management](06-scaling/13-dns-and-connection-management.md)
 
 ### Part 7: Real-Time Systems
 - [Polling](07-real-time/01-polling.md)
@@ -136,6 +139,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Alerting](11-observability/04-alerting.md)
 - [SLOs and Error Budgets](11-observability/05-slos-error-budgets.md)
 - [FinOps and Cost Engineering](11-observability/06-finops-cost-engineering.md)
+- [Incident Management and Postmortems](11-observability/07-incident-management.md)
 
 ### Part 12: Service Mesh
 - [Service Discovery](12-service-mesh/01-service-discovery.md)
@@ -164,6 +168,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Database Schema Migrations](15-deployment/03-database-migrations.md)
 - [CI/CD and GitOps](15-deployment/04-cicd-gitops.md)
 - [Disaster Recovery](15-deployment/05-disaster-recovery.md)
+- [Migration Strategies](15-deployment/06-migration-strategies.md)
 
 ### Part 16: LLM Systems
 - [Agent Fundamentals](16-llm-systems/01-agent-fundamentals.md)

@@ -75,6 +75,7 @@ jobs:
                 { text: 'Network Partitions', link: '/01-foundations/07-network-partitions' },
                 { text: 'Idempotency', link: '/01-foundations/08-idempotency' },
                 { text: 'Distributed Locks', link: '/01-foundations/09-distributed-locks' },
+                { text: 'Capacity Planning & Estimation', link: '/01-foundations/10-capacity-planning' },
               ]
             },
             {
@@ -90,6 +91,7 @@ jobs:
                 { text: 'Distributed Transactions', link: '/02-distributed-databases/07-distributed-transactions' },
                 { text: 'Consensus Algorithms', link: '/02-distributed-databases/08-consensus-algorithms' },
                 { text: 'Leader Election', link: '/02-distributed-databases/09-leader-election' },
+                { text: 'Data Modeling', link: '/02-distributed-databases/10-data-modeling' },
               ]
             },
             {
@@ -149,6 +151,7 @@ jobs:
                 { text: 'Retries & Hedging', link: '/06-scaling/10-retries-timeouts-hedging' },
                 { text: 'Cell-Based Architecture', link: '/06-scaling/11-cell-based-architecture' },
                 { text: 'Multi-Tenancy', link: '/06-scaling/12-multi-tenancy' },
+                { text: 'DNS & Connections', link: '/06-scaling/13-dns-and-connection-management' },
               ]
             },
             {
@@ -227,6 +230,7 @@ jobs:
                 { text: 'Alerting', link: '/11-observability/04-alerting' },
                 { text: 'SLOs & Error Budgets', link: '/11-observability/05-slos-error-budgets' },
                 { text: 'FinOps & Cost', link: '/11-observability/06-finops-cost-engineering' },
+                { text: 'Incident Management', link: '/11-observability/07-incident-management' },
               ]
             },
             {
@@ -271,6 +275,7 @@ jobs:
                 { text: 'Database Migrations', link: '/15-deployment/03-database-migrations' },
                 { text: 'CI/CD & GitOps', link: '/15-deployment/04-cicd-gitops' },
                 { text: 'Disaster Recovery', link: '/15-deployment/05-disaster-recovery' },
+                { text: 'Migration Strategies', link: '/15-deployment/06-migration-strategies' },
               ]
             },
             {
@@ -412,6 +417,7 @@ jobs:
                           { text: 'ネットワーク分断', link: '/ja/01-foundations/07-network-partitions' },
                           { text: '冪等性', link: '/ja/01-foundations/08-idempotency' },
                           { text: '分散ロック', link: '/ja/01-foundations/09-distributed-locks' },
+                          { text: 'キャパシティプランニング', link: '/ja/01-foundations/10-capacity-planning' },
                         ]
                       },
                       {
@@ -427,6 +433,7 @@ jobs:
                           { text: '分散トランザクション', link: '/ja/02-distributed-databases/07-distributed-transactions' },
                           { text: 'コンセンサスアルゴリズム', link: '/ja/02-distributed-databases/08-consensus-algorithms' },
                           { text: 'リーダー選出', link: '/ja/02-distributed-databases/09-leader-election' },
+                          { text: 'データモデリング', link: '/ja/02-distributed-databases/10-data-modeling' },
                         ]
                       },
                       {
@@ -486,6 +493,7 @@ jobs:
                           { text: 'リトライとヘッジング', link: '/ja/06-scaling/10-retries-timeouts-hedging' },
                           { text: 'セルベースアーキテクチャ', link: '/ja/06-scaling/11-cell-based-architecture' },
                           { text: 'マルチテナンシー', link: '/ja/06-scaling/12-multi-tenancy' },
+                          { text: 'DNSとコネクション管理', link: '/ja/06-scaling/13-dns-and-connection-management' },
                         ]
                       },
                       {
@@ -564,6 +572,7 @@ jobs:
                           { text: 'アラート', link: '/ja/11-observability/04-alerting' },
                           { text: 'SLOとエラーバジェット', link: '/ja/11-observability/05-slos-error-budgets' },
                           { text: 'FinOpsとコスト工学', link: '/ja/11-observability/06-finops-cost-engineering' },
+                          { text: 'インシデント管理', link: '/ja/11-observability/07-incident-management' },
                         ]
                       },
                       {
@@ -608,6 +617,7 @@ jobs:
                           { text: 'DBマイグレーション', link: '/ja/15-deployment/03-database-migrations' },
                           { text: 'CI/CDとGitOps', link: '/ja/15-deployment/04-cicd-gitops' },
                           { text: 'ディザスタリカバリ', link: '/ja/15-deployment/05-disaster-recovery' },
+                          { text: 'マイグレーション戦略', link: '/ja/15-deployment/06-migration-strategies' },
                         ]
                       },
                       {
@@ -760,7 +770,7 @@ jobs:
                 </nav>
               </div>
               <div class="atlas-metrics" aria-label="Reference statistics">
-                <p><strong>143</strong><span>documented articles</span></p>
+                <p><strong>148</strong><span>documented articles</span></p>
                 <p><strong>18</strong><span>design domains</span></p>
                 <p><strong>13</strong><span>production studies</span></p>
                 <p><strong>15</strong><span>foundational papers</span></p>
