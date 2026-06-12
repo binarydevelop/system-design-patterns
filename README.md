@@ -99,6 +99,9 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Discord Voice](08-case-studies/08-discord.md)
 - [Google Maps](08-case-studies/09-google-maps.md)
 - [WhatsApp Messaging](08-case-studies/10-whatsapp.md)
+- [Figma](08-case-studies/11-figma.md)
+- [Cloudflare](08-case-studies/12-cloudflare.md)
+- [LLM Inference Platforms](08-case-studies/13-llm-inference-platforms.md)
 
 ### Part 9: Whitepapers
 - [MapReduce](09-whitepapers/01-mapreduce.md) (2004)
@@ -111,6 +114,11 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Chubby](09-whitepapers/08-chubby.md) (2006)
 - [Aurora](09-whitepapers/09-aurora.md) (2017)
 - [CockroachDB](09-whitepapers/10-cockroachdb.md) (2020)
+- [Zanzibar](09-whitepapers/11-zanzibar.md) (2019)
+- [Monarch](09-whitepapers/12-monarch.md) (2020)
+- [FoundationDB](09-whitepapers/13-foundationdb.md) (2021)
+- [DynamoDB](09-whitepapers/14-dynamodb-2022.md) (2022)
+- [Attention Is All You Need](09-whitepapers/15-attention-transformers.md) (2017)
 
 ### Part 10: Security
 - [Authentication Fundamentals](10-security/01-authentication-fundamentals.md)

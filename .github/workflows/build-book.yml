@@ -171,6 +171,9 @@ jobs:
             "08-case-studies/08-discord.md"
             "08-case-studies/09-google-maps.md"
             "08-case-studies/10-whatsapp.md"
+            "08-case-studies/11-figma.md"
+            "08-case-studies/12-cloudflare.md"
+            "08-case-studies/13-llm-inference-platforms.md"
             # Part 9: Whitepapers
             "09-whitepapers/01-mapreduce.md"
             "09-whitepapers/02-dynamo.md"
@@ -182,6 +185,11 @@ jobs:
             "09-whitepapers/08-chubby.md"
             "09-whitepapers/09-aurora.md"
             "09-whitepapers/10-cockroachdb.md"
+            "09-whitepapers/11-zanzibar.md"
+            "09-whitepapers/12-monarch.md"
+            "09-whitepapers/13-foundationdb.md"
+            "09-whitepapers/14-dynamodb-2022.md"
+            "09-whitepapers/15-attention-transformers.md"
             # Part 10: Security
             "10-security/01-authentication-fundamentals.md"
             "10-security/02-oauth2-openid-connect.md"
