@@ -44,6 +44,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Bloom Filters](03-storage-engines/05-bloom-filters.md)
 - [Column-Oriented Storage](03-storage-engines/06-column-storage.md)
 - [Data Encoding](03-storage-engines/07-data-encoding.md)
+- [Object Storage Internals](03-storage-engines/08-object-storage.md)
 
 ### Part 4: Caching
 - [Cache Strategies](04-caching/01-cache-strategies.md)
@@ -75,6 +76,8 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Auto-Scaling](06-scaling/08-auto-scaling.md)
 - [Multi-Region Architecture](06-scaling/09-multi-region-architecture.md)
 - [Retries, Timeouts, and Hedging](06-scaling/10-retries-timeouts-hedging.md)
+- [Cell-Based Architecture and Shuffle Sharding](06-scaling/11-cell-based-architecture.md)
+- [Multi-Tenancy Patterns](06-scaling/12-multi-tenancy.md)
 
 ### Part 7: Real-Time Systems
 - [Polling](07-real-time/01-polling.md)
@@ -83,6 +86,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [WebSockets](07-real-time/04-websockets.md)
 - [WebRTC](07-real-time/05-webrtc.md)
 - [Presence Systems](07-real-time/06-presence.md)
+- [CRDTs and Collaborative Editing](07-real-time/07-crdts-collaborative-editing.md)
 
 ### Part 8: Case Studies
 - [Twitter Timeline](08-case-studies/01-twitter.md)
@@ -123,17 +127,20 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Logging](11-observability/03-logging.md)
 - [Alerting](11-observability/04-alerting.md)
 - [SLOs and Error Budgets](11-observability/05-slos-error-budgets.md)
+- [FinOps and Cost Engineering](11-observability/06-finops-cost-engineering.md)
 
 ### Part 12: Service Mesh
 - [Service Discovery](12-service-mesh/01-service-discovery.md)
 - [API Gateway](12-service-mesh/02-api-gateway.md)
 - [Sidecar Pattern](12-service-mesh/03-sidecar-pattern.md)
+- [API Design Patterns](12-service-mesh/04-api-design-patterns.md)
 
 ### Part 13: Data Pipelines
 - [Batch Processing](13-data-pipelines/01-batch-processing.md)
 - [Stream Processing](13-data-pipelines/02-stream-processing.md)
 - [Lambda and Kappa Architecture](13-data-pipelines/03-lambda-kappa-architecture.md)
 - [Change Data Capture](13-data-pipelines/04-change-data-capture.md)
+- [Lakehouse and Open Table Formats](13-data-pipelines/05-lakehouse-table-formats.md)
 
 ### Part 14: Search Systems
 - [Inverted Indexes](14-search-systems/01-inverted-indexes.md)
@@ -148,6 +155,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Feature Flags](15-deployment/02-feature-flags.md)
 - [Database Schema Migrations](15-deployment/03-database-migrations.md)
 - [CI/CD and GitOps](15-deployment/04-cicd-gitops.md)
+- [Disaster Recovery](15-deployment/05-disaster-recovery.md)
 
 ### Part 16: LLM Systems
 - [Agent Fundamentals](16-llm-systems/01-agent-fundamentals.md)
@@ -159,6 +167,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Fine-Tuning Patterns](16-llm-systems/07-fine-tuning-patterns.md)
 - [Context Management](16-llm-systems/08-context-management.md)
 - [Harness Engineering](16-llm-systems/09-harness-engineering.md)
+- [LLM Evaluation and Observability](16-llm-systems/10-llm-evaluation.md)
 
 ### Part 17: GraphQL
 - [GraphQL Fundamentals](17-graphql/01-graphql-fundamentals.md)
