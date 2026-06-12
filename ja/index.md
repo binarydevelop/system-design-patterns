@@ -41,10 +41,10 @@ title: システム設計パターン
       </nav>
     </div>
     <div class="atlas-metrics" aria-label="リファレンス統計">
-      <p><strong>135</strong><span>記事</span></p>
+      <p><strong>143</strong><span>記事</span></p>
       <p><strong>18</strong><span>設計領域</span></p>
-      <p><strong>10</strong><span>本番事例</span></p>
-      <p><strong>10</strong><span>基礎論文</span></p>
+      <p><strong>13</strong><span>本番事例</span></p>
+      <p><strong>15</strong><span>基礎論文</span></p>
     </div>
   </section>
 

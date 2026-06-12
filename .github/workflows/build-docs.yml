@@ -178,6 +178,9 @@ jobs:
                 { text: 'Discord', link: '/08-case-studies/08-discord' },
                 { text: 'Google Maps', link: '/08-case-studies/09-google-maps' },
                 { text: 'WhatsApp', link: '/08-case-studies/10-whatsapp' },
+                { text: 'Figma', link: '/08-case-studies/11-figma' },
+                { text: 'Cloudflare', link: '/08-case-studies/12-cloudflare' },
+                { text: 'LLM Inference Platforms', link: '/08-case-studies/13-llm-inference-platforms' },
               ]
             },
             {
@@ -194,6 +197,11 @@ jobs:
                 { text: 'Chubby', link: '/09-whitepapers/08-chubby' },
                 { text: 'Aurora', link: '/09-whitepapers/09-aurora' },
                 { text: 'CockroachDB', link: '/09-whitepapers/10-cockroachdb' },
+                { text: 'Zanzibar', link: '/09-whitepapers/11-zanzibar' },
+                { text: 'Monarch', link: '/09-whitepapers/12-monarch' },
+                { text: 'FoundationDB', link: '/09-whitepapers/13-foundationdb' },
+                { text: 'DynamoDB (2022)', link: '/09-whitepapers/14-dynamodb-2022' },
+                { text: 'The Transformer', link: '/09-whitepapers/15-attention-transformers' },
               ]
             },
             {
@@ -507,6 +515,9 @@ jobs:
                           { text: 'Discord', link: '/ja/08-case-studies/08-discord' },
                           { text: 'Google Maps', link: '/ja/08-case-studies/09-google-maps' },
                           { text: 'WhatsApp', link: '/ja/08-case-studies/10-whatsapp' },
+                          { text: 'Figma', link: '/ja/08-case-studies/11-figma' },
+                          { text: 'Cloudflare', link: '/ja/08-case-studies/12-cloudflare' },
+                          { text: 'LLM推論基盤', link: '/ja/08-case-studies/13-llm-inference-platforms' },
                         ]
                       },
                       {
@@ -523,6 +534,11 @@ jobs:
                           { text: 'Chubby', link: '/ja/09-whitepapers/08-chubby' },
                           { text: 'Aurora', link: '/ja/09-whitepapers/09-aurora' },
                           { text: 'CockroachDB', link: '/ja/09-whitepapers/10-cockroachdb' },
+                          { text: 'Zanzibar', link: '/ja/09-whitepapers/11-zanzibar' },
+                          { text: 'Monarch', link: '/ja/09-whitepapers/12-monarch' },
+                          { text: 'FoundationDB', link: '/ja/09-whitepapers/13-foundationdb' },
+                          { text: 'DynamoDB (2022)', link: '/ja/09-whitepapers/14-dynamodb-2022' },
+                          { text: 'Transformer', link: '/ja/09-whitepapers/15-attention-transformers' },
                         ]
                       },
                       {
@@ -744,10 +760,10 @@ jobs:
                 </nav>
               </div>
               <div class="atlas-metrics" aria-label="Reference statistics">
-                <p><strong>135</strong><span>documented articles</span></p>
+                <p><strong>143</strong><span>documented articles</span></p>
                 <p><strong>18</strong><span>design domains</span></p>
-                <p><strong>10</strong><span>production studies</span></p>
-                <p><strong>10</strong><span>foundational papers</span></p>
+                <p><strong>13</strong><span>production studies</span></p>
+                <p><strong>15</strong><span>foundational papers</span></p>
               </div>
             </section>
 
