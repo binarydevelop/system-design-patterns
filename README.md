@@ -23,6 +23,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Failure Modes](01-foundations/06-failure-modes.md)
 - [Network Partitions](01-foundations/07-network-partitions.md)
 - [Idempotency](01-foundations/08-idempotency.md)
+- [Distributed Locks](01-foundations/09-distributed-locks.md)
 
 ### Part 2: Distributed Databases
 - [Single-Leader Replication](02-distributed-databases/01-single-leader-replication.md)
@@ -61,6 +62,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [CQRS](05-messaging/06-cqrs.md)
 - [Outbox Pattern](05-messaging/07-outbox-pattern.md)
 - [Dead Letter Queues](05-messaging/08-dead-letter-queues.md)
+- [Saga Pattern](05-messaging/09-saga-pattern.md)
 
 ### Part 6: Scaling
 - [Load Balancing](06-scaling/01-load-balancing.md)
@@ -71,6 +73,8 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Circuit Breakers](06-scaling/06-circuit-breakers.md)
 - [Backpressure](06-scaling/07-backpressure.md)
 - [Auto-Scaling](06-scaling/08-auto-scaling.md)
+- [Multi-Region Architecture](06-scaling/09-multi-region-architecture.md)
+- [Retries, Timeouts, and Hedging](06-scaling/10-retries-timeouts-hedging.md)
 
 ### Part 7: Real-Time Systems
 - [Polling](07-real-time/01-polling.md)
@@ -111,12 +115,14 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [API Security](10-security/04-api-security.md)
 - [Zero Trust Architecture](10-security/05-zero-trust-architecture.md)
 - [Encryption Patterns](10-security/06-encryption.md)
+- [Authorization at Scale](10-security/07-authorization-patterns.md)
 
 ### Part 11: Observability
 - [Distributed Tracing](11-observability/01-distributed-tracing.md)
 - [Metrics and Monitoring](11-observability/02-metrics-monitoring.md)
 - [Logging](11-observability/03-logging.md)
 - [Alerting](11-observability/04-alerting.md)
+- [SLOs and Error Budgets](11-observability/05-slos-error-budgets.md)
 
 ### Part 12: Service Mesh
 - [Service Discovery](12-service-mesh/01-service-discovery.md)
@@ -127,6 +133,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Batch Processing](13-data-pipelines/01-batch-processing.md)
 - [Stream Processing](13-data-pipelines/02-stream-processing.md)
 - [Lambda and Kappa Architecture](13-data-pipelines/03-lambda-kappa-architecture.md)
+- [Change Data Capture](13-data-pipelines/04-change-data-capture.md)
 
 ### Part 14: Search Systems
 - [Inverted Indexes](14-search-systems/01-inverted-indexes.md)
@@ -139,6 +146,8 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 ### Part 15: Deployment
 - [Deployment Strategies](15-deployment/01-deployment-strategies.md)
 - [Feature Flags](15-deployment/02-feature-flags.md)
+- [Database Schema Migrations](15-deployment/03-database-migrations.md)
+- [CI/CD and GitOps](15-deployment/04-cicd-gitops.md)
 
 ### Part 16: LLM Systems
 - [Agent Fundamentals](16-llm-systems/01-agent-fundamentals.md)
