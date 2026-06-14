@@ -327,6 +327,10 @@ jobs:
                 { text: 'Model Serving', link: '/19-ml-systems/03-model-serving' },
                 { text: 'Model Monitoring', link: '/19-ml-systems/04-model-monitoring' },
                 { text: 'Training Pipelines', link: '/19-ml-systems/05-training-pipelines' },
+                { text: 'Model Deployment & Rollouts', link: '/19-ml-systems/06-model-deployment-rollouts' },
+                { text: 'Recommendation Systems', link: '/19-ml-systems/07-recommendation-systems' },
+                { text: 'Online Experiments', link: '/19-ml-systems/08-online-experiments' },
+                { text: 'ML Risk & Governance', link: '/19-ml-systems/09-ml-risk-governance' },
               ]
             },
           ]
@@ -680,6 +684,10 @@ jobs:
                           { text: 'モデルサービング', link: '/ja/19-ml-systems/03-model-serving' },
                           { text: 'モデルモニタリング', link: '/ja/19-ml-systems/04-model-monitoring' },
                           { text: 'トレーニングパイプライン', link: '/ja/19-ml-systems/05-training-pipelines' },
+                          { text: 'モデルデプロイとロールアウト', link: '/ja/19-ml-systems/06-model-deployment-rollouts' },
+                          { text: '推薦システム', link: '/ja/19-ml-systems/07-recommendation-systems' },
+                          { text: 'オンライン実験', link: '/ja/19-ml-systems/08-online-experiments' },
+                          { text: 'MLリスクとガバナンス', link: '/ja/19-ml-systems/09-ml-risk-governance' },
                         ]
                       }
                     ]
@@ -792,7 +800,7 @@ jobs:
                 </nav>
               </div>
               <div class="atlas-metrics" aria-label="Reference statistics">
-                <p><strong>153</strong><span>documented articles</span></p>
+                <p><strong>157</strong><span>documented articles</span></p>
                 <p><strong>19</strong><span>design domains</span></p>
                 <p><strong>13</strong><span>production studies</span></p>
                 <p><strong>15</strong><span>foundational papers</span></p>

@@ -48,6 +48,23 @@ The feedback loop is the difference. A recommender changes what users see, which
 
 ---
 
+## ML System Control Planes
+
+Production ML systems have several control planes. Treating all of them as "the model" hides the actual blast radius.
+
+| Plane | Controls | Example incident when weak |
+|---|---|---|
+| Data plane | Ingestion, labels, joins, backfills, retention | Model learns from duplicated events or leaked future labels |
+| Feature plane | Feature definitions, online/offline parity, freshness | Online model sees stale or semantically changed features |
+| Model plane | Artifacts, registry state, runtime, rollback | Wrong artifact or incompatible runtime reaches production |
+| Decision plane | Thresholds, policies, fallbacks, human review | Better AUC creates worse user actions because policy stayed old |
+| Experiment plane | Assignment, exposure logging, metrics, guardrails | Team ships a model because of biased or broken experiment data |
+| Governance plane | Risk tier, ownership, audit, approval, retirement | High-impact model runs with no owner or appeal path |
+
+If a design review cannot say which plane owns a change, the system is not ready for production.
+
+---
+
 ## Training vs Serving
 
 ```mermaid
@@ -73,6 +90,24 @@ Training optimizes quality over large historical datasets. Serving optimizes lat
 
 ---
 
+## Problem-to-Architecture Matrix
+
+Different ML problems need different system shapes.
+
+| Problem | Typical architecture | Latency pressure | Main risk |
+|---|---|---:|---|
+| Fraud / abuse decision | Online model + feature store + rules fallback + review queue | High | False positives and delayed labels |
+| Recommendation feed | Candidate generation + ranker + re-ranker + exploration logs | High | Feedback loops and objective mismatch |
+| Search ranking | Retrieval + ranking + interleaving/A-B tests | High | Position bias and stale indexes |
+| Churn / lifecycle prediction | Batch scoring + campaign system | Low | Stale segments and weak causal attribution |
+| Forecasting | Batch/streaming pipeline + planning workflow | Medium | Backtest leakage and seasonality shifts |
+| Content moderation | Multi-stage classifier + policy thresholds + human review | Medium | Irreversible action and policy drift |
+| Anomaly detection | Streaming features + online scoring + alert routing | Medium | Alert fatigue and baseline drift |
+
+The architecture should follow the decision loop. A fraud system needs fast features and review controls; a churn model needs reproducible batch scoring and causal measurement; a recommender needs exposure logs and exploration.
+
+---
+
 ## Core Design Decisions
 
 ### Batch, Online, or Streaming Prediction
@@ -92,6 +127,17 @@ Training optimizes quality over large historical datasets. Serving optimizes lat
 | Shared model service | Centralized rollout and observability | Adds network hop and service dependency |
 | Batch scoring job | Cheap and controllable | Stale predictions |
 | Edge model | Works near device/user | Hard model update and observability problem |
+
+### Rules, ML, or LLM
+
+| Approach | Use when | Watch out for |
+|---|---|---|
+| Rules | Logic is explicit, stable, and explainable | Rule explosion and hidden ordering bugs |
+| Classic ML | Many examples exist and prediction target is measurable | Data drift, leakage, and proxy metrics |
+| LLM | Task needs language reasoning or flexible generation | Cost, nondeterminism, prompt injection, evaluation difficulty |
+| Hybrid | Rules define safety boundaries; ML ranks or scores inside them | Ownership between policy and model can blur |
+
+Do not use ML to hide unclear product policy. First define the action, fallback, and acceptable failure mode.
 
 ---
 
@@ -141,6 +187,23 @@ Mitigations:
 - Separate observational metrics from causal experiments.
 - Evaluate on holdout traffic not fully controlled by the current model.
 
+### Proxy Objective Mismatch
+
+The model optimizes a metric that is easy to label but not the outcome the system actually needs.
+
+Examples:
+
+- Optimizing click-through rate increases low-quality clickbait.
+- Optimizing fraud recall blocks too many legitimate users.
+- Optimizing watch time reduces long-term satisfaction.
+
+Mitigations:
+
+- Define a metric hierarchy: primary, guardrail, diagnostic, slice.
+- Review top false positives and false negatives, not just aggregate metrics.
+- Promote models through online experiments when user impact matters.
+- Keep business policy outside the model when it must be reviewed explicitly.
+
 ---
 
 ## Operational Metrics
@@ -167,6 +230,20 @@ Mitigations:
 - Are quality metrics monitored after deployment, not only before deployment?
 - Is there a plan for delayed labels and missing labels?
 - Does the system have a safe exploration path to avoid self-confirming feedback loops?
+
+---
+
+## Maturity Model
+
+| Level | Characteristics | Risk |
+|---|---|---|
+| 0. Notebook model | Manual data pulls, ad hoc evaluation, manual deploy | Not reproducible |
+| 1. Scheduled training | Pipeline exists, but weak lineage and manual promotion | Bad data can train quietly |
+| 2. Registered models | Artifacts, metrics, and owners in a registry | Serving and feature parity may still drift |
+| 3. Controlled rollout | Shadow/canary, rollback, monitoring, feature contracts | Delayed labels still require process |
+| 4. Governed decision system | Risk tiering, audit logs, human controls, retirement | Higher process cost |
+
+Most teams should not jump from Level 0 to Level 4. Move one risk boundary at a time: reproducibility, then registry, then controlled rollout, then governance.
 
 ---
 

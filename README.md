@@ -204,6 +204,10 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Model Serving](19-ml-systems/03-model-serving.md)
 - [Model Monitoring](19-ml-systems/04-model-monitoring.md)
 - [Training Pipelines](19-ml-systems/05-training-pipelines.md)
+- [Model Deployment and Rollouts](19-ml-systems/06-model-deployment-rollouts.md)
+- [Recommendation Systems](19-ml-systems/07-recommendation-systems.md)
+- [Online Experiments](19-ml-systems/08-online-experiments.md)
+- [ML Risk and Governance](19-ml-systems/09-ml-risk-governance.md)
 
 ## Notation
 
