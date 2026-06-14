@@ -51,6 +51,23 @@ The same feature contract should drive both materialization paths. The storage e
 
 ---
 
+## Feature View Design
+
+A feature view is the unit of ownership and materialization. Design it around entity, time, freshness, and use case.
+
+| Dimension | Design question | Example |
+|---|---|---|
+| Entity | What key is scored? | `user_id`, `merchant_id`, `item_id`, `device_id` |
+| Time window | What history is summarized? | 10 minutes, 7 days, lifetime |
+| Freshness | How old can the value be? | 30 seconds for fraud, 24 hours for churn |
+| Source of truth | Which event/table owns the fact? | Payment events, login stream, item catalog |
+| Materialization | How does it reach offline/online stores? | Batch, streaming, request-time |
+| Default behavior | What happens on miss/null? | `0`, unknown bucket, fail closed |
+
+Bad feature views usually mix too many entities or hide time semantics in the name. `risk_score` is vague; `user_failed_login_count_10m` is reviewable.
+
+---
+
 ## Offline vs Online Store
 
 | Store | Optimized for | Typical systems | Main risk |
@@ -60,6 +77,20 @@ The same feature contract should drive both materialization paths. The storage e
 | Metadata store | Discovery and lineage | Catalog DB, registry service | Undocumented ownership |
 
 The online store is a [low-latency cache](../04-caching/01-cache-strategies.md) keyed by entity; hot entities create the same [hot-key/partitioning](../02-distributed-databases/05-partitioning-strategies.md) problems as any read-heavy store, and the materialization path that keeps it fresh is typically a [change-data-capture](../13-data-pipelines/04-change-data-capture.md) stream off the source events.
+
+---
+
+## Materialization Patterns
+
+| Pattern | Use when | Failure mode |
+|---|---|---|
+| Batch materialization | Features tolerate hours of staleness | Late jobs create stale online values |
+| Streaming materialization | Features need seconds/minutes freshness | Duplicates, out-of-order events, replay bugs |
+| Request-time features | Feature depends on current request | Latency spikes and dependency fanout |
+| Hybrid | Historical aggregates plus request context | Online/offline parity is harder |
+| On-demand backfill | Recover after bug or add new feature | Expensive recomputation and version confusion |
+
+Streaming materialization still needs idempotency. If the same event is replayed, counters and windows must not double count.
 
 ---
 
@@ -89,6 +120,16 @@ Correct dataset construction needs:
 - Availability timestamp: when the feature could be served.
 - Entity key: the user, account, item, device, or session being scored.
 
+### Point-in-Time Join Rules
+
+| Rule | Why |
+|---|---|
+| Join features using availability time, not processing completion time | Prevents future leakage |
+| Store feature history, not only latest values | Enables training snapshots and replay |
+| Include late-arriving events policy | Makes backtests match production |
+| Version backfills | Distinguishes original production value from corrected historical value |
+| Log online feature values | Allows parity checks and incident reconstruction |
+
 ---
 
 ## Feature Freshness
@@ -103,6 +144,23 @@ Feature freshness is a service-level objective ([SLOs & Error Budgets](../11-obs
 | Request-time | Computed per request | Cart value, device fingerprint |
 
 Freshness should be declared in metadata and monitored in production.
+
+---
+
+## Schema Evolution
+
+Feature changes are API changes for models.
+
+| Change | Compatibility | Rollout |
+|---|---|---|
+| Add optional feature | Usually compatible | Backfill offline, then expose online |
+| Add required feature | Breaking for old serving path | Deploy feature before model uses it |
+| Rename feature | Breaking | Dual-write old and new names during migration |
+| Change type | Breaking | New versioned feature name |
+| Change semantics | Breaking even if type matches | New version and owner approval |
+| Change default | Risky | Evaluate slices where missingness is common |
+
+If a feature's meaning changes, prefer a new feature name. Type compatibility does not imply semantic compatibility.
 
 ---
 
@@ -161,6 +219,21 @@ Mitigation: cache local reads, split keys by time window, shard large entities, 
 Models depend on features whose upstream team no longer maintains the source semantics.
 
 Mitigation: require owner metadata, usage tracking, deprecation notices, and feature-level change review.
+
+---
+
+## Build vs Buy Decision Matrix
+
+| Situation | Prefer simple pipeline | Prefer feature store |
+|---|---|---|
+| One offline model | Yes | Usually no |
+| Many models share the same features | No | Yes |
+| Online inference needs low-latency features | Maybe | Yes |
+| Regulated decisions need lineage | No | Yes |
+| Team lacks platform ownership | Yes | Only with managed service |
+| Features change weekly across teams | No | Yes |
+
+A feature store without ownership becomes another database. The platform must own contracts, metadata, freshness monitoring, and deprecation.
 
 ---
 

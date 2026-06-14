@@ -27,6 +27,22 @@ A training pipeline is a [batch data pipeline](../13-data-pipelines/01-batch-pro
 
 ---
 
+## Pipeline DAG Ownership
+
+| Stage | Owner | Contract |
+|---|---|---|
+| Source ingestion | Data/platform team | Fresh, deduplicated, schema-versioned data |
+| Label generation | Product/domain team | Label definition and delay window |
+| Feature computation | Feature owner | Point-in-time correct feature values |
+| Training | ML team | Reproducible artifact and metrics |
+| Evaluation | ML + product + risk owners | Promotion decision and guardrails |
+| Registry | Platform team | Artifact state, lineage, rollback target |
+| Deployment | Serving/platform team | Runtime compatibility and rollout controls |
+
+Ambiguous ownership is a common reason ML pipelines decay. Every stage should have an owner and a failure policy.
+
+---
+
 ## Reproducibility Contract
 
 A model version should answer:
@@ -61,6 +77,23 @@ Validation rules should be versioned with the pipeline and reviewed when source 
 
 ---
 
+## Train/Test Split Strategy
+
+The split must match the production question.
+
+| Split | Use when | Failure mode |
+|---|---|---|
+| Random row split | IID examples and no entity leakage | Overestimates quality for users/items seen in train |
+| Time-based split | Future performance matters | Sensitive to seasonality and one-off events |
+| Entity split | Need generalize to new users/items/accounts | Harder task; may understate warm-start quality |
+| Group split | Households, teams, merchants, creators | Requires correct group identity |
+| Geographic/market split | Launching into new region | Confounds region differences with time |
+| Interleaved online test | Ranking system comparison | Needs exposure logging and traffic |
+
+If production predicts the future, random splits are usually too optimistic.
+
+---
+
 ## Dataset Versioning
 
 Training data is usually too large to commit to Git, but the pipeline can version references:
@@ -81,6 +114,22 @@ environment:
 ```
 
 The goal is deterministic reconstruction, not storing everything in the model registry.
+
+---
+
+## Snapshot and Backfill Architecture
+
+```mermaid
+flowchart LR
+    SRC["Raw sources"] --> SNAP["Immutable snapshots"]
+    SNAP --> FEAT["Feature computation"]
+    FEAT --> TRAIN["Training set"]
+    BUG["Bug fix / new feature"] --> BACK["Backfill job"]
+    BACK --> SNAP
+    TRAIN --> REG["Dataset registry"]
+```
+
+Backfills are dangerous because they rewrite the apparent past. Keep the original production values when you need to debug historical decisions; use corrected backfills for future training only after validation.
 
 ---
 
@@ -106,6 +155,25 @@ A promotion gate should include:
 - Latency or model-size checks for serving.
 - Feature compatibility checks.
 - Human approval for high-risk decisions.
+
+---
+
+## Experiment Tracking
+
+Track experiments as immutable runs, not notebook names.
+
+| Artifact | Why it matters |
+|---|---|
+| Code commit | Rebuild the trainer |
+| Dataset snapshot | Rebuild the examples |
+| Feature versions | Explain score differences |
+| Hyperparameters | Compare runs honestly |
+| Metrics and slices | Decide promotion |
+| Random seeds | Debug variance |
+| Runtime image | Reproduce dependencies |
+| Cost and duration | Manage training economics |
+
+The model registry should point to the winning run, but the run record should remain queryable after the model is retired.
 
 ---
 

@@ -20,6 +20,21 @@ Model serving turns trained artifacts into production predictions. The design sp
 
 ---
 
+## Serving Topologies
+
+| Topology | Best for | Trade-off |
+|---|---|---|
+| Embedded model library | Ultra-low latency, simple models | Hard to update and observe centrally |
+| Sidecar predictor | Service-local latency with separate model process | More deployment complexity |
+| Central prediction service | Shared rollout, logging, governance | Network hop and shared dependency |
+| Model mesh / multi-model server | Many models with common runtime | Noisy neighbors and routing complexity |
+| Async scoring queue | Non-blocking enrichment | Delayed decisions and queue semantics |
+| Batch scoring | Cheap high-throughput predictions | Staleness and invalidation |
+
+The topology should follow the decision criticality. Fraud authorization usually needs online synchronous serving with strict fallback; daily marketing scores usually belong in batch.
+
+---
+
 ## Online Serving Architecture
 
 ```mermaid
@@ -41,6 +56,31 @@ The prediction log is essential. It should capture request metadata, model versi
 
 ---
 
+## Prediction API Contract
+
+The model server interface should be stable even as artifacts change.
+
+```yaml
+request:
+  request_id: string
+  entity_id: string
+  model_name: string
+  feature_refs: object
+  context: object
+response:
+  model_version: string
+  policy_version: string
+  score: number
+  decision: string
+  confidence: number
+  explanations_ref: string
+  fallback_used: boolean
+```
+
+The response should include the model and policy version so downstream logs can reconstruct the decision. Returning only a score makes incident analysis painful.
+
+---
+
 ## Latency Budget
 
 ```text
@@ -55,6 +95,20 @@ Logging/egress        10 ms
 ```
 
 If feature lookup consumes the whole budget, optimizing the model will not fix the user experience. Budget each step before choosing serving hardware.
+
+---
+
+## Feature Fetch Patterns
+
+| Pattern | Use when | Risk |
+|---|---|---|
+| Gateway fetches features | Need central logging and fallback | Gateway becomes a bottleneck |
+| Model server fetches features | Model owns feature set | Hidden dependency fanout |
+| Caller provides features | Caller already has context | Training-serving skew across callers |
+| Precomputed feature vector | Tight p99 budget | Stale values |
+| Two-pass fetch | Cheap features first, expensive only for likely positives | Complex logic and biased logs |
+
+Feature fetch is often more fragile than inference. Treat the feature store as a dependency with its own SLO, timeout, and fallback.
 
 ---
 
@@ -96,6 +150,28 @@ Use batching when the model is compute-heavy and requests can wait briefly. Avoi
 
 ---
 
+## Capacity Planning
+
+Start with a simple estimate:
+
+```text
+required_workers =
+  peak_qps * p99_inference_seconds / target_utilization
+```
+
+Then add headroom for:
+
+- Feature-store latency spikes.
+- Model load time and rolling deploy capacity.
+- Canary/shadow traffic.
+- Batch size variance.
+- Accelerator memory fragmentation.
+- Regional failover.
+
+For GPU-backed serving, memory often limits capacity before raw compute does. Track maximum resident model memory, activation memory, and concurrent batch memory separately.
+
+---
+
 ## Autoscaling
 
 Autoscale on serving-specific signals, not only CPU:
@@ -109,6 +185,22 @@ Autoscale on serving-specific signals, not only CPU:
 - Timeout rate.
 
 Large models make scale-from-zero risky because cold start can take minutes. Keep warm capacity for latency-critical models.
+
+---
+
+## Degradation Ladder
+
+Define fallback behavior before incidents.
+
+```mermaid
+flowchart TD
+    A["Full model"] --> B["Cached features"]
+    B --> C["Smaller model"]
+    C --> D["Rules fallback"]
+    D --> E["Manual review / safe default"]
+```
+
+Each step should be explicit about user impact. A "safe default" for fraud may be manual review; a "safe default" for recommendations may be popular content.
 
 ---
 

@@ -265,6 +265,10 @@ jobs:
             "19-ml-systems/03-model-serving.md"
             "19-ml-systems/04-model-monitoring.md"
             "19-ml-systems/05-training-pipelines.md"
+            "19-ml-systems/06-model-deployment-rollouts.md"
+            "19-ml-systems/07-recommendation-systems.md"
+            "19-ml-systems/08-online-experiments.md"
+            "19-ml-systems/09-ml-risk-governance.md"
           )
           
           # Collect existing chapters (no empty lines)

@@ -33,6 +33,22 @@ HTTP 200 responses can hide bad predictions. A model can return quickly and cons
 
 ---
 
+## Metric Timing Ladder
+
+ML monitoring must handle signals that arrive at different speeds.
+
+| Timing | Signal | Use |
+|---|---|---|
+| Immediate | Latency, errors, feature misses, fallback rate | Availability and rollout safety |
+| Near-real-time | Score distribution, class mix, drift, freshness | Detect behavior shifts |
+| Short-delay proxy | Clicks, manual review rate, session actions | Early product signal |
+| Delayed ground truth | Chargebacks, retention, loan default, abuse appeal | True quality decision |
+| Periodic audit | Slice fairness, policy review, human review quality | Governance and long-term risk |
+
+Do not let fast proxy metrics permanently replace delayed ground truth. Use proxies to decide whether to pause, not necessarily whether to launch fully.
+
+---
+
 ## Drift Types
 
 ### Data Drift
@@ -61,6 +77,22 @@ Example: the base rate of spam changes during an attack campaign.
 
 ---
 
+## Drift Detection Decision Matrix
+
+| Signal | Works for | Weakness |
+|---|---|---|
+| Null/default rate | Broken pipelines and missing joins | Does not catch semantic drift |
+| Population Stability Index | Tabular feature distribution shifts | Sensitive to binning |
+| KS test | Numeric feature distribution changes | High traffic makes tiny shifts significant |
+| Category distribution delta | Enum/category changes | Long tail can be noisy |
+| Embedding centroid shift | Vector representation drift | Hard to explain |
+| Prediction distribution | Output behavior change | Cannot tell whether input or model caused it |
+| Slice quality | Real user impact by segment | Needs labels and enough traffic |
+
+Drift is a smoke alarm, not a root cause. The response should be triage: source data, feature materialization, serving version, traffic mix, then true quality.
+
+---
+
 ## Label Delay
 
 ```mermaid
@@ -76,6 +108,24 @@ sequenceDiagram
 ```
 
 Some systems get labels quickly, such as click/no-click. Others wait weeks, such as fraud chargebacks or loan defaults. Monitoring must separate fast proxy metrics from delayed ground truth.
+
+---
+
+## Triage Flow
+
+```mermaid
+flowchart TD
+    ALERT["Model alert"] --> RUNTIME{"Runtime issue?"}
+    RUNTIME -->|"yes"| OPS["Check serving, feature store, rollout"]
+    RUNTIME -->|"no"| DATA{"Input distribution changed?"}
+    DATA -->|"yes"| SOURCE["Check upstream data and feature materialization"]
+    DATA -->|"no"| LABELS{"Labels available?"}
+    LABELS -->|"no"| PROXY["Use proxy metrics and hold ramp"]
+    LABELS -->|"yes"| QUALITY["Evaluate quality and slices"]
+    QUALITY --> ACTION["Rollback, retrain, threshold change, or accept"]
+```
+
+The first question is operational: did the system start serving something different? Only then move to model quality.
 
 ---
 
@@ -125,6 +175,24 @@ flowchart LR
 ```
 
 Monitoring should produce action, not just charts. Every alert needs an owner and a playbook.
+
+---
+
+## Model Quality SLOs
+
+Model SLOs should define both service health and decision quality.
+
+| SLO | Example |
+|---|---|
+| Availability | 99.9% prediction requests return within policy |
+| Latency | p99 prediction latency below 100 ms |
+| Freshness | Critical features updated within 120 seconds |
+| Fallback | Rules fallback below 1% outside incidents |
+| Quality | False positive rate below agreed threshold on mature labels |
+| Slice guardrail | No critical segment falls below minimum precision/recall |
+| Review load | Manual review queue p95 age below target |
+
+Quality SLOs often lag. Pair them with immediate guardrails so bad rollouts can be paused before final labels arrive.
 
 ---
 
