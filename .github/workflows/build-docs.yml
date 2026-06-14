@@ -279,7 +279,22 @@ jobs:
               ]
             },
             {
-              text: '16. LLM Systems',
+              text: '16. ML Systems',
+              collapsed: true,
+              items: [
+                { text: 'ML System Fundamentals', link: '/19-ml-systems/01-ml-system-fundamentals' },
+                { text: 'Feature Stores', link: '/19-ml-systems/02-feature-stores' },
+                { text: 'Model Serving', link: '/19-ml-systems/03-model-serving' },
+                { text: 'Model Monitoring', link: '/19-ml-systems/04-model-monitoring' },
+                { text: 'Training Pipelines', link: '/19-ml-systems/05-training-pipelines' },
+                { text: 'Model Deployment & Rollouts', link: '/19-ml-systems/06-model-deployment-rollouts' },
+                { text: 'Recommendation Systems', link: '/19-ml-systems/07-recommendation-systems' },
+                { text: 'Online Experiments', link: '/19-ml-systems/08-online-experiments' },
+                { text: 'ML Risk & Governance', link: '/19-ml-systems/09-ml-risk-governance' },
+              ]
+            },
+            {
+              text: '17. LLM Systems',
               collapsed: true,
               items: [
                 { text: 'Agent Fundamentals', link: '/16-llm-systems/01-agent-fundamentals' },
@@ -295,7 +310,7 @@ jobs:
               ]
             },
             {
-              text: '17. GraphQL',
+              text: '18. GraphQL',
               collapsed: true,
               items: [
                 { text: 'GraphQL Fundamentals', link: '/17-graphql/01-graphql-fundamentals' },
@@ -307,7 +322,7 @@ jobs:
               ]
             },
             {
-              text: '18. Compound Engineering',
+              text: '19. Compound Engineering',
               collapsed: true,
               items: [
                 { text: 'Fundamentals', link: '/18-compound-engineering/01-compound-engineering-fundamentals' },
@@ -316,21 +331,6 @@ jobs:
                 { text: 'AI-Native Architecture', link: '/18-compound-engineering/04-ai-native-software-architecture' },
                 { text: 'Quality Engineering', link: '/18-compound-engineering/05-quality-engineering-with-ai-agents' },
                 { text: 'Compound Workflows', link: '/18-compound-engineering/06-compound-development-workflows' },
-              ]
-            },
-            {
-              text: '19. ML Systems',
-              collapsed: true,
-              items: [
-                { text: 'ML System Fundamentals', link: '/19-ml-systems/01-ml-system-fundamentals' },
-                { text: 'Feature Stores', link: '/19-ml-systems/02-feature-stores' },
-                { text: 'Model Serving', link: '/19-ml-systems/03-model-serving' },
-                { text: 'Model Monitoring', link: '/19-ml-systems/04-model-monitoring' },
-                { text: 'Training Pipelines', link: '/19-ml-systems/05-training-pipelines' },
-                { text: 'Model Deployment & Rollouts', link: '/19-ml-systems/06-model-deployment-rollouts' },
-                { text: 'Recommendation Systems', link: '/19-ml-systems/07-recommendation-systems' },
-                { text: 'Online Experiments', link: '/19-ml-systems/08-online-experiments' },
-                { text: 'ML Risk & Governance', link: '/19-ml-systems/09-ml-risk-governance' },
               ]
             },
           ]
@@ -385,6 +385,7 @@ jobs:
                         { text: 'Data Pipelines', link: '/13-data-pipelines/01-batch-processing' },
                         { text: 'Search Systems', link: '/14-search-systems/01-inverted-indexes' },
                         { text: 'Deployment', link: '/15-deployment/01-deployment-strategies' },
+                        { text: 'ML Systems', link: '/19-ml-systems/01-ml-system-fundamentals' },
                         { text: 'LLM Systems', link: '/16-llm-systems/01-agent-fundamentals' },
                         { text: 'GraphQL', link: '/17-graphql/01-graphql-fundamentals' },
                         { text: 'Compound Engineering', link: '/18-compound-engineering/01-compound-engineering-fundamentals' },
@@ -636,7 +637,22 @@ jobs:
                         ]
                       },
                       {
-                        text: '16. LLMシステム',
+                        text: '16. MLシステム',
+                        collapsed: true,
+                        items: [
+                          { text: 'MLシステム基礎', link: '/ja/19-ml-systems/01-ml-system-fundamentals' },
+                          { text: 'フィーチャーストア', link: '/ja/19-ml-systems/02-feature-stores' },
+                          { text: 'モデルサービング', link: '/ja/19-ml-systems/03-model-serving' },
+                          { text: 'モデルモニタリング', link: '/ja/19-ml-systems/04-model-monitoring' },
+                          { text: 'トレーニングパイプライン', link: '/ja/19-ml-systems/05-training-pipelines' },
+                          { text: 'モデルデプロイとロールアウト', link: '/ja/19-ml-systems/06-model-deployment-rollouts' },
+                          { text: '推薦システム', link: '/ja/19-ml-systems/07-recommendation-systems' },
+                          { text: 'オンライン実験', link: '/ja/19-ml-systems/08-online-experiments' },
+                          { text: 'MLリスクとガバナンス', link: '/ja/19-ml-systems/09-ml-risk-governance' },
+                        ]
+                      },
+                      {
+                        text: '17. LLMシステム',
                         collapsed: true,
                         items: [
                           { text: 'エージェント基礎', link: '/ja/16-llm-systems/01-agent-fundamentals' },
@@ -652,7 +668,7 @@ jobs:
                         ]
                       },
                       {
-                        text: '17. GraphQL',
+                        text: '18. GraphQL',
                         collapsed: true,
                         items: [
                           { text: 'GraphQL基礎', link: '/ja/17-graphql/01-graphql-fundamentals' },
@@ -664,7 +680,7 @@ jobs:
                         ]
                       },
                       {
-                        text: '18. コンパウンドエンジニアリング',
+                        text: '19. コンパウンドエンジニアリング',
                         collapsed: true,
                         items: [
                           { text: '基礎', link: '/ja/18-compound-engineering/01-compound-engineering-fundamentals' },
@@ -673,21 +689,6 @@ jobs:
                           { text: 'AIネイティブアーキテクチャ', link: '/ja/18-compound-engineering/04-ai-native-software-architecture' },
                           { text: 'AIエージェント品質エンジニアリング', link: '/ja/18-compound-engineering/05-quality-engineering-with-ai-agents' },
                           { text: 'コンパウンド開発ワークフロー', link: '/ja/18-compound-engineering/06-compound-development-workflows' },
-                        ]
-                      },
-                      {
-                        text: '19. MLシステム',
-                        collapsed: true,
-                        items: [
-                          { text: 'MLシステム基礎', link: '/ja/19-ml-systems/01-ml-system-fundamentals' },
-                          { text: 'フィーチャーストア', link: '/ja/19-ml-systems/02-feature-stores' },
-                          { text: 'モデルサービング', link: '/ja/19-ml-systems/03-model-serving' },
-                          { text: 'モデルモニタリング', link: '/ja/19-ml-systems/04-model-monitoring' },
-                          { text: 'トレーニングパイプライン', link: '/ja/19-ml-systems/05-training-pipelines' },
-                          { text: 'モデルデプロイとロールアウト', link: '/ja/19-ml-systems/06-model-deployment-rollouts' },
-                          { text: '推薦システム', link: '/ja/19-ml-systems/07-recommendation-systems' },
-                          { text: 'オンライン実験', link: '/ja/19-ml-systems/08-online-experiments' },
-                          { text: 'MLリスクとガバナンス', link: '/ja/19-ml-systems/09-ml-risk-governance' },
                         ]
                       }
                     ]
@@ -841,10 +842,10 @@ jobs:
                 <a href="/13-data-pipelines/01-batch-processing"><span>13</span><strong>Data Pipelines</strong><small>Batch and streams</small></a>
                 <a href="/14-search-systems/01-inverted-indexes"><span>14</span><strong>Search Systems</strong><small>Retrieve and rank</small></a>
                 <a href="/15-deployment/01-deployment-strategies"><span>15</span><strong>Deployment</strong><small>Release and recover</small></a>
-                <a href="/16-llm-systems/01-agent-fundamentals"><span>16</span><strong>LLM Systems</strong><small>Agents and context</small></a>
-                <a href="/17-graphql/01-graphql-fundamentals"><span>17</span><strong>GraphQL</strong><small>Schemas and federation</small></a>
-                <a href="/18-compound-engineering/01-compound-engineering-fundamentals"><span>18</span><strong>Compound Engineering</strong><small>AI-native workflows</small></a>
-                <a href="/19-ml-systems/01-ml-system-fundamentals"><span>19</span><strong>ML Systems</strong><small>Features, serving, drift</small></a>
+                <a href="/19-ml-systems/01-ml-system-fundamentals"><span>16</span><strong>ML Systems</strong><small>Features, serving, drift</small></a>
+                <a href="/16-llm-systems/01-agent-fundamentals"><span>17</span><strong>LLM Systems</strong><small>Agents and context</small></a>
+                <a href="/17-graphql/01-graphql-fundamentals"><span>18</span><strong>GraphQL</strong><small>Schemas and federation</small></a>
+                <a href="/18-compound-engineering/01-compound-engineering-fundamentals"><span>19</span><strong>Compound Engineering</strong><small>AI-native workflows</small></a>
               </nav>
             </section>
 
