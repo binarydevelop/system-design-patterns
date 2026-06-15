@@ -41,7 +41,7 @@ title: システム設計パターン
       </nav>
     </div>
     <div class="atlas-metrics" aria-label="リファレンス統計">
-      <p><strong>157</strong><span>記事</span></p>
+      <p><strong>160</strong><span>記事</span></p>
       <p><strong>19</strong><span>設計領域</span></p>
       <p><strong>13</strong><span>本番事例</span></p>
       <p><strong>15</strong><span>基礎論文</span></p>
@@ -84,7 +84,7 @@ title: システム設計パターン
       <a href="/ja/15-deployment/01-deployment-strategies"><span>15</span><strong>デプロイメント</strong><small>リリースと復旧</small></a>
       <a href="/ja/16-ml-systems/01-ml-system-fundamentals"><span>16</span><strong>MLシステム</strong><small>特徴量・サービング・ドリフト</small></a>
       <a href="/ja/17-llm-systems/01-agent-fundamentals"><span>17</span><strong>LLMシステム</strong><small>エージェントと文脈</small></a>
-      <a href="/ja/18-graphql/01-graphql-fundamentals"><span>18</span><strong>GraphQL</strong><small>スキーマと連携</small></a>
+      <a href="/ja/18-workflow-job-systems/01-workflow-system-fundamentals"><span>18</span><strong>ワークフローとジョブ</strong><small>実行・復旧・スケジューリング</small></a>
       <a href="/ja/19-compound-engineering/01-compound-engineering-fundamentals"><span>19</span><strong>コンパウンドエンジニアリング</strong><small>AIネイティブワークフロー</small></a>
     </nav>
   </section>
