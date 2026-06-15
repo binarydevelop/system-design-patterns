@@ -4,7 +4,7 @@
 
 One staff engineer directing N AI agents in parallel compounds output non-linearly. The throughput ceiling shifts from individual coding speed to task decomposition quality and review bandwidth. This is a system design problem — you are designing a human-in-the-loop distributed system where the human is the scheduler, the agents are workers, and the bottleneck is verification. Treat it like you would any other architecture: identify constraints, optimize for throughput, and instrument for observability.
 
-> **Cross-reference:** For general agent architecture, loops, and tool-use patterns, see [`16-llm-systems/01-agent-fundamentals.md`](../16-llm-systems/01-agent-fundamentals.md).
+> **Cross-reference:** For general agent architecture, loops, and tool-use patterns, see [`17-llm-systems/01-agent-fundamentals.md`](../17-llm-systems/01-agent-fundamentals.md).
 
 ---
 
@@ -883,7 +883,7 @@ Most teams plateau at Level 2. The jump to Level 3 requires a mental model shift
 
 ---
 
-> **Next:** `18-compound-engineering/02-task-decomposition-patterns.md` — Deep dive into decomposition strategies, dependency graphs, and parallelization patterns for compound engineering workflows.
+> **Next:** `19-compound-engineering/02-task-decomposition-patterns.md` — Deep dive into decomposition strategies, dependency graphs, and parallelization patterns for compound engineering workflows.
 
 ---
 

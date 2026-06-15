@@ -161,7 +161,7 @@ The highest-leverage tools in practice are the general-purpose ones: **a shell, 
 
 ### MCP: the integration standard
 
-The Model Context Protocol (MCP) standardizes how tools, resources, and prompts are exposed to agents — an MCP server wraps a system (GitHub, Postgres, Slack, a browser) once, and any MCP-capable harness can use it. Treat MCP servers as third-party dependencies: review what they expose, pin versions, and remember that every connected server's tool descriptions enter your prompt (use deferred loading / tool search when the catalog is large). Coverage in depth: [Coding Agent Tool Design](../18-compound-engineering/02-coding-agent-tool-design.md).
+The Model Context Protocol (MCP) standardizes how tools, resources, and prompts are exposed to agents — an MCP server wraps a system (GitHub, Postgres, Slack, a browser) once, and any MCP-capable harness can use it. Treat MCP servers as third-party dependencies: review what they expose, pin versions, and remember that every connected server's tool descriptions enter your prompt (use deferred loading / tool search when the catalog is large). Coverage in depth: [Coding Agent Tool Design](../19-compound-engineering/02-coding-agent-tool-design.md).
 
 ```mermaid
 graph LR
@@ -189,7 +189,7 @@ Practical defaults:
 
 - **Compaction** preserves decisions, constraints, file paths, and learned gotchas; it discards raw tool output. Trigger it at a threshold (e.g., 80% of the window), not at overflow.
 - **The filesystem is the agent's external memory.** An agent that maintains its own `plan.md` and checks items off recovers from compaction and interruption almost for free.
-- **Just-in-time retrieval beats preloading.** Give the agent search tools (`grep`, semantic search) and let it pull what it needs, instead of stuffing everything that might be relevant into the prompt. See [Agent Context Engineering](../18-compound-engineering/03-agent-context-engineering.md).
+- **Just-in-time retrieval beats preloading.** Give the agent search tools (`grep`, semantic search) and let it pull what it needs, instead of stuffing everything that might be relevant into the prompt. See [Agent Context Engineering](../19-compound-engineering/03-agent-context-engineering.md).
 - Vector-store "agent memory" (embed every message, retrieve by similarity) is rarely the right first tool — explicit files the agent deliberately writes and reads are more debuggable and more faithful.
 
 ---

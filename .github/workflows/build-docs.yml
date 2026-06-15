@@ -282,55 +282,55 @@ jobs:
               text: '16. ML Systems',
               collapsed: true,
               items: [
-                { text: 'ML System Fundamentals', link: '/19-ml-systems/01-ml-system-fundamentals' },
-                { text: 'Feature Stores', link: '/19-ml-systems/02-feature-stores' },
-                { text: 'Model Serving', link: '/19-ml-systems/03-model-serving' },
-                { text: 'Model Monitoring', link: '/19-ml-systems/04-model-monitoring' },
-                { text: 'Training Pipelines', link: '/19-ml-systems/05-training-pipelines' },
-                { text: 'Model Deployment & Rollouts', link: '/19-ml-systems/06-model-deployment-rollouts' },
-                { text: 'Recommendation Systems', link: '/19-ml-systems/07-recommendation-systems' },
-                { text: 'Online Experiments', link: '/19-ml-systems/08-online-experiments' },
-                { text: 'ML Risk & Governance', link: '/19-ml-systems/09-ml-risk-governance' },
+                { text: 'ML System Fundamentals', link: '/16-ml-systems/01-ml-system-fundamentals' },
+                { text: 'Feature Stores', link: '/16-ml-systems/02-feature-stores' },
+                { text: 'Model Serving', link: '/16-ml-systems/03-model-serving' },
+                { text: 'Model Monitoring', link: '/16-ml-systems/04-model-monitoring' },
+                { text: 'Training Pipelines', link: '/16-ml-systems/05-training-pipelines' },
+                { text: 'Model Deployment & Rollouts', link: '/16-ml-systems/06-model-deployment-rollouts' },
+                { text: 'Recommendation Systems', link: '/16-ml-systems/07-recommendation-systems' },
+                { text: 'Online Experiments', link: '/16-ml-systems/08-online-experiments' },
+                { text: 'ML Risk & Governance', link: '/16-ml-systems/09-ml-risk-governance' },
               ]
             },
             {
               text: '17. LLM Systems',
               collapsed: true,
               items: [
-                { text: 'Agent Fundamentals', link: '/16-llm-systems/01-agent-fundamentals' },
-                { text: 'Orchestration Patterns', link: '/16-llm-systems/02-orchestration-patterns' },
-                { text: 'Multi-Agent Systems', link: '/16-llm-systems/03-multi-agent-systems' },
-                { text: 'RAG Patterns', link: '/16-llm-systems/04-rag-patterns' },
-                { text: 'LLM Infrastructure', link: '/16-llm-systems/05-llm-infrastructure' },
-                { text: 'Prompt Engineering', link: '/16-llm-systems/06-prompt-engineering' },
-                { text: 'Fine-Tuning Patterns', link: '/16-llm-systems/07-fine-tuning-patterns' },
-                { text: 'Context Management', link: '/16-llm-systems/08-context-management' },
-                { text: 'Harness Engineering', link: '/16-llm-systems/09-harness-engineering' },
-                { text: 'LLM Evaluation', link: '/16-llm-systems/10-llm-evaluation' },
+                { text: 'Agent Fundamentals', link: '/17-llm-systems/01-agent-fundamentals' },
+                { text: 'Orchestration Patterns', link: '/17-llm-systems/02-orchestration-patterns' },
+                { text: 'Multi-Agent Systems', link: '/17-llm-systems/03-multi-agent-systems' },
+                { text: 'RAG Patterns', link: '/17-llm-systems/04-rag-patterns' },
+                { text: 'LLM Infrastructure', link: '/17-llm-systems/05-llm-infrastructure' },
+                { text: 'Prompt Engineering', link: '/17-llm-systems/06-prompt-engineering' },
+                { text: 'Fine-Tuning Patterns', link: '/17-llm-systems/07-fine-tuning-patterns' },
+                { text: 'Context Management', link: '/17-llm-systems/08-context-management' },
+                { text: 'Harness Engineering', link: '/17-llm-systems/09-harness-engineering' },
+                { text: 'LLM Evaluation', link: '/17-llm-systems/10-llm-evaluation' },
               ]
             },
             {
               text: '18. GraphQL',
               collapsed: true,
               items: [
-                { text: 'GraphQL Fundamentals', link: '/17-graphql/01-graphql-fundamentals' },
-                { text: 'Schema Design', link: '/17-graphql/02-schema-design' },
-                { text: 'Resolvers & Data Fetching', link: '/17-graphql/03-resolvers-data-fetching' },
-                { text: 'Caching & Performance', link: '/17-graphql/04-caching-performance' },
-                { text: 'Subscriptions & Real-Time', link: '/17-graphql/05-subscriptions-realtime' },
-                { text: 'Federation', link: '/17-graphql/06-federation' },
+                { text: 'GraphQL Fundamentals', link: '/18-graphql/01-graphql-fundamentals' },
+                { text: 'Schema Design', link: '/18-graphql/02-schema-design' },
+                { text: 'Resolvers & Data Fetching', link: '/18-graphql/03-resolvers-data-fetching' },
+                { text: 'Caching & Performance', link: '/18-graphql/04-caching-performance' },
+                { text: 'Subscriptions & Real-Time', link: '/18-graphql/05-subscriptions-realtime' },
+                { text: 'Federation', link: '/18-graphql/06-federation' },
               ]
             },
             {
               text: '19. Compound Engineering',
               collapsed: true,
               items: [
-                { text: 'Fundamentals', link: '/18-compound-engineering/01-compound-engineering-fundamentals' },
-                { text: 'Coding Agent Tool Design', link: '/18-compound-engineering/02-coding-agent-tool-design' },
-                { text: 'Agent Context Engineering', link: '/18-compound-engineering/03-agent-context-engineering' },
-                { text: 'AI-Native Architecture', link: '/18-compound-engineering/04-ai-native-software-architecture' },
-                { text: 'Quality Engineering', link: '/18-compound-engineering/05-quality-engineering-with-ai-agents' },
-                { text: 'Compound Workflows', link: '/18-compound-engineering/06-compound-development-workflows' },
+                { text: 'Fundamentals', link: '/19-compound-engineering/01-compound-engineering-fundamentals' },
+                { text: 'Coding Agent Tool Design', link: '/19-compound-engineering/02-coding-agent-tool-design' },
+                { text: 'Agent Context Engineering', link: '/19-compound-engineering/03-agent-context-engineering' },
+                { text: 'AI-Native Architecture', link: '/19-compound-engineering/04-ai-native-software-architecture' },
+                { text: 'Quality Engineering', link: '/19-compound-engineering/05-quality-engineering-with-ai-agents' },
+                { text: 'Compound Workflows', link: '/19-compound-engineering/06-compound-development-workflows' },
               ]
             },
           ]
@@ -385,10 +385,10 @@ jobs:
                         { text: 'Data Pipelines', link: '/13-data-pipelines/01-batch-processing' },
                         { text: 'Search Systems', link: '/14-search-systems/01-inverted-indexes' },
                         { text: 'Deployment', link: '/15-deployment/01-deployment-strategies' },
-                        { text: 'ML Systems', link: '/19-ml-systems/01-ml-system-fundamentals' },
-                        { text: 'LLM Systems', link: '/16-llm-systems/01-agent-fundamentals' },
-                        { text: 'GraphQL', link: '/17-graphql/01-graphql-fundamentals' },
-                        { text: 'Compound Engineering', link: '/18-compound-engineering/01-compound-engineering-fundamentals' },
+                        { text: 'ML Systems', link: '/16-ml-systems/01-ml-system-fundamentals' },
+                        { text: 'LLM Systems', link: '/17-llm-systems/01-agent-fundamentals' },
+                        { text: 'GraphQL', link: '/18-graphql/01-graphql-fundamentals' },
+                        { text: 'Compound Engineering', link: '/19-compound-engineering/01-compound-engineering-fundamentals' },
                       ]
                     },
                     { text: 'GitHub', link: 'https://github.com/babushkai/system-design-patterns' }
@@ -640,55 +640,55 @@ jobs:
                         text: '16. MLシステム',
                         collapsed: true,
                         items: [
-                          { text: 'MLシステム基礎', link: '/ja/19-ml-systems/01-ml-system-fundamentals' },
-                          { text: 'フィーチャーストア', link: '/ja/19-ml-systems/02-feature-stores' },
-                          { text: 'モデルサービング', link: '/ja/19-ml-systems/03-model-serving' },
-                          { text: 'モデルモニタリング', link: '/ja/19-ml-systems/04-model-monitoring' },
-                          { text: 'トレーニングパイプライン', link: '/ja/19-ml-systems/05-training-pipelines' },
-                          { text: 'モデルデプロイとロールアウト', link: '/ja/19-ml-systems/06-model-deployment-rollouts' },
-                          { text: '推薦システム', link: '/ja/19-ml-systems/07-recommendation-systems' },
-                          { text: 'オンライン実験', link: '/ja/19-ml-systems/08-online-experiments' },
-                          { text: 'MLリスクとガバナンス', link: '/ja/19-ml-systems/09-ml-risk-governance' },
+                          { text: 'MLシステム基礎', link: '/ja/16-ml-systems/01-ml-system-fundamentals' },
+                          { text: 'フィーチャーストア', link: '/ja/16-ml-systems/02-feature-stores' },
+                          { text: 'モデルサービング', link: '/ja/16-ml-systems/03-model-serving' },
+                          { text: 'モデルモニタリング', link: '/ja/16-ml-systems/04-model-monitoring' },
+                          { text: 'トレーニングパイプライン', link: '/ja/16-ml-systems/05-training-pipelines' },
+                          { text: 'モデルデプロイとロールアウト', link: '/ja/16-ml-systems/06-model-deployment-rollouts' },
+                          { text: '推薦システム', link: '/ja/16-ml-systems/07-recommendation-systems' },
+                          { text: 'オンライン実験', link: '/ja/16-ml-systems/08-online-experiments' },
+                          { text: 'MLリスクとガバナンス', link: '/ja/16-ml-systems/09-ml-risk-governance' },
                         ]
                       },
                       {
                         text: '17. LLMシステム',
                         collapsed: true,
                         items: [
-                          { text: 'エージェント基礎', link: '/ja/16-llm-systems/01-agent-fundamentals' },
-                          { text: 'オーケストレーション', link: '/ja/16-llm-systems/02-orchestration-patterns' },
-                          { text: 'マルチエージェント', link: '/ja/16-llm-systems/03-multi-agent-systems' },
-                          { text: 'RAGパターン', link: '/ja/16-llm-systems/04-rag-patterns' },
-                          { text: 'LLMインフラ', link: '/ja/16-llm-systems/05-llm-infrastructure' },
-                          { text: 'プロンプトエンジニアリング', link: '/ja/16-llm-systems/06-prompt-engineering' },
-                          { text: 'ファインチューニング', link: '/ja/16-llm-systems/07-fine-tuning-patterns' },
-                          { text: 'コンテキスト管理', link: '/ja/16-llm-systems/08-context-management' },
-                          { text: 'ハーネスエンジニアリング', link: '/ja/16-llm-systems/09-harness-engineering' },
-                          { text: 'LLM評価', link: '/ja/16-llm-systems/10-llm-evaluation' },
+                          { text: 'エージェント基礎', link: '/ja/17-llm-systems/01-agent-fundamentals' },
+                          { text: 'オーケストレーション', link: '/ja/17-llm-systems/02-orchestration-patterns' },
+                          { text: 'マルチエージェント', link: '/ja/17-llm-systems/03-multi-agent-systems' },
+                          { text: 'RAGパターン', link: '/ja/17-llm-systems/04-rag-patterns' },
+                          { text: 'LLMインフラ', link: '/ja/17-llm-systems/05-llm-infrastructure' },
+                          { text: 'プロンプトエンジニアリング', link: '/ja/17-llm-systems/06-prompt-engineering' },
+                          { text: 'ファインチューニング', link: '/ja/17-llm-systems/07-fine-tuning-patterns' },
+                          { text: 'コンテキスト管理', link: '/ja/17-llm-systems/08-context-management' },
+                          { text: 'ハーネスエンジニアリング', link: '/ja/17-llm-systems/09-harness-engineering' },
+                          { text: 'LLM評価', link: '/ja/17-llm-systems/10-llm-evaluation' },
                         ]
                       },
                       {
                         text: '18. GraphQL',
                         collapsed: true,
                         items: [
-                          { text: 'GraphQL基礎', link: '/ja/17-graphql/01-graphql-fundamentals' },
-                          { text: 'スキーマ設計', link: '/ja/17-graphql/02-schema-design' },
-                          { text: 'リゾルバ', link: '/ja/17-graphql/03-resolvers-data-fetching' },
-                          { text: 'キャッシュとパフォーマンス', link: '/ja/17-graphql/04-caching-performance' },
-                          { text: 'サブスクリプション', link: '/ja/17-graphql/05-subscriptions-realtime' },
-                          { text: 'フェデレーション', link: '/ja/17-graphql/06-federation' },
+                          { text: 'GraphQL基礎', link: '/ja/18-graphql/01-graphql-fundamentals' },
+                          { text: 'スキーマ設計', link: '/ja/18-graphql/02-schema-design' },
+                          { text: 'リゾルバ', link: '/ja/18-graphql/03-resolvers-data-fetching' },
+                          { text: 'キャッシュとパフォーマンス', link: '/ja/18-graphql/04-caching-performance' },
+                          { text: 'サブスクリプション', link: '/ja/18-graphql/05-subscriptions-realtime' },
+                          { text: 'フェデレーション', link: '/ja/18-graphql/06-federation' },
                         ]
                       },
                       {
                         text: '19. コンパウンドエンジニアリング',
                         collapsed: true,
                         items: [
-                          { text: '基礎', link: '/ja/18-compound-engineering/01-compound-engineering-fundamentals' },
-                          { text: 'コーディングエージェントツール設計', link: '/ja/18-compound-engineering/02-coding-agent-tool-design' },
-                          { text: 'エージェントコンテキストエンジニアリング', link: '/ja/18-compound-engineering/03-agent-context-engineering' },
-                          { text: 'AIネイティブアーキテクチャ', link: '/ja/18-compound-engineering/04-ai-native-software-architecture' },
-                          { text: 'AIエージェント品質エンジニアリング', link: '/ja/18-compound-engineering/05-quality-engineering-with-ai-agents' },
-                          { text: 'コンパウンド開発ワークフロー', link: '/ja/18-compound-engineering/06-compound-development-workflows' },
+                          { text: '基礎', link: '/ja/19-compound-engineering/01-compound-engineering-fundamentals' },
+                          { text: 'コーディングエージェントツール設計', link: '/ja/19-compound-engineering/02-coding-agent-tool-design' },
+                          { text: 'エージェントコンテキストエンジニアリング', link: '/ja/19-compound-engineering/03-agent-context-engineering' },
+                          { text: 'AIネイティブアーキテクチャ', link: '/ja/19-compound-engineering/04-ai-native-software-architecture' },
+                          { text: 'AIエージェント品質エンジニアリング', link: '/ja/19-compound-engineering/05-quality-engineering-with-ai-agents' },
+                          { text: 'コンパウンド開発ワークフロー', link: '/ja/19-compound-engineering/06-compound-development-workflows' },
                         ]
                       }
                     ]
@@ -842,10 +842,10 @@ jobs:
                 <a href="/13-data-pipelines/01-batch-processing"><span>13</span><strong>Data Pipelines</strong><small>Batch and streams</small></a>
                 <a href="/14-search-systems/01-inverted-indexes"><span>14</span><strong>Search Systems</strong><small>Retrieve and rank</small></a>
                 <a href="/15-deployment/01-deployment-strategies"><span>15</span><strong>Deployment</strong><small>Release and recover</small></a>
-                <a href="/19-ml-systems/01-ml-system-fundamentals"><span>16</span><strong>ML Systems</strong><small>Features, serving, drift</small></a>
-                <a href="/16-llm-systems/01-agent-fundamentals"><span>17</span><strong>LLM Systems</strong><small>Agents and context</small></a>
-                <a href="/17-graphql/01-graphql-fundamentals"><span>18</span><strong>GraphQL</strong><small>Schemas and federation</small></a>
-                <a href="/18-compound-engineering/01-compound-engineering-fundamentals"><span>19</span><strong>Compound Engineering</strong><small>AI-native workflows</small></a>
+                <a href="/16-ml-systems/01-ml-system-fundamentals"><span>16</span><strong>ML Systems</strong><small>Features, serving, drift</small></a>
+                <a href="/17-llm-systems/01-agent-fundamentals"><span>17</span><strong>LLM Systems</strong><small>Agents and context</small></a>
+                <a href="/18-graphql/01-graphql-fundamentals"><span>18</span><strong>GraphQL</strong><small>Schemas and federation</small></a>
+                <a href="/19-compound-engineering/01-compound-engineering-fundamentals"><span>19</span><strong>Compound Engineering</strong><small>AI-native workflows</small></a>
               </nav>
             </section>
 
@@ -857,7 +857,7 @@ jobs:
               <nav>
                 <a href="/09-whitepapers/07-raft"><span>Paper trail</span><strong>Raft, Dynamo, Spanner, Kafka</strong><b>&rarr;</b></a>
                 <a href="/08-case-studies/04-netflix"><span>Production systems</span><strong>Netflix, Slack, Discord, Stripe</strong><b>&rarr;</b></a>
-                <a href="/16-llm-systems/04-rag-patterns"><span>Modern systems</span><strong>RAG, agents, orchestration</strong><b>&rarr;</b></a>
+                <a href="/17-llm-systems/04-rag-patterns"><span>Modern systems</span><strong>RAG, agents, orchestration</strong><b>&rarr;</b></a>
               </nav>
             </section>
           </main>

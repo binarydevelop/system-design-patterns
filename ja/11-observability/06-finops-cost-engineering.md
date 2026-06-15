@@ -49,7 +49,7 @@ unit cost   = spend attributable to a workload / units of value it produced
 
 ### LLM時代の補遺
 
-トークン支出は2026年の多くの請求書で最も成長の速い行であり、ユーティリティのように振る舞います: ユニットメトリクスは**解決タスクあたりコスト**([LLM評価](../16-llm-systems/10-llm-evaluation.md))で、レバーには独自の順位があります — まずプロンプトキャッシュのヒット率、次にモデル階層化、非同期処理のバッチティアへのルーティング、出力長の規律、それからプロバイダ交渉([LLMインフラ](../16-llm-systems/05-llm-infrastructure.md)と[ハーネスエンジニアリング](../16-llm-systems/09-harness-engineering.md)が機構を扱います)。FinOps FoundationのスコープがSaaS/AI支出へ拡張されたのは同じシフトの反映です: エンジニアリングできる請求書はもはやIaaSの請求書だけではありません。
+トークン支出は2026年の多くの請求書で最も成長の速い行であり、ユーティリティのように振る舞います: ユニットメトリクスは**解決タスクあたりコスト**([LLM評価](../17-llm-systems/10-llm-evaluation.md))で、レバーには独自の順位があります — まずプロンプトキャッシュのヒット率、次にモデル階層化、非同期処理のバッチティアへのルーティング、出力長の規律、それからプロバイダ交渉([LLMインフラ](../17-llm-systems/05-llm-infrastructure.md)と[ハーネスエンジニアリング](../17-llm-systems/09-harness-engineering.md)が機構を扱います)。FinOps FoundationのスコープがSaaS/AI支出へ拡張されたのは同じシフトの反映です: エンジニアリングできる請求書はもはやIaaSの請求書だけではありません。
 
 ---
 
