@@ -255,13 +255,16 @@ jobs:
             "17-llm-systems/08-context-management.md"
             "17-llm-systems/09-harness-engineering.md"
             "17-llm-systems/10-llm-evaluation.md"
-            # Part 18: GraphQL
-            "18-graphql/01-graphql-fundamentals.md"
-            "18-graphql/02-schema-design.md"
-            "18-graphql/03-resolvers-data-fetching.md"
-            "18-graphql/04-caching-performance.md"
-            "18-graphql/05-subscriptions-realtime.md"
-            "18-graphql/06-federation.md"
+            # Part 18: Workflow & Job Systems
+            "18-workflow-job-systems/01-workflow-system-fundamentals.md"
+            "18-workflow-job-systems/02-background-jobs-worker-pools.md"
+            "18-workflow-job-systems/03-distributed-cron-scheduling.md"
+            "18-workflow-job-systems/04-durable-execution-workflow-engines.md"
+            "18-workflow-job-systems/05-dag-orchestration.md"
+            "18-workflow-job-systems/06-retry-idempotency-compensation.md"
+            "18-workflow-job-systems/07-priority-fairness-backpressure.md"
+            "18-workflow-job-systems/08-leases-heartbeats-recovery.md"
+            "18-workflow-job-systems/09-workflow-observability-replay.md"
             # Part 19: Compound Engineering
             "19-compound-engineering/01-compound-engineering-fundamentals.md"
             "19-compound-engineering/02-coding-agent-tool-design.md"

@@ -310,15 +310,18 @@ jobs:
               ]
             },
             {
-              text: '18. GraphQL',
+              text: '18. Workflow & Job Systems',
               collapsed: true,
               items: [
-                { text: 'GraphQL Fundamentals', link: '/18-graphql/01-graphql-fundamentals' },
-                { text: 'Schema Design', link: '/18-graphql/02-schema-design' },
-                { text: 'Resolvers & Data Fetching', link: '/18-graphql/03-resolvers-data-fetching' },
-                { text: 'Caching & Performance', link: '/18-graphql/04-caching-performance' },
-                { text: 'Subscriptions & Real-Time', link: '/18-graphql/05-subscriptions-realtime' },
-                { text: 'Federation', link: '/18-graphql/06-federation' },
+                { text: 'Workflow Fundamentals', link: '/18-workflow-job-systems/01-workflow-system-fundamentals' },
+                { text: 'Background Jobs & Workers', link: '/18-workflow-job-systems/02-background-jobs-worker-pools' },
+                { text: 'Distributed Cron & Scheduling', link: '/18-workflow-job-systems/03-distributed-cron-scheduling' },
+                { text: 'Durable Execution', link: '/18-workflow-job-systems/04-durable-execution-workflow-engines' },
+                { text: 'DAG Orchestration', link: '/18-workflow-job-systems/05-dag-orchestration' },
+                { text: 'Retry, Idempotency & Compensation', link: '/18-workflow-job-systems/06-retry-idempotency-compensation' },
+                { text: 'Priority, Fairness & Backpressure', link: '/18-workflow-job-systems/07-priority-fairness-backpressure' },
+                { text: 'Leases, Heartbeats & Recovery', link: '/18-workflow-job-systems/08-leases-heartbeats-recovery' },
+                { text: 'Observability & Replay', link: '/18-workflow-job-systems/09-workflow-observability-replay' },
               ]
             },
             {
@@ -387,7 +390,7 @@ jobs:
                         { text: 'Deployment', link: '/15-deployment/01-deployment-strategies' },
                         { text: 'ML Systems', link: '/16-ml-systems/01-ml-system-fundamentals' },
                         { text: 'LLM Systems', link: '/17-llm-systems/01-agent-fundamentals' },
-                        { text: 'GraphQL', link: '/18-graphql/01-graphql-fundamentals' },
+                        { text: 'Workflow & Job Systems', link: '/18-workflow-job-systems/01-workflow-system-fundamentals' },
                         { text: 'Compound Engineering', link: '/19-compound-engineering/01-compound-engineering-fundamentals' },
                       ]
                     },
@@ -668,15 +671,18 @@ jobs:
                         ]
                       },
                       {
-                        text: '18. GraphQL',
+                        text: '18. ワークフローとジョブシステム',
                         collapsed: true,
                         items: [
-                          { text: 'GraphQL基礎', link: '/ja/18-graphql/01-graphql-fundamentals' },
-                          { text: 'スキーマ設計', link: '/ja/18-graphql/02-schema-design' },
-                          { text: 'リゾルバ', link: '/ja/18-graphql/03-resolvers-data-fetching' },
-                          { text: 'キャッシュとパフォーマンス', link: '/ja/18-graphql/04-caching-performance' },
-                          { text: 'サブスクリプション', link: '/ja/18-graphql/05-subscriptions-realtime' },
-                          { text: 'フェデレーション', link: '/ja/18-graphql/06-federation' },
+                          { text: 'ワークフローシステム基礎', link: '/ja/18-workflow-job-systems/01-workflow-system-fundamentals' },
+                          { text: 'バックグラウンドジョブとワーカー', link: '/ja/18-workflow-job-systems/02-background-jobs-worker-pools' },
+                          { text: '分散cronとスケジューリング', link: '/ja/18-workflow-job-systems/03-distributed-cron-scheduling' },
+                          { text: 'Durable Execution', link: '/ja/18-workflow-job-systems/04-durable-execution-workflow-engines' },
+                          { text: 'DAGオーケストレーション', link: '/ja/18-workflow-job-systems/05-dag-orchestration' },
+                          { text: 'リトライ・冪等性・補償', link: '/ja/18-workflow-job-systems/06-retry-idempotency-compensation' },
+                          { text: '優先度・公平性・Backpressure', link: '/ja/18-workflow-job-systems/07-priority-fairness-backpressure' },
+                          { text: 'リース・Heartbeat・復旧', link: '/ja/18-workflow-job-systems/08-leases-heartbeats-recovery' },
+                          { text: '観測性とリプレイ', link: '/ja/18-workflow-job-systems/09-workflow-observability-replay' },
                         ]
                       },
                       {
@@ -801,7 +807,7 @@ jobs:
                 </nav>
               </div>
               <div class="atlas-metrics" aria-label="Reference statistics">
-                <p><strong>157</strong><span>documented articles</span></p>
+                <p><strong>160</strong><span>documented articles</span></p>
                 <p><strong>19</strong><span>design domains</span></p>
                 <p><strong>13</strong><span>production studies</span></p>
                 <p><strong>15</strong><span>foundational papers</span></p>
@@ -844,7 +850,7 @@ jobs:
                 <a href="/15-deployment/01-deployment-strategies"><span>15</span><strong>Deployment</strong><small>Release and recover</small></a>
                 <a href="/16-ml-systems/01-ml-system-fundamentals"><span>16</span><strong>ML Systems</strong><small>Features, serving, drift</small></a>
                 <a href="/17-llm-systems/01-agent-fundamentals"><span>17</span><strong>LLM Systems</strong><small>Agents and context</small></a>
-                <a href="/18-graphql/01-graphql-fundamentals"><span>18</span><strong>GraphQL</strong><small>Schemas and federation</small></a>
+                <a href="/18-workflow-job-systems/01-workflow-system-fundamentals"><span>18</span><strong>Workflow &amp; Jobs</strong><small>Workers, schedulers, recovery</small></a>
                 <a href="/19-compound-engineering/01-compound-engineering-fundamentals"><span>19</span><strong>Compound Engineering</strong><small>AI-native workflows</small></a>
               </nav>
             </section>
@@ -1707,22 +1713,6 @@ jobs:
             <path d="M38 18v8M34 22l4 4 4-4" stroke="#2563EB" stroke-width="2" stroke-linecap="round"/>
           </svg>
           ICON_DEPLOYMENT
-
-          cat > public/icons/graphql.svg << 'ICON_GRAPHQL'
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
-            <!-- GraphQL logo inspired -->
-            <polygon points="24,4 42,14 42,34 24,44 6,34 6,14" fill="none" stroke="#2563EB" stroke-width="2"/>
-            <polygon points="24,10 36,17 36,31 24,38 12,31 12,17" fill="#DBEAFE" stroke="#2563EB" stroke-width="2"/>
-            <circle cx="24" cy="4" r="3" fill="#2563EB"/>
-            <circle cx="42" cy="14" r="3" fill="#0F766E"/>
-            <circle cx="42" cy="34" r="3" fill="#0F766E"/>
-            <circle cx="24" cy="44" r="3" fill="#2563EB"/>
-            <circle cx="6" cy="34" r="3" fill="#0F766E"/>
-            <circle cx="6" cy="14" r="3" fill="#0F766E"/>
-            <circle cx="24" cy="24" r="5" fill="#2563EB"/>
-            <path d="M24 10v8M24 30v8M12 17l8 4M28 27l8 4M12 31l8-4M28 21l8-4" stroke="#2563EB" stroke-width="1.5"/>
-          </svg>
-          ICON_GRAPHQL
 
           cat > public/icons/compound.svg << 'ICON_COMPOUND'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">

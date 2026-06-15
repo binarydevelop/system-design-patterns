@@ -193,13 +193,16 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Harness Engineering](17-llm-systems/09-harness-engineering.md)
 - [LLM Evaluation and Observability](17-llm-systems/10-llm-evaluation.md)
 
-### Part 18: GraphQL
-- [GraphQL Fundamentals](18-graphql/01-graphql-fundamentals.md)
-- [Schema Design](18-graphql/02-schema-design.md)
-- [Resolvers and Data Fetching](18-graphql/03-resolvers-data-fetching.md)
-- [Caching and Performance](18-graphql/04-caching-performance.md)
-- [Subscriptions and Real-Time](18-graphql/05-subscriptions-realtime.md)
-- [Federation](18-graphql/06-federation.md)
+### Part 18: Workflow & Job Systems
+- [Workflow System Fundamentals](18-workflow-job-systems/01-workflow-system-fundamentals.md)
+- [Background Jobs and Worker Pools](18-workflow-job-systems/02-background-jobs-worker-pools.md)
+- [Distributed Cron and Scheduling](18-workflow-job-systems/03-distributed-cron-scheduling.md)
+- [Durable Execution and Workflow Engines](18-workflow-job-systems/04-durable-execution-workflow-engines.md)
+- [DAG Orchestration](18-workflow-job-systems/05-dag-orchestration.md)
+- [Retry, Idempotency, and Compensation](18-workflow-job-systems/06-retry-idempotency-compensation.md)
+- [Priority Queues, Fairness, and Backpressure](18-workflow-job-systems/07-priority-fairness-backpressure.md)
+- [Leases, Heartbeats, and Recovery](18-workflow-job-systems/08-leases-heartbeats-recovery.md)
+- [Workflow Observability and Replay](18-workflow-job-systems/09-workflow-observability-replay.md)
 
 ### Part 19: Compound Engineering
 - [Compound Engineering Fundamentals](19-compound-engineering/01-compound-engineering-fundamentals.md)
