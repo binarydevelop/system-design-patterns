@@ -4,7 +4,7 @@
 
 Model serving turns trained artifacts into production predictions. The design space is shaped by latency, throughput, model size, hardware, feature freshness, rollout safety, and observability. A good serving system can load model versions, route traffic, batch requests, enforce timeouts, explain failures, and roll back independently from application code.
 
-> Serving is a production service, so the general patterns apply directly: [capacity planning](../01-foundations/10-capacity-planning.md) for the latency budget below, [retries, timeouts, and hedging](../06-scaling/10-retries-timeouts-hedging.md) for tail control, [deployment strategies](../15-deployment/01-deployment-strategies.md) for canary/blue-green, and [autoscaling](../06-scaling/08-auto-scaling.md) for capacity. LLM serving adds its own regime — continuous batching, KV caches, prefill/decode split — covered in [LLM Infrastructure](../16-llm-systems/05-llm-infrastructure.md).
+> Serving is a production service, so the general patterns apply directly: [capacity planning](../01-foundations/10-capacity-planning.md) for the latency budget below, [retries, timeouts, and hedging](../06-scaling/10-retries-timeouts-hedging.md) for tail control, [deployment strategies](../15-deployment/01-deployment-strategies.md) for canary/blue-green, and [autoscaling](../06-scaling/08-auto-scaling.md) for capacity. LLM serving adds its own regime — continuous batching, KV caches, prefill/decode split — covered in [LLM Infrastructure](../17-llm-systems/05-llm-infrastructure.md).
 
 ---
 

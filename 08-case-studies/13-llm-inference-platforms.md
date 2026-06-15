@@ -51,7 +51,7 @@ graph TD
 
 - **Prefill/decode disaggregation** (DistServe's argument; **Mooncake** — Kimi's serving platform — is the canonical production account): separate pools sized independently against their own SLOs, with KV blocks streamed across a fast fabric. Mooncake's framing goes further: the *cluster's aggregate DRAM/SSD* is organized as a *KVCache-centric* store, and scheduling optimizes cache reuse and transfer cost jointly — under overload, an **early-rejection** policy declines work predicted to miss SLO before it wastes prefill ([load shedding](../06-scaling/10-retries-timeouts-hedging.md), applied with a cost model).
 - **The KV/prefix cache is the product's economics.** Agentic traffic resends conversation prefixes every turn; system prompts repeat across millions of calls. Engines share prefixes within a node (PagedAttention block sharing, SGLang's RadixAttention); platforms extend it cluster-wide with tiering and **cache-aware routing** (hash the prompt prefix; route to the replica already warm — a [consistent-hashing](../02-distributed-databases/05-partitioning-strategies.md) problem where the "data" is recomputable but expensive). Provider-side prompt-caching discounts (~90% off cached input) are this internal machinery, priced.
-- **Decode-side throughput stack:** continuous batching (token-granularity batch membership), speculative decoding (draft/EAGLE-style — accept multiple tokens per target-model pass), FP8/INT4 quantization, and for MoE frontier models, **wide expert parallelism** (DeepSeek's open inference notes: experts spread across many GPUs, all-to-all routing on the fabric, prefill and decode phases parallelized differently) ([LLM Infrastructure](../16-llm-systems/05-llm-infrastructure.md) covers each mechanism).
+- **Decode-side throughput stack:** continuous batching (token-granularity batch membership), speculative decoding (draft/EAGLE-style — accept multiple tokens per target-model pass), FP8/INT4 quantization, and for MoE frontier models, **wide expert parallelism** (DeepSeek's open inference notes: experts spread across many GPUs, all-to-all routing on the fabric, prefill and decode phases parallelized differently) ([LLM Infrastructure](../17-llm-systems/05-llm-infrastructure.md) covers each mechanism).
 - **Fleet segmentation:** interactive, agentic (long prefixes, bursty turns), and batch classes run on separate pools or priority bands — batch/flex tiers (50%-off, hours-latency) exist to soak off-peak capacity, the classic utilization play ([FinOps](../11-observability/06-finops-cost-engineering.md)) for hardware whose cost is dominated by ownership, not usage.
 
 ## Scheduling: Goodput, Not Throughput
@@ -65,14 +65,14 @@ The operative dashboards are *SLO-attainment* dashboards: a scheduler change tha
 
 ## Observability and Safety
 
-Per-request traces carry tokens in/out/cached, queue time, prefill time, ITL distribution, cache hit ratio, and cost — [OTel GenAI conventions](../16-llm-systems/10-llm-evaluation.md) made this portable. Quality is monitored *statistically* (sampled online evals, refusal/guardrail rates as SLIs) because correctness isn't binary; and model/version rollouts run as [canary-gated deployments](../15-deployment/04-cicd-gitops.md) against eval suites plus live metric diffs — the same discipline as any deploy, with fuzzier verdicts.
+Per-request traces carry tokens in/out/cached, queue time, prefill time, ITL distribution, cache hit ratio, and cost — [OTel GenAI conventions](../17-llm-systems/10-llm-evaluation.md) made this portable. Quality is monitored *statistically* (sampled online evals, refusal/guardrail rates as SLIs) because correctness isn't binary; and model/version rollouts run as [canary-gated deployments](../15-deployment/04-cicd-gitops.md) against eval suites plus live metric diffs — the same discipline as any deploy, with fuzzier verdicts.
 
 ---
 
 ## Lessons
 
 1. **Disaggregate by physics:** when one request has two phases with opposite hardware profiles, separating the pools converts an internal fight into independent capacity planning — the prefill/decode split is [read/write-path separation](../06-scaling/09-multi-region-architecture.md) reborn for FLOPs.
-2. **Name your central asset and design around it:** these platforms are KV-cache systems that happen to run models; hit rate is the cost structure, so routing, tiering, pricing, and even harness design upstream ([append-only prompts](../16-llm-systems/09-harness-engineering.md)) all serve it.
+2. **Name your central asset and design around it:** these platforms are KV-cache systems that happen to run models; hit rate is the cost structure, so routing, tiering, pricing, and even harness design upstream ([append-only prompts](../17-llm-systems/09-harness-engineering.md)) all serve it.
 3. **Goodput under SLO is the only honest metric** for latency-shaped multi-tenant serving — raw throughput numbers hide congestive collapse.
 4. **Token economics discipline the whole stack:** cost-per-solved-request flows from cache hits, batch tiers, and quantization choices — the rare domain where the infra team's dashboard *is* the gross-margin model.
 5. **It's all prior art recombined:** continuous batching is connection multiplexing, prefix caches are CDNs, early rejection is admission control, expert parallelism is sharding — the patterns in this book, re-instantiated for a new workload in under three years.
@@ -83,4 +83,4 @@ Per-request traces carry tokens in/out/cached, queue time, prefill time, ITL dis
 - [DistServe: Disaggregating Prefill and Decoding](https://arxiv.org/abs/2401.09670) — the goodput argument
 - [DeepSeek-V3 Technical Report](https://arxiv.org/abs/2412.19437) and DeepSeek's open-source inference releases — wide-EP MoE serving in public
 - [vLLM](https://github.com/vllm-project/vllm) / [SGLang](https://github.com/sgl-project/sglang) — the engines; their production case studies document the fleet patterns
-- [LLM Infrastructure](../16-llm-systems/05-llm-infrastructure.md) and [Harness Engineering](../16-llm-systems/09-harness-engineering.md) — the pattern articles this case study instantiates
+- [LLM Infrastructure](../17-llm-systems/05-llm-infrastructure.md) and [Harness Engineering](../17-llm-systems/09-harness-engineering.md) — the pattern articles this case study instantiates

@@ -4,7 +4,7 @@
 
 Completion-based tools (Copilot, Codeium) are autocomplete at scale — they predict the next token in an editor buffer with zero tool access and zero autonomy. Agent-based tools (Claude Code, Codex CLI, Devin) are autonomous software-executing loops that read files, run shells, search codebases, and iterate on failures with multi-step planning. These are not points on the same spectrum; they are fundamentally different architectures with fundamentally different failure mode profiles. Completions fail silently by producing plausible-but-wrong code that humans accept without review. Agents fail noisily with tool errors, test failures, and explicit uncertainty — but carry the risk of arbitrary code execution [1]. Understanding this distinction is prerequisite to deploying either effectively.
 
-> Cross-reference: For the general agent loop (Perceive → Think → Act → Observe → Repeat), see [`16-llm-systems/01-agent-fundamentals.md`](../16-llm-systems/01-agent-fundamentals.md). This article focuses on the tool design, execution model, and security boundaries specific to **development** agents.
+> Cross-reference: For the general agent loop (Perceive → Think → Act → Observe → Repeat), see [`17-llm-systems/01-agent-fundamentals.md`](../17-llm-systems/01-agent-fundamentals.md). This article focuses on the tool design, execution model, and security boundaries specific to **development** agents.
 
 ---
 

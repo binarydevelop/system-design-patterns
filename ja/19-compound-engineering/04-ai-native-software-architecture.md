@@ -1,6 +1,6 @@
 # AI ネイティブアーキテクチャ
 
-> この記事は英語版から翻訳されました。[English version](../../18-compound-engineering/04-ai-native-software-architecture.md)
+> この記事は英語版から翻訳されました。[English version](../../19-compound-engineering/04-ai-native-software-architecture.md)
 
 > AIエージェントによる変更に最適化されたソフトウェアシステムの設計 — パフォーマンス、セキュリティ、保守性と並ぶアーキテクチャ品質属性として、エージェントフレンドリーさを扱います。
 
@@ -848,7 +848,7 @@ jobs:
 
 ---
 
-> *相互参照：DDDの境界付きコンテキストパターンについては`01-foundations/`を参照。コンテキストウィンドウ最適化戦略については`16-llm-systems/08-context-management.md`を参照。クロスサービスエージェント作業に関連するマイクロサービス通信パターンについては`12-service-mesh/`を参照。*
+> *相互参照：DDDの境界付きコンテキストパターンについては`01-foundations/`を参照。コンテキストウィンドウ最適化戦略については`17-llm-systems/08-context-management.md`を参照。クロスサービスエージェント作業に関連するマイクロサービス通信パターンについては`12-service-mesh/`を参照。*
 
 ## References
 

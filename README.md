@@ -170,44 +170,44 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Disaster Recovery](15-deployment/05-disaster-recovery.md)
 - [Migration Strategies](15-deployment/06-migration-strategies.md)
 
-### Part 16: LLM Systems
-- [Agent Fundamentals](16-llm-systems/01-agent-fundamentals.md)
-- [Orchestration Patterns](16-llm-systems/02-orchestration-patterns.md)
-- [Multi-Agent Systems](16-llm-systems/03-multi-agent-systems.md)
-- [RAG Patterns](16-llm-systems/04-rag-patterns.md)
-- [LLM Infrastructure](16-llm-systems/05-llm-infrastructure.md)
-- [Prompt Engineering](16-llm-systems/06-prompt-engineering.md)
-- [Fine-Tuning Patterns](16-llm-systems/07-fine-tuning-patterns.md)
-- [Context Management](16-llm-systems/08-context-management.md)
-- [Harness Engineering](16-llm-systems/09-harness-engineering.md)
-- [LLM Evaluation and Observability](16-llm-systems/10-llm-evaluation.md)
+### Part 16: ML Systems
+- [ML System Fundamentals](16-ml-systems/01-ml-system-fundamentals.md)
+- [Feature Stores](16-ml-systems/02-feature-stores.md)
+- [Model Serving](16-ml-systems/03-model-serving.md)
+- [Model Monitoring](16-ml-systems/04-model-monitoring.md)
+- [Training Pipelines](16-ml-systems/05-training-pipelines.md)
+- [Model Deployment and Rollouts](16-ml-systems/06-model-deployment-rollouts.md)
+- [Recommendation Systems](16-ml-systems/07-recommendation-systems.md)
+- [Online Experiments](16-ml-systems/08-online-experiments.md)
+- [ML Risk and Governance](16-ml-systems/09-ml-risk-governance.md)
 
-### Part 17: GraphQL
-- [GraphQL Fundamentals](17-graphql/01-graphql-fundamentals.md)
-- [Schema Design](17-graphql/02-schema-design.md)
-- [Resolvers and Data Fetching](17-graphql/03-resolvers-data-fetching.md)
-- [Caching and Performance](17-graphql/04-caching-performance.md)
-- [Subscriptions and Real-Time](17-graphql/05-subscriptions-realtime.md)
-- [Federation](17-graphql/06-federation.md)
+### Part 17: LLM Systems
+- [Agent Fundamentals](17-llm-systems/01-agent-fundamentals.md)
+- [Orchestration Patterns](17-llm-systems/02-orchestration-patterns.md)
+- [Multi-Agent Systems](17-llm-systems/03-multi-agent-systems.md)
+- [RAG Patterns](17-llm-systems/04-rag-patterns.md)
+- [LLM Infrastructure](17-llm-systems/05-llm-infrastructure.md)
+- [Prompt Engineering](17-llm-systems/06-prompt-engineering.md)
+- [Fine-Tuning Patterns](17-llm-systems/07-fine-tuning-patterns.md)
+- [Context Management](17-llm-systems/08-context-management.md)
+- [Harness Engineering](17-llm-systems/09-harness-engineering.md)
+- [LLM Evaluation and Observability](17-llm-systems/10-llm-evaluation.md)
 
-### Part 18: Compound Engineering
-- [Compound Engineering Fundamentals](18-compound-engineering/01-compound-engineering-fundamentals.md)
-- [Coding Agent Tool Design](18-compound-engineering/02-coding-agent-tool-design.md)
-- [Agent Context Engineering](18-compound-engineering/03-agent-context-engineering.md)
-- [AI-Native Software Architecture](18-compound-engineering/04-ai-native-software-architecture.md)
-- [Quality Engineering with AI Agents](18-compound-engineering/05-quality-engineering-with-ai-agents.md)
-- [Compound Development Workflows](18-compound-engineering/06-compound-development-workflows.md)
+### Part 18: GraphQL
+- [GraphQL Fundamentals](18-graphql/01-graphql-fundamentals.md)
+- [Schema Design](18-graphql/02-schema-design.md)
+- [Resolvers and Data Fetching](18-graphql/03-resolvers-data-fetching.md)
+- [Caching and Performance](18-graphql/04-caching-performance.md)
+- [Subscriptions and Real-Time](18-graphql/05-subscriptions-realtime.md)
+- [Federation](18-graphql/06-federation.md)
 
-### Part 19: ML Systems
-- [ML System Fundamentals](19-ml-systems/01-ml-system-fundamentals.md)
-- [Feature Stores](19-ml-systems/02-feature-stores.md)
-- [Model Serving](19-ml-systems/03-model-serving.md)
-- [Model Monitoring](19-ml-systems/04-model-monitoring.md)
-- [Training Pipelines](19-ml-systems/05-training-pipelines.md)
-- [Model Deployment and Rollouts](19-ml-systems/06-model-deployment-rollouts.md)
-- [Recommendation Systems](19-ml-systems/07-recommendation-systems.md)
-- [Online Experiments](19-ml-systems/08-online-experiments.md)
-- [ML Risk and Governance](19-ml-systems/09-ml-risk-governance.md)
+### Part 19: Compound Engineering
+- [Compound Engineering Fundamentals](19-compound-engineering/01-compound-engineering-fundamentals.md)
+- [Coding Agent Tool Design](19-compound-engineering/02-coding-agent-tool-design.md)
+- [Agent Context Engineering](19-compound-engineering/03-agent-context-engineering.md)
+- [AI-Native Software Architecture](19-compound-engineering/04-ai-native-software-architecture.md)
+- [Quality Engineering with AI Agents](19-compound-engineering/05-quality-engineering-with-ai-agents.md)
+- [Compound Development Workflows](19-compound-engineering/06-compound-development-workflows.md)
 
 ## Notation
 

@@ -82,10 +82,10 @@ title: システム設計パターン
       <a href="/ja/13-data-pipelines/01-batch-processing"><span>13</span><strong>データパイプライン</strong><small>バッチとストリーム</small></a>
       <a href="/ja/14-search-systems/01-inverted-indexes"><span>14</span><strong>検索システム</strong><small>検索と順位付け</small></a>
       <a href="/ja/15-deployment/01-deployment-strategies"><span>15</span><strong>デプロイメント</strong><small>リリースと復旧</small></a>
-      <a href="/ja/16-llm-systems/01-agent-fundamentals"><span>16</span><strong>LLMシステム</strong><small>エージェントと文脈</small></a>
-      <a href="/ja/17-graphql/01-graphql-fundamentals"><span>17</span><strong>GraphQL</strong><small>スキーマと連携</small></a>
-      <a href="/ja/18-compound-engineering/01-compound-engineering-fundamentals"><span>18</span><strong>コンパウンドエンジニアリング</strong><small>AIネイティブワークフロー</small></a>
-      <a href="/ja/19-ml-systems/01-ml-system-fundamentals"><span>19</span><strong>MLシステム</strong><small>特徴量・サービング・ドリフト</small></a>
+      <a href="/ja/16-ml-systems/01-ml-system-fundamentals"><span>16</span><strong>MLシステム</strong><small>特徴量・サービング・ドリフト</small></a>
+      <a href="/ja/17-llm-systems/01-agent-fundamentals"><span>17</span><strong>LLMシステム</strong><small>エージェントと文脈</small></a>
+      <a href="/ja/18-graphql/01-graphql-fundamentals"><span>18</span><strong>GraphQL</strong><small>スキーマと連携</small></a>
+      <a href="/ja/19-compound-engineering/01-compound-engineering-fundamentals"><span>19</span><strong>コンパウンドエンジニアリング</strong><small>AIネイティブワークフロー</small></a>
     </nav>
   </section>
 
@@ -97,7 +97,7 @@ title: システム設計パターン
     <nav>
       <a href="/ja/09-whitepapers/07-raft"><span>Paper trail</span><strong>Raft、Dynamo、Spanner、Kafka</strong><b>&rarr;</b></a>
       <a href="/ja/08-case-studies/04-netflix"><span>Production systems</span><strong>Netflix、Slack、Discord、Stripe</strong><b>&rarr;</b></a>
-      <a href="/ja/16-llm-systems/04-rag-patterns"><span>Modern systems</span><strong>RAG、エージェント、オーケストレーション</strong><b>&rarr;</b></a>
+      <a href="/ja/17-llm-systems/04-rag-patterns"><span>Modern systems</span><strong>RAG、エージェント、オーケストレーション</strong><b>&rarr;</b></a>
     </nav>
   </section>
 </main>

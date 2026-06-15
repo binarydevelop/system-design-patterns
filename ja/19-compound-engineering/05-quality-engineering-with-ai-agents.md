@@ -1,6 +1,6 @@
 # AIエージェントによる品質エンジニアリング
 
-> この記事は[英語版](../../18-compound-engineering/05-quality-engineering-with-ai-agents.md)から翻訳されました。
+> この記事は[英語版](../../19-compound-engineering/05-quality-engineering-with-ai-agents.md)から翻訳されました。
 
 ## TL;DR
 

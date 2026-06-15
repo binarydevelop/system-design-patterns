@@ -160,4 +160,4 @@ graph LR
 - [Stripe: API versioning](https://stripe.com/blog/api-versioning) / [Designing robust and predictable APIs with idempotency](https://stripe.com/blog/idempotency)
 - [Buf: breaking-change detection](https://buf.build/docs/breaking/overview) / [protobuf language guide](https://protobuf.dev/programming-guides/proto3/) — フィールド番号衛生
 - [Standard Webhooks](https://www.standardwebhooks.com/) — 署名・リトライ・メタデータ慣習の仕様化
-- [GraphQLセクション](../17-graphql/01-graphql-fundamentals.md) — クライアントが柔軟な射影を必要とするときのクエリ言語という選択肢
+- [GraphQLセクション](../18-graphql/01-graphql-fundamentals.md) — クライアントが柔軟な射影を必要とするときのクエリ言語という選択肢

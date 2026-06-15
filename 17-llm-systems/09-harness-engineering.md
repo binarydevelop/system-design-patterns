@@ -59,7 +59,7 @@ Principles:
 
 ## Tool Surface Design
 
-Tools are the half of the interface you fully control. The craft (full article: [Coding Agent Tool Design](../18-compound-engineering/02-coding-agent-tool-design.md)):
+Tools are the half of the interface you fully control. The craft (full article: [Coding Agent Tool Design](../19-compound-engineering/02-coding-agent-tool-design.md)):
 
 - **Minimal orthogonal set.** Every tool's schema and description occupies context on *every* turn and competes for selection. Ten well-separated tools outperform forty overlapping ones. When two tools overlap, the model splits its behavior between them nondeterministically.
 - **Descriptions are load-bearing.** A tool description is a micro-prompt: what it does, when to prefer it over neighbors, what it returns, known failure modes. Test descriptions like prompts — A/B them in evals.
@@ -88,7 +88,7 @@ Track tokens per turn. At a threshold (~70–80% of the window, or earlier if co
 
 ### 3. Filesystem as memory
 
-Give the agent durable scratch space and teach it (via system prompt) to use it: `plan.md` for the task plan, `notes.md` for learnings, artifacts written to disk instead of held in context. File-based state survives compaction, crashes, and handoffs to other agents — and humans can inspect it. Cross-session memory (project conventions, user preferences) belongs in curated instruction files loaded at session start, not in an embedding store the model can't audit. See [Agent Context Engineering](../18-compound-engineering/03-agent-context-engineering.md).
+Give the agent durable scratch space and teach it (via system prompt) to use it: `plan.md` for the task plan, `notes.md` for learnings, artifacts written to disk instead of held in context. File-based state survives compaction, crashes, and handoffs to other agents — and humans can inspect it. Cross-session memory (project conventions, user preferences) belongs in curated instruction files loaded at session start, not in an embedding store the model can't audit. See [Agent Context Engineering](../19-compound-engineering/03-agent-context-engineering.md).
 
 ### 4. Subagent fan-out
 

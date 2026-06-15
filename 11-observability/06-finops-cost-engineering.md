@@ -47,7 +47,7 @@ Two notes on the table. **Commitments are a forecasting bet** — commit to the 
 
 ### The LLM-era addendum
 
-Token spend is the fastest-growing line on many 2026 bills, and it behaves like a utility: **cost per solved task** is the unit metric ([LLM Evaluation](../16-llm-systems/10-llm-evaluation.md)), and the levers have their own ranking — prompt-cache hit rate first, model tiering second, batch-tier routing for async work, output-length discipline, then provider negotiation ([LLM Infrastructure](../16-llm-systems/05-llm-infrastructure.md) and [Harness Engineering](../16-llm-systems/09-harness-engineering.md) cover the mechanics). The FinOps Foundation's scope extension to SaaS/AI spend reflects the same shift: the bill you can engineer is no longer only the IaaS bill.
+Token spend is the fastest-growing line on many 2026 bills, and it behaves like a utility: **cost per solved task** is the unit metric ([LLM Evaluation](../17-llm-systems/10-llm-evaluation.md)), and the levers have their own ranking — prompt-cache hit rate first, model tiering second, batch-tier routing for async work, output-length discipline, then provider negotiation ([LLM Infrastructure](../17-llm-systems/05-llm-infrastructure.md) and [Harness Engineering](../17-llm-systems/09-harness-engineering.md) cover the mechanics). The FinOps Foundation's scope extension to SaaS/AI spend reflects the same shift: the bill you can engineer is no longer only the IaaS bill.
 
 ---
 

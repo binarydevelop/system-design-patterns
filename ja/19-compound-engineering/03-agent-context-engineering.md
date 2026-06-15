@@ -1,6 +1,6 @@
 # エージェントコンテキストエンジニアリング
 
-> この記事は英語版から翻訳されました。[English version](../../18-compound-engineering/03-agent-context-engineering.md)
+> この記事は英語版から翻訳されました。[English version](../../19-compound-engineering/03-agent-context-engineering.md)
 
 ## TL;DR
 

@@ -1,6 +1,6 @@
 # コンパウンド開発ワークフロー
 
-> この記事は[英語版](../../18-compound-engineering/06-compound-development-workflows.md)から翻訳されました。
+> この記事は[英語版](../../19-compound-engineering/06-compound-development-workflows.md)から翻訳されました。
 
 ## TL;DR
 

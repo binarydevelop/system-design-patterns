@@ -37,7 +37,7 @@ sum(rate(lb_request_duration_bucket{route="checkout",le="0.5"}[30d]))
 sum(rate(lb_request_duration_count{route="checkout"}[30d]))
 ```
 
-**SLIs for non-request systems.** Pipelines and async work need different shapes: **freshness** (% of windows where data age < X — e.g., "dashboard data < 30min old"), **completeness** (% of expected records that arrived), **correctness** (% of canary records that round-trip intact), and for queues, **time-to-process** as a ratio under threshold ([Data Pipelines](../13-data-pipelines/01-batch-processing.md)). LLM-era systems add quality SLIs — % of responses passing automated evals — same machinery, fuzzier "good" definition ([LLM Infrastructure](../16-llm-systems/05-llm-infrastructure.md)).
+**SLIs for non-request systems.** Pipelines and async work need different shapes: **freshness** (% of windows where data age < X — e.g., "dashboard data < 30min old"), **completeness** (% of expected records that arrived), **correctness** (% of canary records that round-trip intact), and for queues, **time-to-process** as a ratio under threshold ([Data Pipelines](../13-data-pipelines/01-batch-processing.md)). LLM-era systems add quality SLIs — % of responses passing automated evals — same machinery, fuzzier "good" definition ([LLM Infrastructure](../17-llm-systems/05-llm-infrastructure.md)).
 
 ---
 

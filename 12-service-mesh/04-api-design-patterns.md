@@ -158,4 +158,4 @@ graph LR
 - [Stripe: API versioning](https://stripe.com/blog/api-versioning) and [Designing robust and predictable APIs with idempotency](https://stripe.com/blog/idempotency)
 - [Buf: breaking-change detection](https://buf.build/docs/breaking/overview) and [protobuf language guide](https://protobuf.dev/programming-guides/proto3/) — field-number hygiene
 - [Standard Webhooks](https://www.standardwebhooks.com/) — signing, retries, and metadata conventions, specified
-- [GraphQL section](../17-graphql/01-graphql-fundamentals.md) — the query-language alternative when clients need flexible projections
+- [GraphQL section](../18-graphql/01-graphql-fundamentals.md) — the query-language alternative when clients need flexible projections

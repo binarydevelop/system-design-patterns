@@ -846,7 +846,7 @@ jobs:
 
 ---
 
-> *Cross-references: See `01-foundations/` for DDD bounded context patterns. See `16-llm-systems/08-context-management.md` for context window optimization strategies. See `12-service-mesh/` for microservice communication patterns relevant to cross-service agent work.*
+> *Cross-references: See `01-foundations/` for DDD bounded context patterns. See `17-llm-systems/08-context-management.md` for context window optimization strategies. See `12-service-mesh/` for microservice communication patterns relevant to cross-service agent work.*
 
 ## References
 
