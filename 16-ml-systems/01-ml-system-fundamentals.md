@@ -105,23 +105,23 @@ A mature ML platform is best understood as a control system wrapped around a dec
 
 ```mermaid
 flowchart TD
-    SRC["Source systems\nevents, tables, logs"] --> DATA["Dataset/version store\nimmutable snapshots"]
-    SRC --> FEAT["Feature platform\ndefinitions + materialization"]
-    FEAT --> OFF["Offline features\nfull history"]
-    FEAT --> ON["Online features\nlow-latency latest"]
-    DATA --> TRAIN["Training pipeline\nreproducible DAG"]
+    SRC["Source systems<br/>events, tables, logs"] --> DATA["Dataset/version store<br/>immutable snapshots"]
+    SRC --> FEAT["Feature platform<br/>definitions + materialization"]
+    FEAT --> OFF["Offline features<br/>full history"]
+    FEAT --> ON["Online features<br/>low-latency latest"]
+    DATA --> TRAIN["Training pipeline<br/>reproducible DAG"]
     OFF --> TRAIN
-    LABEL["Label/ground-truth system\ndelayed outcomes"] --> TRAIN
-    TRAIN --> EVAL["Offline evaluation\nmetrics + slices + leakage checks"]
-    EVAL --> REG["Model registry\nlineage + state + contracts"]
-    REG --> DEPLOY["Deployment control plane\nshadow/canary/rollback"]
-    DEPLOY --> SERVE["Serving data plane\nmodels + feature fetch + policy"]
+    LABEL["Label/ground-truth system<br/>delayed outcomes"] --> TRAIN
+    TRAIN --> EVAL["Offline evaluation<br/>metrics + slices + leakage checks"]
+    EVAL --> REG["Model registry<br/>lineage + state + contracts"]
+    REG --> DEPLOY["Deployment control plane<br/>shadow/canary/rollback"]
+    DEPLOY --> SERVE["Serving data plane<br/>models + feature fetch + policy"]
     ON --> SERVE
     SERVE --> PRED["Prediction/exposure log"]
-    PRED --> MON["Monitoring\ndrift, quality, SLOs"]
+    PRED --> MON["Monitoring<br/>drift, quality, SLOs"]
     PRED --> LABEL
     MON --> TRAIN
-    GOV["Governance/audit\nrisk gates + approvals"] -.-> REG
+    GOV["Governance/audit<br/>risk gates + approvals"] -.-> REG
     GOV -.-> DEPLOY
 ```
 
