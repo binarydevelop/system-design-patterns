@@ -180,6 +180,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Recommendation Systems](16-ml-systems/07-recommendation-systems.md) — two-tower retrieval, Wide & Deep, ANN indexing, DPP diversity, exploration, cold start
 - [Online Experiments](16-ml-systems/08-online-experiments.md) — power analysis, SRM checks, CUPED, sequential testing, interleaving
 - [ML Risk and Governance](16-ml-systems/09-ml-risk-governance.md) — risk tiers, model cards, proxy detection, audit logs, incident response, lifecycle
+- [Label and Ground-Truth Systems](16-ml-systems/10-label-ground-truth-systems.md) — label delay, selective labels, human review, weak supervision, append-only label stores
 
 ### Part 17: LLM Systems
 - [Agent Fundamentals](17-llm-systems/01-agent-fundamentals.md)
