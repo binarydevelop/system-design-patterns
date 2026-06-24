@@ -86,7 +86,7 @@ Some decisions, though, cannot be rolled back at all. A model that blocked a leg
 
 ## Versioning the Model and Its Contract Together
 
-Because a model is a decision system, versioning the model file alone is insufficient. The platform must version the model *and its contract* as one unit: the input schema and feature versions it consumes, the output contract (score range, calibration, class labels) it promises, the runtime image it needs, and the rollback target it depends on. This is the deployment-time face of the same lineage discipline that governs training; the registry, not a wiki or a memory, is the source of truth.
+Because a model is a decision system, versioning the model file alone is insufficient. The platform must version the model *and its contract* as one unit: the input schema and feature versions it consumes, the output contract (score range, calibration, class labels) it promises, the runtime image it needs, and the rollback target it depends on. This is the deployment-time face of the same lineage discipline that governs training; the registry, not a wiki or a memory, is the source of truth. The registry's artifact identity, lifecycle states, promotion gates, and rollback metadata are covered in [Model Registry and ML Metadata](./13-model-registry-metadata.md).
 
 A minimal release contract makes the dependencies explicit so the platform can *validate* compatibility before promotion rather than discovering a mismatch in production:
 
