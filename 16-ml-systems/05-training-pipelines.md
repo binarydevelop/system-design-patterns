@@ -307,6 +307,155 @@ with DAG(
 
 The common thread: all of them compile a DAG of idempotent steps, each producing versioned artifacts, with the orchestrator handling scheduling, retries, and dependency resolution. The choice between them is usually driven by infrastructure (are you on K8s already?), existing orchestration (does the data team use Airflow?), and ML framework coupling (are you in the TFX ecosystem?).
 
+### Execution Engine Architecture
+
+The DSL compiles to an execution graph, but the execution engine is what actually runs it. This is where the system design lives.
+
+```mermaid
+flowchart TD
+    subgraph Control Plane
+        SCHED["Scheduler"] --> EXEC["Execution engine"]
+        EXEC --> CACHE["Step cache"]
+        EXEC --> ART["Artifact store"]
+        EXEC --> LINEAGE["Lineage store"]
+    end
+
+    subgraph Data Plane
+        WORKERS["Worker pool"] --> READ["Read artifacts"]
+        READ --> COMPUTE["Compute step"]
+        COMPUTE --> WRITE["Write artifacts"]
+    end
+
+    EXEC --> WORKERS
+    WRITE --> ART
+    WRITE --> LINEAGE
+```
+
+| Component | Responsibility | Failure mode when weak |
+|---|---|---|
+| Scheduler | Decide when steps run, resolve dependencies | Starvation, deadlock, missed SLAs |
+| Execution engine | Dispatch steps to workers, collect results | Lost work, zombie steps, double execution |
+| Step cache | Skip recomputation when inputs unchanged | Cache invalidation bugs, stale results |
+| Artifact store | Persist step outputs with content addressing | Lost artifacts, corruption, no lineage |
+| Lineage store | Record which inputs produced which outputs | Untraceable models, no rollback path |
+| Worker pool | Run the actual compute | Noisy neighbors, resource exhaustion |
+
+### Step Caching and Content Addressing
+
+The single biggest efficiency lever in a training pipeline is skipping work that's already been done. A step's output is reusable only if its inputs are identical.
+
+```python
+import hashlib
+import json
+import os
+
+def step_cache_key(step_name, inputs, code_version, environment, parameters):
+    """
+    Content-addressed cache key for a pipeline step.
+    Same inputs + code + env + params → same key → cache hit.
+    """
+    # Hash inputs by content, not by path — paths can change
+    input_hashes = {}
+    for name, artifact in inputs.items():
+        input_hashes[name] = artifact.content_hash  # SHA256 of bytes
+
+    key_material = {
+        "step": step_name,
+        "inputs": input_hashes,
+        "code": code_version,        # git commit
+        "env": environment,           # container image digest
+        "params": parameters,
+    }
+    return hashlib.sha256(
+        json.dumps(key_material, sort_keys=True).encode()
+    ).hexdigest()
+
+def run_step_with_cache(step_fn, step_name, inputs, code_version,
+                         environment, parameters, cache_dir):
+    """Run a step, or return cached output if inputs are unchanged."""
+    key = step_cache_key(step_name, inputs, code_version, environment, parameters)
+    cache_path = os.path.join(cache_dir, f"{key}.tar")
+
+    if os.path.exists(cache_path):
+        print(f"CACHE HIT: {step_name} ({key[:8]})")
+        return load_artifact(cache_path)
+
+    print(f"CACHE MISS: {step_name} ({key[:8]}) — executing")
+    output = step_fn(**inputs, **parameters)
+    save_artifact(cache_path, output)
+    return output
+```
+
+Cache invalidation is the hard part. Common bugs:
+
+- **Path-based keys** instead of content-based: renaming a file invalidates nothing but breaks reproducibility.
+- **Missing code version**: a function change isn't picked up because the cache key didn't include the commit.
+- **Missing environment**: a numpy upgrade changes floating-point behavior, but the cache returns the old result.
+- **Non-deterministic steps**: a step that reads "latest" data or uses wall-clock time can never be cached.
+
+### Lineage Store Design
+
+The lineage store answers: "given this model artifact, what produced it?" It's a DAG of artifacts and steps, queryable backwards (provenance) and forwards (impact analysis).
+
+```python
+# Lineage record for a single step execution
+lineage_record = {
+    "execution_id": "exec_abc123",
+    "step_name": "train_model",
+    "started_at": "2026-06-10T06:15:00Z",
+    "finished_at": "2026-06-10T08:30:00Z",
+    "status": "succeeded",
+
+    # Inputs: artifacts consumed by this step
+    "inputs": [
+        {"artifact_id": "art_train_data_v7", "version": "sha256:abc..."},
+        {"artifact_id": "art_feature_defs_v12", "version": "sha256:def..."},
+    ],
+
+    # Outputs: artifacts produced by this step
+    "outputs": [
+        {"artifact_id": "art_model_v42", "version": "sha256:ghi..."},
+        {"artifact_id": "art_eval_report_v42", "version": "sha256:jkl..."},
+    ],
+
+    # Execution context
+    "code_version": "441c720",
+    "environment": "registry.example.com/ml-train:2026-06-01",
+    "parameters": {"max_depth": 6, "learning_rate": 0.05},
+    "worker": "worker-pool-3",
+}
+```
+
+```mermaid
+flowchart LR
+    DATA["train_data_v7"] --> TRAIN["train_step"]
+    FEATS["feature_defs_v12"] --> TRAIN
+    CODE["code@441c720"] --> TRAIN
+    ENV["image:2026-06-01"] --> TRAIN
+    TRAIN --> MODEL["model_v42"]
+    TRAIN --> EVAL["eval_report_v42"]
+    MODEL --> REG["registry: fraud_classifier v42"]
+    REG --> DEPLOY["deployment: canary 5%"]
+```
+
+Query patterns the lineage store must support:
+
+- **Provenance**: given `model_v42`, return all inputs and steps that produced it.
+- **Impact**: given `train_data_v7`, return all models that used it (for "this dataset had a bug, what models need retraining?").
+- **Diff**: given two model versions, return which inputs changed.
+- **Replay**: given a model version, return enough to re-execute the same step.
+
+Implementation choices:
+
+| Store | Fit | Trade-off |
+|---|---|---|
+| Relational DB (Postgres) | Simple queries, joins, indexes | Schema migrations as lineage model evolves |
+| Graph DB (Neo4j, Dgraph) | Natural fit for DAG traversal | Less familiar ops, harder to operate |
+| Document store (DynamoDB, Mongo) | Flexible schema for evolving records | Multi-hop queries are expensive |
+| Append-only log + index (Kafka + Elasticsearch) | Audit-grade, replayable | Eventually consistent; harder ad-hoc queries |
+
+Most platforms start with a relational DB and move to a graph backend only when impact analysis across thousands of models becomes slow.
+
 ---
 
 ## Pipeline DAG Ownership
@@ -574,6 +723,84 @@ environment:
 ```
 
 The goal is deterministic reconstruction, not storing everything in the model registry.
+
+### Training Data I/O Architecture
+
+Training pipelines are usually I/O-bound, not compute-bound. The way training data is stored, sharded, and read dominates end-to-end latency — especially for deep learning where the GPU starves if the data pipeline can't keep up.
+
+```mermaid
+flowchart LR
+    subgraph Storage
+        WH["Warehouse<br/>(BigQuery, Snowflake)"] --> EXPORT["Export job"]
+        EXPORT --> LAKE["Object storage<br/>(S3, GCS)"]
+        LAKE --> SHARD["Sharded files<br/>(Parquet, TFRecord)"]
+    end
+
+    subgraph Training
+        SHARD --> LOADER["Data loader"]
+        LOADER --> PREFETCH["Prefetch queue"]
+        PREFETCH --> GPU["GPU/accelerator"]
+    end
+
+    CACHE["Local SSD cache"] -.-> LOADER
+    LAKE -.-> CACHE
+```
+
+| Format | Strength | Weakness | Use when |
+|---|---|---|---|
+| Parquet | Columnar, compressed, schema evolution, ecosystem support | Row-group granularity; not ideal for streaming | Tabular data, feature joins, batch training |
+| TFRecord | Sequential read, protobuf schema, designed for TF data pipeline | TF-specific; opaque outside TF | Large-scale deep learning on TF |
+| WebDataset / shards | POSIX-friendly streaming, S3-native, resumable | Requires sharding discipline | Large-scale training on cloud object storage |
+| In-warehouse SQL | No export step; always fresh | Warehouse is the bottleneck; expensive compute | Small datasets, experimentation |
+| In-memory (Arrow) | Zero-copy reads, fast | Memory-bound; doesn't scale to TB | Small/medium datasets, interactive iteration |
+
+#### Sharding Strategy
+
+```python
+# Sharding for parallel training workers
+# Each worker reads a disjoint subset of shards
+
+def shard_for_worker(num_shards: int, world_size: int, rank: int) -> list[int]:
+    """Return shard indices for this worker. Disjoint across ranks."""
+    return list(range(rank, num_shards, world_size))
+
+# Example: 100 shards, 4 workers
+# worker 0 → [0, 4, 8, ..., 96]
+# worker 1 → [1, 5, 9, ..., 97]
+# worker 2 → [2, 6, 10, ..., 98]
+# worker 3 → [3, 7, 11, ..., 99]
+```
+
+Shard sizing rule of thumb: each shard should hold 100MB–1GB compressed. Too small → metadata overhead dominates. Too large → stragglers and poor load balancing across workers.
+
+#### Prefetch and Pipeline Parallelism
+
+```python
+# PyTorch data loader with prefetching — overlaps I/O with compute
+from torch.utils.data import DataLoader
+
+dataloader = DataLoader(
+    dataset,
+    batch_size=1024,
+    num_workers=8,        # parallel I/O workers
+    pin_memory=True,      # speed up host→GPU transfer
+    prefetch_factor=4,    # each worker prefetches 4 batches
+    persistent_workers=True,  # reuse workers across epochs
+)
+
+# Goal: GPU never waits for data. Measure with:
+#   - GPU utilization (should be > 80%)
+#   - Data loader queue depth (should rarely hit 0)
+#   - Time per batch vs time per step
+```
+
+If GPU utilization is below 70%, the bottleneck is almost always I/O — not the model. Fixes, in order of impact:
+
+1. Increase `num_workers` until CPU saturates.
+2. Cache shards on local SSD (NVMe) instead of reading from object storage every epoch.
+3. Increase `prefetch_factor` to hide I/O latency behind compute.
+4. Use a faster format (Parquet → TFRecord or WebDataset for sequential reads).
+5. Co-locate workers with storage (same AZ, or on-cluster cache like Alluxio).
 
 ---
 
@@ -903,6 +1130,90 @@ Avoid it when:
 - Hyperparameter search is more valuable than one huge run.
 - Reproducibility and debugging are already weak (adds non-determinism).
 
+### Resource Management and Multi-Tenancy
+
+A training platform serves multiple teams with different priorities, budgets, and hardware needs. Without resource isolation, one team's runaway job starves everyone else.
+
+```mermaid
+flowchart TD
+    subgraph Scheduler
+        QUEUE["Priority queues"] --> FAIR["Fair share scheduler"]
+        FAIR --> QUOTA["Team quotas"]
+        QUOTA --> POOL["GPU pool"]
+    end
+
+    subgraph Teams
+        T1["Team A: fraud<br/>priority: high"] --> QUEUE
+        T2["Team B: recsys<br/>priority: medium"] --> QUEUE
+        T3["Team C: experimentation<br/>priority: low"] --> QUEUE
+    end
+
+    POOL --> ISOLATION["Workload isolation"]
+    ISOLATION --> W1["Production jobs"]
+    ISOLATION --> W2["Experiment jobs"]
+```
+
+| Concern | Mechanism | Failure mode when missing |
+|---|---|---|
+| Fair share | Per-team scheduler weights | One team monopolizes the cluster |
+| Quotas | Hard limits on GPU-hours, memory, concurrent jobs | Budget overruns, no backpressure |
+| Preemption | Low-priority jobs evicted for high-priority | Production blocked by experiments |
+| Isolation | Separate pools or cgroups for prod vs experiment | Noisy neighbor degrades prod training |
+| Bin packing | Pack small jobs onto shared GPUs (MIG, time-slicing) | Wasted idle capacity |
+| Gang scheduling | All workers of a distributed job start together | Deadlock when only some workers get resources |
+
+#### Gang Scheduling
+
+Distributed training jobs need all workers to start together. If only 3 of 4 workers get scheduled, the job hangs waiting for the 4th — while holding 3 GPUs hostage.
+
+```text
+Gang scheduling: schedule all-or-nothing.
+
+Without gang scheduling:
+  - Job A requests 4 GPUs, gets 3 → hangs holding 3 GPUs
+  - Job B requests 2 GPUs, can't get them (A holds 3)
+  - Job C requests 4 GPUs, gets 1 → also hangs
+  - Cluster is 100% allocated but 0% useful
+
+With gang scheduling:
+  - Job A requests 4 GPUs, gets 3 → waits, releases the 3
+  - Job B requests 2 GPUs, gets 2 → runs
+  - Job A retries when 4 are available together
+
+K8s implementation: PodGroups (Volcano) or kube-scheduler plugins.
+```
+
+#### Priority and Preemption
+
+```python
+# Priority classes for training jobs
+priority_classes = {
+    "prod-critical": {
+        "priority": 1_000_000,
+        "preemption_policy": "Never",  # never preempted
+        "quota": {"gpu_hours_per_day": 200},
+    },
+    "prod-standard": {
+        "priority": 100_000,
+        "preemption_policy": "LowerPriority",  # can preempt experiment jobs
+        "quota": {"gpu_hours_per_day": 100},
+    },
+    "experiment": {
+        "priority": 10_000,
+        "preemption_policy": "Never",  # can be preempted by prod
+        "quota": {"gpu_hours_per_day": 50},
+        "max_duration_hours": 4,  # experiments can't hold GPUs forever
+    },
+}
+
+# When a prod-standard job needs GPUs and the pool is full:
+# 1. Scheduler finds the lowest-priority running jobs (experiment)
+# 2. Sends SIGTERM to experiment jobs
+# 3. Experiment jobs checkpoint and exit
+# 4. Prod job starts on the freed GPUs
+# 5. Experiment jobs re-queue and resume from checkpoint
+```
+
 ---
 
 ## Retraining Patterns
@@ -973,6 +1284,143 @@ Cost should be a logged metric on every run. A sudden cost increase is an early 
 
 ---
 
+## Pipeline Reliability: Retries, Idempotency, and Partial Progress
+
+Training pipelines fail partway through. A 6-hour distributed job that dies at hour 5 must not restart from zero. The orchestration layer must make steps retriable, idempotent, and resumable.
+
+```mermaid
+flowchart TD
+    STEP["Step execution"] --> CHECK{"Already complete?"}
+    CHECK -->|"yes"| SKIP["Skip — cached"]
+    CHECK -->|"no"| RUN["Run step"]
+    RUN --> RESULT{"Success?"}
+    RESULT -->|"yes"| COMMIT["Commit output atomically"]
+    RESULT -->|"no"| RETRY{"Retriable?"}
+    RETRY -->|"yes"| BACKOFF["Exponential backoff"]
+    BACKOFF --> RUN
+    RETRY -->|"no"| FAIL["Fail pipeline"]
+    COMMIT --> NEXT["Next step"]
+```
+
+### Step Idempotency
+
+A step is idempotent if running it twice with the same inputs produces the same output and has no side effects beyond its declared outputs.
+
+```python
+import os
+import tempfile
+import shutil
+
+def idempotent_step(step_fn, output_path, *args, **kwargs):
+    """
+    Run a step idempotently. If output_path exists and is valid, skip.
+    Otherwise, run in a temp dir and atomically rename on success.
+    """
+    # Fast path: output already exists and is valid
+    if os.path.exists(output_path) and is_valid_artifact(output_path):
+        print(f"SKIP: {output_path} already exists")
+        return load_artifact(output_path)
+
+    # Slow path: run step in a temp directory, then atomic rename
+    tmp_dir = tempfile.mkdtemp(dir=os.path.dirname(output_path))
+    try:
+        tmp_output = os.path.join(tmp_dir, os.path.basename(output_path))
+        result = step_fn(tmp_output, *args, **kwargs)
+
+        # Atomic commit: rename is atomic on POSIX within same filesystem
+        os.rename(tmp_output, output_path)
+        return result
+    except Exception:
+        shutil.rmtree(tmp_dir)  # clean up partial output
+        raise
+    finally:
+        if os.path.exists(tmp_dir):
+            shutil.rmtree(tmp_dir)
+
+# Why atomic commit matters:
+# If a step writes directly to output_path and crashes midway,
+# the next run sees a partial file and either:
+#   - fails confusingly (corrupt data)
+#   - skips the step (thinks it's done)
+# Atomic rename ensures the output is either complete or absent.
+```
+
+### Retry Classification
+
+Not all failures should be retried. Retrying a schema validation failure 3 times wastes time and hides a real bug.
+
+| Failure type | Example | Retry? | Action |
+|---|---|---|---|
+| Transient infrastructure | Network timeout, 503, pod evicted | Yes, with backoff | Exponential backoff, max 3 attempts |
+| Transient data | Source table temporarily unavailable | Yes, with longer backoff | Wait for source SLO, then retry |
+| Deterministic data | Schema mismatch, validation failure | No | Fail fast, alert |
+| Deterministic code | Exception in training logic | No | Fail fast, alert |
+| Resource exhaustion | OOM, GPU error | Maybe | Retry once with more resources |
+| Preemption | Spot instance reclaimed | Yes, resume from checkpoint | Reload checkpoint, continue |
+
+### Checkpoint-as-You-Go for Long Steps
+
+For steps that take hours (training, large feature computation), checkpoint intermediate progress so retries resume instead of restart.
+
+```python
+def train_with_checkpoints(train_fn, checkpoint_dir, total_steps, checkpoint_every=1000):
+    """
+    Training step that checkpoints every N steps.
+    On retry, resumes from the latest checkpoint.
+    """
+    # Find latest checkpoint
+    latest_step = find_latest_checkpoint(checkpoint_dir)
+    start_step = latest_step + checkpoint_every if latest_step else 0
+
+    if start_step > 0:
+        print(f"RESUMING from step {start_step}")
+        model, optimizer = load_checkpoint(checkpoint_dir, latest_step)
+    else:
+        print("STARTING from scratch")
+        model, optimizer = init_model_and_optimizer()
+
+    for step in range(start_step, total_steps):
+        loss = train_step(model, optimizer, step)
+
+        if step % checkpoint_every == 0:
+            save_checkpoint(model, optimizer, step, loss, checkpoint_dir)
+            # Checkpoint is the commit point. If the job dies after this,
+            # it resumes from here. If it dies before, it resumes from the
+            # previous checkpoint — losing at most checkpoint_every steps.
+
+    return model
+```
+
+### Pipeline-Level Recovery
+
+```python
+# Pipeline orchestrator recovery logic
+def recover_pipeline(pipeline_run_id, execution_store):
+    """
+    After a pipeline crash, determine which steps completed
+    and resume from the first incomplete step.
+    """
+    steps = execution_store.get_steps(pipeline_run_id)
+    for step in steps:
+        if step.status == "succeeded":
+            continue  # skip, output is cached
+        elif step.status == "running":
+            # Worker may have died. Mark as failed and retry.
+            execution_store.mark_failed(step.id, reason="worker_lost")
+            retry_step(step)
+        elif step.status == "failed":
+            if step.retry_count < step.max_retries:
+                retry_step(step)
+            else:
+                raise PipelineFailedError(f"Step {step.name} exhausted retries")
+        elif step.status == "pending":
+            run_step(step)
+```
+
+The key invariant: **a step's output is either fully present or fully absent.** Partial outputs corrupt the cache and cause silent bugs on retry. Atomic commits (write to temp, rename on success) enforce this invariant.
+
+---
+
 ## Failure Modes
 
 ### Non-Reproducible Model
@@ -1011,13 +1459,15 @@ Mitigation: pin all dependencies (container image, library versions, feature vie
 
 | Layer | Metrics |
 |---|---|
-| Pipeline | Success rate, duration, queue time, retry count |
-| Data | Freshness, validation failures, rejected rows, snapshot size |
+| Pipeline | Success rate, duration, queue time, retry count, cache hit rate |
+| Data | Freshness, validation failures, rejected rows, snapshot size, I/O throughput |
 | Training | Cost, GPU utilization, convergence, reproducibility check pass rate |
 | Evaluation | Metric deltas, slice regressions, calibration, guardrail pass rate |
 | Registry | Promotion rate, rollback rate, stale model age, artifact count |
 | Delivery | Time from data availability to deployable model |
 | Cost | Training cost per run, per month, per model family |
+| Resources | GPU utilization, queue depth, preemption rate, fair-share variance |
+| Lineage | Lineage completeness, impact analysis query latency |
 
 ---
 
@@ -1031,6 +1481,10 @@ Mitigation: pin all dependencies (container image, library versions, feature vie
 6. Pipeline DSLs (TFX, Kubeflow, Airflow) turn pipeline logic into versioned, replayable artifacts.
 7. Distributed training is a cost optimization problem with reproducibility trade-offs.
 8. If you can't answer "what produced this model?", you can't safely change it.
+9. The execution engine — caching, lineage, scheduling — is where pipeline system design lives.
+10. Training pipelines are I/O-bound before they're compute-bound; shard, prefetch, and cache.
+11. Multi-tenant GPU clusters need fair share, quotas, preemption, and gang scheduling.
+12. Step outputs must be atomic: either fully present or fully absent, or retries corrupt the cache.
 
 ---
 
@@ -1043,3 +1497,7 @@ Mitigation: pin all dependencies (container image, library versions, feature vie
 5. [Kubeflow Pipelines v2 Documentation](https://www.kubeflow.org/docs/components/pipelines/v2/)
 6. [ZeRO: Memory Optimizations Toward Training Trillion Parameter Models](https://arxiv.org/abs/1910.02054)
 7. [Metaflow: A Human-Centric Framework for Data Science](https://netflixtechblog.com/open-sourcing-metaflow-a-human-centric-framework-for-data-science-fa72e04a5d9)
+8. [Borg: Large-scale cluster management at Google](https://research.google/pubs/pub43438/)
+9. [Volcano: Kubernetes Native Batch Scheduler](https://volcano.sh/en/docs/)
+10. [WebDataset: Efficient Dataset Storage and Streaming](https://github.com/webdataset/webdataset)
+11. [ML Metadata: A Standard for ML Artifact Lineage](https://www.tensorflow.org/tfx/guide/mlmd)
