@@ -24,11 +24,11 @@ It is tempting to think an experiment is "send 50% of traffic to the new model."
 
 ```mermaid
 flowchart LR
-    HYP["Hypothesis +\npre-registered\nprimary metric"] --> ASSIGN["Assignment /\nbucketing service"]
-    ASSIGN --> EXPOSE["Exposure\nlogging"]
-    EXPOSE --> METRICS["Metrics /\nanalysis pipeline"]
-    METRICS --> GUARD["Integrity +\nguardrail layer"]
-    GUARD --> DECIDE{"Decision\nrule"}
+    HYP["Hypothesis +<br/>pre-registered<br/>primary metric"] --> ASSIGN["Assignment /<br/>bucketing service"]
+    ASSIGN --> EXPOSE["Exposure<br/>logging"]
+    EXPOSE --> METRICS["Metrics /<br/>analysis pipeline"]
+    METRICS --> GUARD["Integrity +<br/>guardrail layer"]
+    GUARD --> DECIDE{"Decision<br/>rule"}
     DECIDE -->|"ship"| RAMP["Ramp / launch"]
     DECIDE -->|"stop"| ROLL["Rollback"]
     DECIDE -->|"SRM / invalid"| FIX["Distrust + debug"]
