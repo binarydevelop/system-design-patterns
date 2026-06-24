@@ -50,6 +50,28 @@ Static batching — wait until exactly N requests have arrived, then run them to
 
 The subtlety that catches teams is that this is a *queueing* decision, not a constant. Under heavy load, batches fill before the timer fires, so the wait adds little and throughput is high. Under light load, the timer dominates and adds its full delay to requests that did not need to wait at all. The worst regime is moderate, bursty load, where the queue oscillates and the added latency becomes unpredictable — which is exactly where the tail blows up. The right batch-wait is therefore a function of the traffic shape, and the honest way to set it is to measure p99 latency at the actual peak burst size rather than reasoning about averages. A serving system that batches without measuring its tail under burst has chosen a throughput it cannot describe and a latency it cannot promise.
 
+A useful first-pass capacity model is deliberately simple:
+
+```text
+per_replica_throughput ≈ effective_batch_size / (batch_compute_time + queue_wait)
+required_replicas     ≈ peak_rps / (per_replica_throughput × safe_utilization)
+```
+
+Example:
+
+```text
+effective_batch_size: 32
+batch_compute_time:   20 ms
+queue_wait target:     5 ms
+safe utilization:     70%
+
+per replica ≈ 32 / 0.025s = 1,280 predictions/s raw
+safe        ≈ 1,280 × 0.70 = 896 predictions/s
+10K peak RPS needs ≈ 12 replicas before failover/deploy headroom
+```
+
+The formula is not a substitute for load testing; it is the sanity check that prevents magical thinking. If the measured system needs 30 replicas, either the effective batch is smaller, queue wait is larger, feature fetch dominates, or the accelerator is not the bottleneck you thought it was.
+
 ---
 
 ## Tail Latency Is the Real Budget
@@ -111,6 +133,38 @@ flowchart LR
 ```
 
 The prediction log on that diagram is not optional. Capturing request metadata, model version, feature references, the prediction, and latency is what makes the system debuggable and is the raw material for [model monitoring](./04-model-monitoring.md) and later label joins.
+
+A production serving contract should be explicit enough for an on-call engineer and an autoscaler to reason about:
+
+```yaml
+endpoint: fraud_authorization
+model: fraud_classifier:v42
+p99_latency_budget_ms: 120
+budget:
+  ingress_auth: 15
+  feature_fetch: 40
+  inference: 45
+  postprocess_logging: 20
+capacity:
+  min_warm_replicas: 12
+  max_batch_size: 32
+  max_queue_wait_ms: 5
+  scale_up_signal: queue_wait_p95_ms > 8 for 2m
+  scale_down_delay_minutes: 30
+fallback_ladder:
+  - fraud_classifier:v41          # previous model, warm
+  - fraud_small_model:v9          # cheaper, lower recall
+  - fraud_rules_policy:v3         # deterministic safe fallback
+  - manual_review                 # fail closed for high-risk transactions
+logging_required:
+  - prediction_id
+  - model_version
+  - feature_versions
+  - threshold_policy
+  - experiment_bucket
+```
+
+The contract turns vague SLO talk into an executable design: autoscaling knows which signal leads saturation, deployment knows what must stay warm, and incident response knows the degradation order before the incident starts.
 
 ---
 
@@ -175,6 +229,20 @@ The characteristic failures of model serving recur across organizations, and mos
 **Thundering herd** strikes when many cache entries expire at once, a popular replica restarts, or a dependency recovers and a backlog floods in — a synchronized surge that overwhelms the GPU pool. The defense is request coalescing, jittered cache expiry, bounded queues with [load shedding](../06-scaling/07-backpressure.md), and [circuit breakers](../06-scaling/06-circuit-breakers.md) on downstream feature fetches.
 
 A degradation ladder — defined *before* an incident — turns these from outages into graceful falls: full model → cached prediction → smaller/cheaper model → rules fallback → safe default. Each rung should name its user impact explicitly, because the right "safe default" for fraud (manual review) is very different from the right one for recommendations (popular content).
+
+Overload runbook:
+
+```text
+Alert: inference queue_wait_p99 > budget or timeout_rate > 1%
+1. Confirm bottleneck: queue depth, GPU util, GPU memory, feature-store p99, batch size.
+2. If feature fetch is slow: open circuit to stale/non-critical features or fallback model.
+3. If GPU saturated: increase replicas if warm capacity exists; otherwise shed low-priority traffic.
+4. If OOM/long input: enforce max input length/batch size; quarantine offending traffic slice.
+5. If deploy-related: flip active pointer to previous warm model; do not wait for redeploy.
+6. After recovery: replay prediction logs for dropped/fallback traffic and quantify user impact.
+```
+
+The first step matters: adding GPUs to a feature-store incident is expensive theater, and increasing batch size during a tail-latency incident can make the user-visible symptom worse.
 
 ---
 

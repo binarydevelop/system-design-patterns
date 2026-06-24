@@ -136,6 +136,28 @@ max_safe_batch = floor((device_memory - weights - overhead - headroom) / per_ite
 
 Use headroom. Memory fragmentation, variable input sizes, and framework workspaces make exact fits dangerous. A batch size that works in a benchmark may OOM under production input shape variance.
 
+A worked sizing example makes the hard limit visible:
+
+```text
+device_memory              = 24 GiB
+model_weights              = 7.5 GiB
+runtime/framework overhead = 1.5 GiB
+workspace/fragmentation    = 2.0 GiB
+safety headroom            = 3.0 GiB
+available_for_activations  = 24 - 7.5 - 1.5 - 2.0 - 3.0 = 10 GiB
+per_item_activation_p95    = 220 MiB
+max_safe_batch_p95         = floor(10 GiB / 220 MiB) ≈ 46
+```
+
+If production input size has a long tail, use p99 or an explicit max input policy:
+
+```text
+per_item_activation_p99 = 410 MiB
+max_safe_batch_p99      = floor(10 GiB / 410 MiB) ≈ 24
+```
+
+The correct batch size may be 24, not 46, because an online service must survive the tail. Another valid design is to cap or bucket input sizes: small inputs use batch 46, large inputs route to a separate pool with batch 16. The anti-pattern is benchmarking on average inputs and discovering at p99 traffic that the model server OOMs.
+
 ---
 
 ## Feature Fetch Fanout Can Dominate Inference
@@ -315,6 +337,41 @@ Required controls:
 
 Gang scheduling is crucial. A distributed job needing 8 GPUs cannot make progress with 7. Partial allocation can deadlock the cluster: jobs hold some GPUs while waiting for the rest. All-or-nothing allocation avoids this.
 
+A multi-tenant cluster also needs a fairness contract, not only quotas:
+
+```yaml
+gpu_cluster_policy:
+  quota_window: weekly
+  teams:
+    search:
+      guaranteed_gpu_hours: 1200
+      max_burst_gpus: 64
+      budget_usd: 18000
+    fraud:
+      guaranteed_gpu_hours: 800
+      max_burst_gpus: 32
+      budget_usd: 12000
+  priority_classes:
+    production_retraining:
+      preemptible: false
+      max_queue_wait: 30m
+    launch_blocking_experiment:
+      preemptible: true
+      max_queue_wait: 4h
+    exploratory_notebook:
+      preemptible: true
+      max_runtime: 6h
+  preemption:
+    require_checkpoint_age_below: 15m
+    grace_period: 5m
+  idle_detection:
+    gpu_utilization_below: 5%
+    duration: 20m
+    action: notify_then_kill
+```
+
+Fair-share scheduling should answer two questions separately: what capacity is guaranteed when the cluster is busy, and who may opportunistically use idle capacity when it is not. Without this distinction, either the cluster sits idle under rigid quotas or one team squats on shared GPUs and calls it efficiency.
+
 ---
 
 ## Cost per Prediction
@@ -341,6 +398,31 @@ Cost: $4 / 360K = $0.000011 per prediction
 ```
 
 A 10× utilization drop creates a 10× unit-cost increase. This is why batching, consolidation, and right-sizing matter more for ML serving than for many ordinary services.
+
+Include the full serving stack, not only the model server:
+
+```text
+unit_cost = (model_server_cost
+           + feature_store_incremental_cost
+           + cache_cost
+           + logging/storage_cost
+           + monitoring_cost) / predictions
+```
+
+Example:
+
+```text
+model servers:       16 replicas × $4/h      = $64/h
+feature store load:                           = $18/h
+prediction logging:  12K rps × 2KB × storage  = $6/h
+monitoring/vendor:                            = $4/h
+total:                                        = $92/h
+predictions/hour:    12,000 × 3600            = 43.2M
+cost/prediction:     $92 / 43.2M              ≈ $0.00000213
+cost/1K predictions:                           ≈ $0.00213
+```
+
+This view catches misleading optimizations. Halving model GPU cost while doubling feature-store load is not a win; lowering p99 by adding a cache that costs more than the saved compute may or may not be justified depending on product value.
 
 ---
 
@@ -391,6 +473,43 @@ Training cluster:
 ```
 
 Headroom is a product feature. It is what turns a burst from an outage into a blip.
+
+---
+
+## Open-Loop Load Testing for ML Serving
+
+Closed-loop load tests understate tail latency. In a closed-loop test, each client sends the next request only after receiving a response, so when the service slows down the test automatically reduces offered load. Real traffic does not politely slow down when your queue grows.
+
+Use open-loop load generation: send requests at a fixed arrival schedule, independent of responses, and measure queueing collapse.
+
+```yaml
+load_test:
+  mode: open_loop
+  endpoint: fraud_authorization
+  traffic_shape:
+    warmup: 5m at 2k_rps
+    steady: 15m at 12k_rps
+    burst: 2m at 18k_rps
+    recovery: 10m at 12k_rps
+  request_mix:
+    p50_feature_count: 35
+    p95_feature_count: 60
+    p99_large_input_share: 2%
+  success_criteria:
+    p99_latency_ms: <=120
+    queue_wait_p99_ms: <=10
+    timeout_rate: <=0.1%
+    gpu_oom_count: 0
+    feature_store_error_rate: <=0.05%
+    fallback_rate: <=1%
+  compare:
+    baseline_model: fraud_classifier:v41
+    candidate_model: fraud_classifier:v42
+```
+
+The load test should preserve production-like feature fanout, cache hit rate, input-size distribution, and logging path. A synthetic test that sends tiny feature vectors to a warmed model server measures a benchmark, not the production system.
+
+Open-loop testing also exposes autoscaling truth. If replicas take 120 seconds to warm and the burst lasts 90 seconds, autoscaling is irrelevant for that burst; only warm headroom or admission control can protect p99.
 
 ---
 
@@ -445,8 +564,10 @@ A plan that cannot answer these is not capacity planning; it is hoping the cloud
 6. Feature fetch fanout can dominate inference and must be included in QPS and latency budgets.
 7. Training cost is accelerator-hours multiplied by experiment count; hyperparameter search is often the real bill.
 8. Training throughput often bottlenecks on data I/O, not GPU FLOPs.
-9. Shared GPU clusters need quotas, fair share, priority, checkpointing, and gang scheduling.
-10. Cost per prediction rises directly when utilization falls; right-size hardware and measure CPU/GPU crossover.
+9. Shared GPU clusters need quotas, fair share, priority, checkpointing, gang scheduling, and idle-job enforcement.
+10. Cost per prediction should include feature stores, logging, caching, and monitoring, not only model-server instances.
+11. Open-loop load testing is required for tail-latency confidence; closed-loop tests hide queue collapse.
+12. Cost per prediction rises directly when utilization falls; right-size hardware and measure CPU/GPU crossover.
 
 ---
 

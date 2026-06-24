@@ -39,6 +39,20 @@ flowchart LR
 
 A useful test mirrors the one for training pipelines: if you promote this artifact, can the platform *validate* — not assume — that the feature schema it requires is the schema being served, that the threshold policy matches its score distribution, and that the runtime image can load it? If any of these is a hope rather than a check, you are deploying a decision system you do not understand.
 
+The pre-deploy compatibility matrix should be mechanical:
+
+| Contract field | Example | Gate check | Failure action |
+|---|---|---|---|
+| Artifact hash | `sha256:9f86...` | artifact exists and hash matches registry | block promotion |
+| Runtime image | `serving@sha256:44aa...` | model loads in declared image | block promotion |
+| Feature schema | `device_velocity:v7` | online feature registry serves exact version | block promotion |
+| Preprocessing | `fraud_preprocess:v5` | same transform available in training and serving | block promotion |
+| Output semantics | calibrated probability `[0,1]` | score distribution and calibration report attached | block or require review |
+| Threshold policy | `fraud_policy:v9` | decision-rate migration checked vs baseline | block if action rate violates bounds |
+| Rollback target | `fraud_classifier:v41` | target artifact, image, features, policy load successfully | block promotion |
+
+A deployment system that validates only "can the file load?" is validating the smallest and least interesting part of the release.
+
 ---
 
 ## The Rollout Ladder
@@ -144,6 +158,31 @@ Between each rung of the ladder sits a promotion gate: the explicit decision, by
 
 The pre-deploy gate is the cheapest place to catch the most expensive mistakes, so it should mechanically verify the contract before a single user is exposed: the artifact loads under its declared runtime, every required feature exists online with the right type, the score distribution is not collapsed to a near-constant, critical slices have not regressed below threshold, the fleet has capacity for the serving limits, and — the gate teams forget — the rollback target actually exists and loads. A model that fails any of these is not a release candidate; it is a liability that has not yet detonated.
 
+A distinguished-engineer version of the gate is policy-as-code over registry metadata:
+
+```yaml
+promote_to_canary:
+  require:
+    lineage: complete
+    artifact_load_test: pass
+    serving_contract: compatible
+    offline_primary_metric: non_regressing
+    guardrail_slices: pass
+    score_distribution: not_collapsed
+    capacity_plan: approved
+    rollback_target: load_tested
+  risk_overrides:
+    high:
+      require_human_approval_from: risk-review
+      max_initial_traffic_percent: 1
+      require_kill_switch: true
+    critical:
+      require_human_review_mode_first: true
+      prohibit_auto_full_ramp: true
+```
+
+The point is not the YAML; it is that the deploy path reads enforceable state. If a reviewer can bypass the gate by running a one-off script, the gate is advisory, not architectural.
+
 ---
 
 ## Failure Modes
@@ -171,6 +210,22 @@ The right rung of the ladder is a function of risk and reversibility, not of how
 For a **low-risk, reversible** model — a ranking tweak whose worst case is a slightly worse ordering — shadow to confirm it runs, then canary with automatic operational guardrails, then ramp; an A/B test is worth running only if you need to prove the improvement. For a **high-risk but reversible** model — fraud scoring, pricing — extend every rung: longer shadow, a slow canary sized for the regression you need to detect, a champion/challenger comparison held open across the label-maturation window, and a wired-up automatic rollback on operational guardrails. For a model whose actions are **irreversible** — blocking payments, banning users, deleting content — no rung of the ladder is sufficient on its own, because rolling back the model does not undo the harm; the model must first run in recommend-only mode behind a human review queue and earn the authority to act, with kill switches and staged authority as standing controls.
 
 Three questions decide whether a rollout plan is sound. Can the model and *all* its dependencies — features, preprocessing, thresholds, runtime — deploy and roll back atomically? Is there a rung of the ladder that exposes the candidate to live traffic *before* it can hurt anyone, and a guardrail wired to revert when it does? And is the rollback target proven loadable, today, as a gate rather than a hope? A plan that answers these is progressive delivery; a plan that does not is a big-bang deploy wearing a canary's clothing.
+
+Rollback playbook for a high-risk model:
+
+```text
+Trigger: operational guardrail breach, score collapse, feature contract violation, or Sev2+ harm
+1. Freeze ramp: deployment control plane sets candidate traffic to 0%.
+2. Flip active pointer: route 100% to last known-good warm model.
+3. Enable kill switch if model action is unsafe; route to deterministic fallback/manual review.
+4. Stamp incident window: record affected model version, policy, traffic %, and time range.
+5. Preserve evidence: pin prediction logs, feature values, labels, and audit events for window.
+6. Run impact query: affected decisions, slices, users, downstream actions, irreversible harms.
+7. Decide remediation: replay, compensate, retrain, threshold patch, or feature rollback.
+8. Block re-promotion until post-incident gate adds the missing check.
+```
+
+The final step is what distinguishes engineering maturity from heroics: every rollback should leave behind a stronger gate, not just a reverted pointer.
 
 ---
 

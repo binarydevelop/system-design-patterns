@@ -76,6 +76,16 @@ The engineering implication of the hierarchy is a budgeting rule: **instrument t
 
 The practical lesson is that drift detection is not one monitor but a *triage vocabulary*. When an alert fires, the first useful question is "which distribution moved?" — because the answer points to a different fix: covariate drift points upstream to data and traffic, concept drift points to the labels and a retrain, label drift points to recalibration.
 
+A production triage table should distinguish drift from ordinary pipeline breakage:
+
+| Symptom | Likely class | Fastest confirming evidence | Typical first action |
+|---|---|---|---|
+| Null rate jumps from 1% to 80% on one feature | Pipeline break | Serving-time schema/null monitor | Fail over feature, rollback upstream change |
+| Country mix changes after new market launch | Covariate drift | Traffic/source distribution, feature PSI by country | Add slice guardrail; retrain when labels mature |
+| Score distribution rises but inputs look stable | Concept or label drift | Delayed labels, adversary/product change timeline | Tighten review, collect labels, retrain/recalibrate |
+| Base positive rate doubles with similar ranking quality | Label/prior drift | Mature labels by time window | Recalibrate threshold, update cost policy |
+| Offline metrics good, online quality bad immediately | Training/serving skew | Served feature vector replay against training path | Block rollout; fix feature parity |
+
 ---
 
 ## Drift Detection as Comparison Against a Versioned Baseline
@@ -96,6 +106,36 @@ The choice of statistic is secondary and well-trodden: population stability inde
 | Prediction distribution | Output behavior change | Cannot say whether input or model caused it |
 
 Tooling has consolidated around exactly this comparison pattern: open-source **Evidently** and Google's **TensorFlow Data Validation** compute distribution distances against a reference schema, and managed platforms such as **Arize**, **Fiddler**, and **WhyLabs** productize baseline storage, windowed comparison, and slice-aware alerting. They differ in packaging, not in principle. The principle is always: *version the baseline, window the present, measure the distance, and make the alert actionable.*
+
+A monitoring baseline should be a registry object, not an implicit dashboard setting:
+
+```yaml
+monitoring_baseline:
+  baseline_id: fraud_classifier:v42.training_fingerprint
+  model_version: fraud_classifier:v42
+  dataset_snapshot: fraud_train:2026-05-31.7
+  created_by_run: train_run_01J2...
+  feature_fingerprints:
+    amount_usd:
+      type: continuous
+      bins: [0, 10, 25, 50, 100, 250, 1000]
+      histogram: [0.18, 0.22, 0.20, 0.16, 0.14, 0.10]
+      null_rate: 0.001
+    country:
+      type: categorical
+      top_values: { US: 0.62, JP: 0.11, GB: 0.08 }
+      other_rate: 0.19
+  prediction_fingerprint:
+    score_bins: [0, 0.1, 0.2, 0.5, 0.8, 1.0]
+    histogram: [0.52, 0.22, 0.18, 0.06, 0.02]
+  slice_keys:
+    - country
+    - payment_method
+    - new_customer
+  valid_until_model_changes: true
+```
+
+This object lets monitoring answer "what should this model's inputs look like?" by following the active model pointer. A dashboard-configured baseline will eventually drift from reality because deploys move faster than dashboards.
 
 ---
 
@@ -129,6 +169,20 @@ The engineering response is to make alerts *actionable rather than merely true*.
 | Sustained quality metric below guardrail | Sometimes | Roll back or reduce traffic |
 | Business KPI regression in a canary | Yes for critical flows | Stop the rollout |
 
+A concrete routing matrix prevents every statistical anomaly from becoming a pager:
+
+| Alert | Severity | Route | Auto-action |
+|---|---|---|---|
+| Model endpoint p99 or error SLO burn | Sev2/Sev3 | Serving on-call | Scale, shed, or rollback deployment |
+| Required feature freshness breached | Sev2 for high-risk, ticket for low-risk | Feature owner + model owner | Use fallback feature/model if configured |
+| Data contract violation at serving boundary | Sev2 | Upstream data owner + model owner | Block requests or fail closed depending on risk |
+| Input drift high, no quality labels yet | Ticket / review queue | Model owner | Freeze rollout; start investigation |
+| Guardrail slice quality below threshold | Sev2 for high-risk | Model owner + risk owner | Roll back or route slice to fallback |
+| Canary business KPI regression | Sev2 | Experiment owner + deploy owner | Stop canary ramp |
+| Appeal or complaint spike | Sev1/Sev2 depending harm | Risk/governance + model owner | Freeze automated action, route to human review |
+
+The key is that every alert names an owner and a first action. "Drift detected" without owner, model version, baseline, affected slices, and suggested action is not an alert; it is a chart annotation.
+
 ---
 
 ## Slice-Based Monitoring: Aggregates Hide Regressions
@@ -156,6 +210,68 @@ flowchart LR
 ```
 
 The critical discipline, carried over from the retraining-automation argument, is that **the loop must be only as automatic as its safety nets are trustworthy.** A monitoring signal wired directly to an unsupervised retrain-and-deploy loop is a mechanism for converting a noisy alert or a corrupted data partition into a fast, automated production incident. The strength of the trigger should match the maturity of the validation, canary, and rollback machinery downstream of it. For most systems the right wiring is: monitoring detects, a human confirms, the pipeline retrains under promotion gates, and an automatic rollback stands ready if the new model regresses. Monitoring earns the right to trigger fully-automated action only after it has demonstrated that its signals are clean and its rollback is fast.
+
+---
+
+## Label-Delay Monitoring Contract
+
+Because quality metrics depend on late labels, the label pipeline itself must be monitored. Otherwise the dashboard can confuse "model quality is stable" with "labels stopped arriving."
+
+```yaml
+label_monitoring_contract:
+  prediction_stream: fraud_predictions:v4
+  label_stream: chargeback_labels:v6
+  join_key: prediction_id
+  maturity_windows:
+    early_proxy: 1d
+    primary_label: 60d
+    final_label: 120d
+  expected_label_coverage:
+    1d: 0.15
+    60d: 0.92
+    120d: 0.98
+  unknown_state: label_pending       # not negative
+  correction_policy:
+    allow_label_updates_until: 120d
+    preserve_history: true
+  quality_metrics:
+    - precision_at_review_capacity
+    - recall_at_fixed_fpr
+    - calibration_by_score_decile
+  alerting:
+    coverage_drop_threshold: 5pp
+    join_failure_threshold: 0.5pp
+    delayed_label_backlog_threshold: 24h
+```
+
+The `unknown_state` field is load-bearing. Treating missing labels as negatives is a silent metric corruption that makes a model appear better or worse depending on the domain. A mature monitoring platform tracks label coverage, label age, join failures, corrections, and labeler/system outages alongside model quality.
+
+A useful label-delay dashboard separates three curves:
+
+```text
+predictions made      ─── how much volume needs labels
+labels matured        ─── how much truth has arrived
+metric computed on    ─── which prediction cohorts are now trustworthy
+```
+
+If the first curve grows and the second stalls, the incident is in the label system, not necessarily the model.
+
+---
+
+## Drift Triage Runbook
+
+When a drift or quality alert fires, the first response should be diagnosis, not retraining. Retraining on corrupted or unexplained data often bakes the incident into the next model.
+
+1. **Identify the exact model and baseline.** Confirm active model version, baseline fingerprint, window, slices, and alert statistic. If the baseline is not tied to the active model, fix observability before acting on the alert.
+2. **Check serving and feature health.** Look for deploys, feature freshness misses, schema violations, null/default spikes, cache regressions, and feature-store latency.
+3. **Localize the shift.** Determine whether the alert is global or isolated to a slice such as country, tenant, device, traffic source, or new users.
+4. **Separate data movement from model degradation.** Compare input drift, prediction drift, and any matured labels. Stable inputs with falling quality points toward concept drift or label changes; broken inputs point upstream.
+5. **Check experiment and rollout context.** A canary, marketing campaign, new market launch, or policy change may legitimately move distributions. Legitimate does not mean safe; it changes the response.
+6. **Choose containment.** Options include freezing rollout, routing a slice to fallback, lowering automation, increasing human review, rolling back model/policy, or disabling a broken feature.
+7. **Decide whether retraining is valid.** Retrain only if the new data is correct, labels are sufficiently mature, and the promotion gate can evaluate the candidate honestly.
+8. **Write back the lesson.** Add or tune a data contract, baseline, slice monitor, label monitor, or promotion gate so the next occurrence is caught earlier.
+
+This runbook turns monitoring from "dashboard says drift" into an operational decision tree with owners and safe actions.
 
 ---
 
@@ -212,9 +328,11 @@ A monitoring system that answers these in order is observable where it counts, w
 5. Drift detection is a comparison against a *versioned training baseline*; an unversioned or rolling baseline silently tracks the degradation and never fires.
 6. Training/serving skew is a first-class monitor — log served feature vectors and compare them to the training path, or compute both from one definition.
 7. Alerting on statistical signals is hard because of noise, seasonality, and fatigue; make alerts actionable by tying severity to impact and using burn-rate and seasonal baselines.
-8. Aggregate metrics hide per-segment regressions; pre-register and monitor the slices that carry real business and fairness risk.
-9. Monitoring is the trigger for retraining and rollback, but the loop must be only as automatic as its safety nets are trustworthy.
-10. Zillow Offers (Nov 2021, ~$304M write-down) shows the cost of an automated, label-delayed model degrading silently in a shifted regime — exactly what proxy monitoring is meant to catch.
+8. Label coverage and maturity must be monitored separately; missing labels are not negative labels.
+9. Aggregate metrics hide per-segment regressions; pre-register and monitor the slices that carry real business and fairness risk.
+10. Monitoring is the trigger for retraining and rollback, but the loop must be only as automatic as its safety nets are trustworthy.
+11. A drift runbook should diagnose baseline, feature health, slices, labels, and rollout context before retraining.
+12. Zillow Offers (Nov 2021, ~$304M write-down) shows the cost of an automated, label-delayed model degrading silently in a shifted regime — exactly what proxy monitoring is meant to catch.
 
 ---
 
