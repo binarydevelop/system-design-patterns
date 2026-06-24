@@ -54,6 +54,110 @@ The enforcement point is an append-only **audit log** for every high-impact deci
 
 ---
 
+## Governance Artifacts: Inventory, Decision Log, and Evidence Bundle
+
+A mature governance system has three first-class artifacts. They are not documents attached after the fact; they are database records and immutable objects the platform writes, validates, and queries.
+
+| Artifact | Written by | Used for | Must be immutable? |
+|---|---|---|---|
+| Model inventory record | Registry / owner onboarding | Scope, tier, owner, required controls | Mutable by versioned updates |
+| Per-decision audit log | Serving path | Reconstruction, appeals, incident impact | Append-only |
+| Promotion evidence bundle | Evaluation + registry gate | Deployment approval and rollback proof | Immutable once approved |
+
+A model inventory entry should be structured enough for policy evaluation:
+
+```yaml
+model_inventory:
+  model_id: credit_limit_decision
+  version: inventory_schema:v3
+  owner:
+    team: credit_platform
+    accountable_person: user:alice
+    oncall: credit-ml-primary
+  risk:
+    tier: critical
+    domain: credit
+    affected_population: external_customers
+    decision_effect: legal_or_financial_significance
+    reversible: true
+    appeal_sla_days: 14
+  intended_use:
+    allowed:
+      - initial_credit_limit_assignment
+      - periodic_limit_review
+    prohibited:
+      - employment_screening
+      - insurance_pricing
+  data_governance:
+    training_datasets:
+      - credit_applications:2026-05-31.2
+    label_definitions:
+      - ninety_day_default:v4
+    sensitive_features:
+      direct_use: []
+      proxy_review_required:
+        - postal_code_region:v6
+        - employment_tenure_bucket:v2
+    retention_policy: regulated_decision_7y
+  required_controls:
+    lineage: required
+    independent_validation: required
+    fairness_slices: required
+    explanation_artifact: required
+    human_appeal_path: required
+    kill_switch: required
+  production:
+    endpoints:
+      - credit-api/prod/us/limit_decision
+    fallback_policy: manual_review_policy:v8
+    rollback_target: credit_limit_model:v41
+```
+
+A per-decision audit log should be dense enough to reconstruct the decision without exposing raw sensitive values unnecessarily:
+
+```yaml
+decision_audit_event:
+  decision_id: dec_01J2Z7K5T4Q6
+  request_id: req_8db6a1
+  subject_ref: customer_hash:7b3c...       # pseudonymous, not raw PII
+  occurred_at: 2026-06-24T10:15:33.481Z
+  endpoint: credit-api/prod/us/limit_decision
+  model:
+    model_id: credit_limit_decision
+    model_version: credit_limit_model:v42
+    artifact_hash: sha256:9f86d08...
+  policy:
+    threshold_policy: credit_limit_policy:v12
+    decision_policy: credit_limit_assignment:v5
+  inputs:
+    feature_vector_id: fv_01J2Z7...
+    feature_versions:
+      income_band: income_band:v3
+      delinquency_count_12m: delinquency_count_12m:v9
+      utilization_ratio: utilization_ratio:v7
+    missing_features: []
+  output:
+    score: 0.73
+    calibrated_probability: 0.19
+    action: approve_limit_2500
+    counterfactual_reason_codes:
+      - high_utilization_ratio
+      - short_credit_history
+  human_override:
+    applied: false
+    reviewer: null
+    reason_code: null
+  experiment:
+    assignment_id: exp_none
+  retention:
+    policy: regulated_decision_7y
+    legal_hold: false
+```
+
+The promotion evidence bundle ties the inventory and audit requirements back to the deployment path. It should contain the exact evaluation report, slice metrics, signed approvals, serving contract validation, rollback proof, and kill-switch test result. The bundle's hash is what the registry should store on the model version. If a later incident asks why the model was allowed into production, the answer should be one object, not a scavenger hunt through dashboards and tickets.
+
+---
+
 ## Approval Gates and Separation of Duties
 
 For tiers above "low," the question *who is allowed to put this in front of real people?* must have an enforced answer. An approval gate is the control that makes promotion to a regulated tier conditional on a sign-off from someone who is not the model's author — **separation of duties**, the principle that the person who builds a system should not be the only person who approves it. The author optimizes for shipping; the reviewer optimizes for not harming users. Collapsing the two roles removes the only check on "ship it, the metric went up."
@@ -73,6 +177,77 @@ promote_to_production:
 
 ---
 
+## Policy-as-Code Governance Gate
+
+The scalable form of governance is a policy engine over registry metadata. The policy should be declarative, versioned, testable, and evaluated on every promotion and material policy change. Human reviewers still matter, but the platform decides whether the required evidence exists.
+
+```yaml
+governance_policy: regulated_model_promotion:v6
+applies_to:
+  risk_tiers: [high, critical]
+  target_states: [canary, production]
+
+defaults:
+  deny_unless_all_required_controls_pass: true
+  approvals_expire_after_days: 90
+  evidence_bundle_required: true
+
+rules:
+  lineage:
+    require_training_run: true
+    require_dataset_snapshot: true
+    require_feature_schema_versions: true
+    require_label_definition_version: true
+    require_artifact_hash: true
+
+  evaluation:
+    require_baseline_comparison: current_production
+    require_uncertainty: bootstrap_95_ci
+    require_guardrail_slices:
+      - protected_class_proxy_reviewed
+      - geography
+      - new_customer
+    block_if_any_guardrail_regresses: true
+
+  operational_readiness:
+    require_serving_contract_validation: true
+    require_load_test_p99_below_ms: 120
+    require_prediction_logging: decision_audit_event:v4
+    require_kill_switch_tested_within_days: 30
+    require_rollback_target_loadable: true
+
+  approvals:
+    high:
+      require_roles: [model_owner, independent_validator]
+    critical:
+      require_roles: [model_owner, independent_validator, risk_review, legal_or_policy]
+      author_cannot_approve: true
+
+  contestability:
+    critical:
+      require_explanation_artifact: true
+      require_appeal_queue: true
+      require_human_override_policy: true
+```
+
+The gate should return machine-readable denial reasons:
+
+```json
+{
+  "decision": "deny",
+  "model_version": "credit_limit_model:v42",
+  "target_state": "production",
+  "failed_controls": [
+    "evaluation.guardrail_slices.new_customer.regressed",
+    "operational_readiness.kill_switch_tested_within_days.expired"
+  ]
+}
+```
+
+This shape matters operationally. A denial reason that points to a missing registry field can be fixed. A denial reason that says "risk review incomplete" with no failing control becomes another human process.
+
+---
+
 ## Access Control: Who Is Allowed to Change a Consequential Model
 
 An approval gate is worthless if anyone can bypass it. Separation of duties only holds when the *permission* to promote, to edit a threshold, or to overwrite a feature definition is itself an enforced control. This is the access-control layer of governance, and it is the one teams most often leave implicit — every engineer has production credentials, and the gate is a convention rather than a constraint.
@@ -88,6 +263,39 @@ When a regulated decision goes against someone — a denied loan, a rejected job
 The engineering implication is the part teams miss: **explainability and contestability are system requirements, not model properties.** It is not enough that a model is "interpretable" in the abstract. The system must have logged enough — the model version, the inputs, the relevant feature attributions — to *reconstruct why this specific decision was made* when the affected person asks weeks later. And contestability requires a real human-in-the-loop path: a review queue, an override mechanism, and an appeal process that can reverse the decision. A SHAP value computed at decision time and discarded explains nothing later; the same value written to the audit log makes the decision contestable. Explainability that is not persisted is not a control.
 
 This reframes a research-flavored topic as an infrastructure one. The question is not "which interpretability method is most faithful" but "does the system retain, per decision, the artifacts needed to explain and reverse it" — and is that retention enforced, or does it depend on someone remembering to log it.
+
+---
+
+## Appeal and Contestability Workflow
+
+Contestability is a workflow with state, ownership, evidence access, and deadlines. A model is not contestable because a support agent can file a ticket; it is contestable when the system can route an affected decision to a reviewer with the exact decision evidence and authority to change the outcome.
+
+```mermaid
+flowchart TD
+    USER["Affected person requests appeal"] --> LOOKUP["Lookup decision_id in audit log"]
+    LOOKUP --> EVIDENCE["Assemble explanation bundle"]
+    EVIDENCE --> QUEUE["Human review queue"]
+    QUEUE --> REVIEW["Reviewer evaluates model output, policy, and new evidence"]
+    REVIEW --> DECIDE{"Override?"}
+    DECIDE -->|"yes"| OVERRIDE["Apply corrected action and write override event"]
+    DECIDE -->|"no"| UPHOLD["Uphold decision with reason codes"]
+    OVERRIDE --> FEEDBACK["Feed adjudication into labels and incident metrics"]
+    UPHOLD --> FEEDBACK
+```
+
+The workflow needs its own contract:
+
+| Field | Why it matters |
+|---|---|
+| `decision_id` | Joins the appeal to the immutable audit event |
+| `subject_ref` | Identifies the affected person without spreading raw PII |
+| `explanation_bundle_id` | Freezes model, policy, features, and reason codes used for review |
+| `reviewer_role` | Enforces separation from the model author |
+| `appeal_sla_due_at` | Makes contestability measurable |
+| `override_action` | Records whether the automated decision was changed |
+| `override_reason_code` | Turns appeals into diagnosable product/model feedback |
+
+An appeal system also needs capacity planning. If a critical model makes 1M decisions/day and 0.2% are appealed, that is 2,000 reviews/day. At 8 minutes/review, the workflow needs roughly 267 reviewer-hours/day before QA and escalation. If governance mandates a 14-day appeal SLA but staffing can handle only 500/day, the right conclusion is not "hire later"; it is that the automated decision system is not operationally ready at that decision volume.
 
 ---
 
@@ -121,6 +329,52 @@ ML incidents demand a different playbook from service incidents because a model 
 | Sev4 | Drift or anomaly detected | Triage during business hours |
 
 The decisive governance control here is **rollback**, and it must be wired the same way [deployment and rollouts](./06-model-deployment-rollouts.md) wires it: the system must be able to disable a model or revert to a known-good version *via configuration, in under a minute, without redeploying the service*. A governance program that can detect harm but cannot quickly stop it is incomplete. After containment comes the **post-incident review**, whose governing question is not "who erred" but "what gate or check would have caught this" — because the durable output of an incident is a new enforced control, not a new line in a document.
+
+---
+
+## Governance Incident Workflow: Harm Signal to Enforced Control
+
+An ML governance incident should be handled like a reliability incident, but the incident clock starts from harm detection, not service failure. A healthy model server can be a Sev1 if it is producing illegal or harmful decisions.
+
+```text
+T+00m  Harm signal detected: fairness guardrail breach, appeal spike, regulator inquiry, or incident report
+T+05m  Freeze rollout and preserve evidence bundle, prediction logs, feature snapshots, and active policy
+T+10m  Contain: pointer rollback, threshold fail-safe, kill switch, or route to human review
+T+30m  Scope impact: affected decisions, slices, time window, regions, and downstream actions
+T+2h   Notify accountable owner, risk/legal, support, and affected operations teams
+T+24h  Produce preliminary harm assessment and remediation plan
+T+7d   Complete post-incident review; convert finding into a new gate, monitor, or policy test
+```
+
+The impact query should be prepared before the incident. During a real event, the team should fill parameters, not design joins:
+
+```sql
+-- Example: decisions affected by a bad threshold policy in a known window.
+SELECT
+  decision_id,
+  subject_ref,
+  occurred_at,
+  model_version,
+  threshold_policy,
+  output_action,
+  score,
+  slice_country,
+  slice_new_customer
+FROM decision_audit_log
+WHERE endpoint = 'credit-api/prod/us/limit_decision'
+  AND threshold_policy = 'credit_limit_policy:v12'
+  AND occurred_at >= TIMESTAMP '2026-06-24 09:00:00 UTC'
+  AND occurred_at <  TIMESTAMP '2026-06-24 11:30:00 UTC';
+```
+
+A complete incident review should always ask four engineering questions:
+
+1. Which gate would have blocked this model, policy, or data state before production?
+2. Which monitor should have detected it earlier, and at what severity?
+3. Which rollback or fail-safe reduced harm, and was it fast enough?
+4. Which registry or audit field was missing when reconstructing impact?
+
+The postmortem output is a pull request against the governance system: a new policy rule, required metadata field, monitor, runbook, or automated test. If the output is only a memo, the same class of harm will recur.
 
 ---
 
@@ -164,7 +418,9 @@ Designing or reviewing an ML system's governance reduces to a short sequence of 
 4. **For regulated decisions, is enough logged to explain and contest them**, with a real human-override and appeal path? If not, GDPR Article 22 and the EU AI Act are violated.
 5. **Is fairness measured continuously across pre-declared protected slices and gated on**, not checked once at launch?
 6. **Can the model be disabled or rolled back via config in under a minute**, without redeploying the service?
-7. **Does the model have a named owner and a retirement path?** An owner-less model is an incident waiting for no one to respond.
+7. **Can an affected person appeal a specific decision**, with a reviewer seeing the exact evidence bundle and override authority?
+8. **Can impact be queried during an incident** by model, policy, slice, endpoint, and time window without ad hoc log archaeology?
+9. **Does the model have a named owner and a retirement path?** An owner-less model is an incident waiting for no one to respond.
 
 A system that answers these with enforced controls is auditable, accountable, and reversible. A system that answers them with documents has governance theater, and the cost of that gap is paid by the people the model decides about — as Apple Card, Amazon, and the Dutch families learned.
 
@@ -176,12 +432,14 @@ A system that answers these with enforced controls is auditable, accountable, an
 2. Risk tiering by impact (who is affected, reversibility, regulatory exposure) is the core decision framework; it parameterizes every other control.
 3. Lineage is the foundation: you cannot govern what you cannot reconstruct, so every production decision must trace to a model version, its data, and its inputs.
 4. Approval gates enforce separation of duties through the model registry — approval is a queryable state, not a memory.
-5. Explainability and contestability are *system* requirements: persist enough to explain and reverse a decision, and provide a real human-override path (GDPR Article 22, EU AI Act).
-6. Fairness is operational: declare the metric before deploy, measure it continuously across protected slices, and gate on it — never a one-time check.
-7. Rollback is a governance control; a system that detects harm but cannot stop it in under a minute is incomplete.
-8. Every regulated model needs a named owner and a retirement path, or it becomes an unaccountable, permanent liability.
-9. SR 11-7, GDPR, and the EU AI Act (phasing in through 2026–2027) all map onto the same enforced controls — build the controls and compliance largely follows.
-10. Ungoverned ML has a documented cost: Apple Card (2019), Amazon's scrapped recruiting tool (2018), and the Dutch childcare-benefits scandal were governance failures before they were model failures.
+5. Production governance artifacts should be structured: model inventory, per-decision audit log, and immutable promotion evidence bundle.
+6. Explainability and contestability are *system* requirements: persist enough to explain and reverse a decision, and provide a real human-override path (GDPR Article 22, EU AI Act).
+7. Fairness is operational: declare the metric before deploy, measure it continuously across protected slices, and gate on it — never a one-time check.
+8. Rollback is a governance control; a system that detects harm but cannot stop it in under a minute is incomplete.
+9. Governance incidents should produce new enforced controls — policy rules, metadata requirements, monitors, or runbooks — not only narrative postmortems.
+10. Every regulated model needs a named owner and a retirement path, or it becomes an unaccountable, permanent liability.
+11. SR 11-7, GDPR, and the EU AI Act (phasing in through 2026–2027) all map onto the same enforced controls — build the controls and compliance largely follows.
+12. Ungoverned ML has a documented cost: Apple Card (2019), Amazon's scrapped recruiting tool (2018), and the Dutch childcare-benefits scandal were governance failures before they were model failures.
 
 ---
 

@@ -49,6 +49,48 @@ The useful property of this graph is bidirectionality. From a deployed model, tr
 
 This is the same provenance/impact split that appears in dataset lineage and training pipelines. The registry is where those edges become operational.
 
+A production registry usually stores the graph as relational tables plus immutable object references, not as a literal graph database. The critical part is the edges:
+
+```yaml
+model_version_record:
+  model_id: fraud_classifier
+  version: v42
+  artifact:
+    uri: s3://ml-artifacts/fraud/v42/model.onnx
+    hash: sha256:9f86d08...
+    format: onnx
+  provenance:
+    training_run_id: train_run_01J2
+    code_commit: 4f3c9ab
+    training_image: registry.example.com/train@sha256:91aa...
+    dataset_snapshots:
+      - fraud_train:2026-05-31.7
+    feature_schema: fraud_features:v18
+    label_definition: confirmed_chargeback:v6
+  evaluation:
+    report_id: eval_report_01J2
+    primary_metric_delta: 0.014
+    guardrails_passed: true
+    uncertainty: bootstrap_95_ci
+  serving_contract:
+    contract_id: fraud_serving_contract:v42
+    runtime_image: registry.example.com/serve@sha256:44aa...
+    threshold_policy: fraud_policy:v10
+    rollback_target: fraud_classifier:v41
+  governance:
+    risk_tier: high
+    approvals:
+      - role: model_owner
+        actor: user:alice
+        approved_at: 2026-06-24T08:10:00Z
+      - role: independent_validator
+        actor: user:bob
+        approved_at: 2026-06-24T09:02:00Z
+  lifecycle_state: approved
+```
+
+This record is the join point for release engineering, monitoring, governance, and incident response. The model file can be stored anywhere durable; the registry record is what makes it operable.
+
 ---
 
 ## Model Identity: Artifact Hash Beats Version Name
@@ -122,6 +164,18 @@ Each transition has required evidence:
 | canary → production | guardrails hold, risk-tier approvals satisfied |
 | production → deprecated | replacement exists, rollback window satisfied |
 | deprecated → retired | no active deployments, retention policy satisfied |
+
+A stronger state table includes who may trigger the transition and what must be atomically written:
+
+| From → To | Actor | Gate | Atomic writes |
+|---|---|---|---|
+| created → evaluated | training pipeline | lineage + artifact validation | evaluation report edge, metrics summary, state event |
+| evaluated → approved | model owner + approver | promotion policy | approval records, evidence bundle hash, state event |
+| approved → shadow | deployment controller | contract validation | deployment record, shadow traffic config, state event |
+| shadow → canary | rollout controller | runtime safety | traffic split, canary monitor config, state event |
+| canary → production | rollout controller | guardrails + approvals | active pointer or traffic split, rollback target, state event |
+| production → rolled_back | on-call / automation | rollback target loadable | active pointer flip, incident link, state event |
+| deprecated → retired | owner / lifecycle job | no active deployments | tombstone, retention schedule, state event |
 
 A registry state is a safety boundary. If engineers can directly mark a model production without satisfying required metadata, the registry is just documentation. The value comes from making invalid transitions unrepresentable.
 
@@ -216,6 +270,36 @@ if active_model == v42:
     append audit event rollback(v42 → v41, actor, reason)
 ```
 
+In database terms, the pointer flip should look like a small transaction:
+
+```sql
+BEGIN;
+
+SELECT active_model_version
+FROM endpoint_active_model
+WHERE endpoint = 'fraud_authorization'
+FOR UPDATE;
+
+-- compare-and-swap guard prevents overwriting a concurrent deploy
+UPDATE endpoint_active_model
+SET active_model_version = 'fraud_classifier:v41',
+    updated_at = CURRENT_TIMESTAMP,
+    updated_by = 'user:oncall'
+WHERE endpoint = 'fraud_authorization'
+  AND active_model_version = 'fraud_classifier:v42';
+
+INSERT INTO registry_audit_log(
+  event_type, endpoint, previous_model_version, new_model_version, actor, reason
+) VALUES (
+  'rollback', 'fraud_authorization', 'fraud_classifier:v42', 'fraud_classifier:v41',
+  'user:oncall', 'canary false_positive_rate guardrail breach'
+);
+
+COMMIT;
+```
+
+Serving nodes should observe the new pointer through a watch/cache protocol with bounded staleness. If the pointer cache TTL is 60 seconds, a "10 second rollback" claim is false no matter how fast the registry transaction is. The serving contract should state pointer propagation SLO, cache invalidation behavior, and what happens if the registry is unavailable.
+
 This is the same reason feature flags and deployment control planes require careful consistency: they decide what users experience.
 
 ---
@@ -235,6 +319,27 @@ Every registry mutation that affects production must be audited:
 - model retired.
 
 The audit event should record actor, timestamp, previous state, new state, reason, and request ID. For regulated systems, threshold changes are as important as model changes. A score cutoff can alter thousands of decisions without changing the model artifact at all.
+
+```yaml
+registry_audit_event:
+  event_id: reg_evt_01J2Z
+  occurred_at: 2026-06-24T11:04:19Z
+  actor: user:oncall
+  request_id: req_deploy_7781
+  event_type: traffic_split_changed
+  endpoint: fraud_authorization
+  previous:
+    model_version: fraud_classifier:v41
+    traffic_percent: 100
+    threshold_policy: fraud_policy:v9
+  new:
+    model_version: fraud_classifier:v42
+    traffic_percent: 5
+    threshold_policy: fraud_policy:v10
+  gate_result: promotion_gate_run_01J2Y
+  reason: canary_ramp_step_1
+  rollback_target: fraud_classifier:v41
+```
 
 An append-only audit log also helps incident review. The question after a bad rollout is not only "which model caused this?" but "which gate failed to catch it, and who had the information when the decision was made?"
 
@@ -287,6 +392,14 @@ get_rollback_target(endpoint)
 
 If impact queries require ad hoc SQL written during an incident, the registry has not done its job.
 
+A useful API property is idempotency. Deployment controllers retry, CI jobs retry, and on-call engineers double-submit under stress. Registry mutations should accept request IDs and make repeated calls safe:
+
+```text
+promote(model_version=v42, target_state=canary, request_id=req_123)
+```
+
+If the first call succeeds and the client times out, the retry should return the existing state transition, not create a duplicate approval or repeat a traffic change. The registry is a control plane; idempotency is part of safety.
+
 ---
 
 ## Failure Modes
@@ -337,9 +450,11 @@ If these are manual investigations, the registry is incomplete. If they are quer
 5. Lifecycle states should be enforced guardrails, not naming conventions.
 6. Promotion gates are policy evaluation over registry metadata; approvals outside registry state do not count.
 7. Rollback requires validated metadata for the previous artifact and all dependencies.
-8. The registry core needs strong consistency for production pointers and state transitions.
-9. Threshold and policy changes are production changes and must be versioned and audited.
-10. The registry is successful when provenance, impact, active deployment, approval, and rollback questions are all queries.
+8. The registry core needs strong consistency for production pointers and state transitions; active pointer flips should be atomic and audited.
+9. Serving nodes need bounded pointer-propagation behavior, or rollback-time claims are fiction.
+10. Threshold and policy changes are production changes and must be versioned and audited.
+11. Registry mutation APIs should be idempotent because deploy controllers and humans retry.
+12. The registry is successful when provenance, impact, active deployment, approval, and rollback questions are all queries.
 
 ---
 

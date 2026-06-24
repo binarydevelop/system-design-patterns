@@ -32,6 +32,23 @@ This precomputation is what makes retrieval affordable. Item embeddings change s
 
 Mature systems do not retrieve from a single source. They *blend* — an embedding-based source for personalized relevance, a popularity source so new users get something reasonable, a freshness source so recent items get exposure, a graph source for "users like you also engaged with." Each source is a recall strategy with different failure modes, and blending them is a hedge: the embedding source fails for cold users, the popularity source fails to personalize, and the union covers for both. This is a deliberately redundant design, the recommender equivalent of combining multiple indexes because no single access path serves every query.
 
+The ANN index has its own lifecycle and SLOs; it is not a static file:
+
+```text
+item catalog changes → embedding job → index build → validation → staged load → active pointer flip
+                                      ↘ incremental updates ↗
+```
+
+| Stage | Gate | Failure it prevents |
+|---|---|---|
+| Embedding generation | coverage, NaN rate, vector norm distribution | missing or corrupt item vectors |
+| Index build | recall@K against exact search sample | fast but wrong retrieval |
+| Staged load | memory footprint and warmup time | serving cold-start or OOM |
+| Pointer flip | old index retained and warm | rollback amnesia |
+| Incremental update | freshness lag and delete handling | stale or ghost items |
+
+A recommender with no index rollback is a deployment system without rollback: one bad embedding job can make the catalog disappear from retrieval while every application endpoint stays healthy.
+
 ---
 
 ## Ranking: Precision on a Short List
@@ -61,6 +78,28 @@ Everything above describes serving a single request. The property that makes a r
 The foundational requirement of the loop is *honest logging of what the user was actually shown*. Most engagement data answers "what did the user click," but the question the model needs is "what did the user click *given the specific set of options presented, in the specific order, by the specific model version*." A click on the top item means something very different from a click on the tenth, and a non-click on an item the user never scrolled to is not a signal of dislike — it is no signal at all. The *exposure log* is therefore the most important data artifact in the entire system: for every request it records what was shown, in what positions, by which model and policy version, under which experiment, and what the user did with each. Without this, the system cannot compute unbiased metrics, cannot train a calibrated model, and cannot attribute a behavior change to a model change.
 
 This logging carries the same lineage burden as any auditable system. The exposure record must pin the model version and policy version that produced it, because months later, debugging a regression requires knowing exactly which model showed what. A recommender without disciplined exposure logging is in the same position as a training pipeline without lineage: it works until something breaks, at which point no one can explain what happened or roll it back.
+
+A minimal exposure log schema looks like this:
+
+```yaml
+request_id: req_01J...
+user_id: user_42
+surface: home_feed
+timestamp: 2026-06-24T12:01:08Z
+experiment: feed_ranker_2026q2:treatment
+retrieval_sources:
+  embedding: { index: item_ann:v88, candidates: 1200 }
+  popularity: { version: pop_24h:v12, candidates: 300 }
+ranker: feed_ranker:v42
+rerank_policy: diversity_policy:v9
+shown:
+  - { item_id: item_7, position: 1, score: 0.91, source: embedding, explored: false }
+  - { item_id: item_9, position: 2, score: 0.83, source: freshness, explored: true }
+not_shown_sample:
+  - { item_id: item_13, rank_before_policy: 11, reason: diversity_filter }
+```
+
+The `not_shown_sample` field is not optional for advanced systems. Without some record of candidates that lost, the system cannot debug whether a model failed because retrieval missed an item, ranking buried it, or policy filtered it. It also cannot do serious counterfactual evaluation, because the logs contain only the winners of the old policy.
 
 ---
 
@@ -113,6 +152,20 @@ This reframes embedding freshness as the classic cache-invalidation trade-off. R
 The funnel exists to meet a latency budget, and that budget is best treated as an explicit contract allocated across stages. A typical end-to-end budget of a few tens of milliseconds must cover candidate generation, feature hydration, ranking inference, and re-ranking, and every stage spends against the same fixed account. When a stage overspends, the system must shed work gracefully rather than blow the budget — return fewer candidates, skip an expensive re-ranking pass, serve a cached result — because a recommendation that arrives too late is worse than a slightly less perfect one that arrives on time.
 
 The dominant cost is usually not model inference; it is feature hydration, the I/O of gathering the features each stage needs. This mirrors the lesson from training pipelines, where I/O dominates compute: the expensive part of a recommender at serving time is moving data — fetching user features, item features, and interaction features from their respective stores — not the matrix multiplications. Consequently the highest-leverage latency optimizations are the data-movement ones: cache hot features in memory, batch all lookups, precompute what can be precomputed, and co-locate features with the serving path. A team that profiles a slow recommender almost always finds the time in the fetches, not the forward pass.
+
+A realistic latency contract makes the funnel operational:
+
+```text
+Home feed p99 budget: 80 ms
+  user/context features            8 ms
+  retrieval: ANN + blend          12 ms
+  item feature hydration          20 ms
+  rank 500 candidates             22 ms
+  re-rank/policy/diversity         8 ms
+  logging + response              10 ms
+```
+
+If item feature hydration grows to 40 ms, the correct first fix is not a larger ranker GPU; it is fewer candidates, better batch multi-get, hotter item-feature cache, or precomputed feature blocks. A recommender is usually won or lost in data movement.
 
 ---
 

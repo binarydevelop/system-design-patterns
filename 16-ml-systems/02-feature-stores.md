@@ -53,6 +53,39 @@ A correct point-in-time join is an *as-of* join: for each labeled row at time *T
 
 The correct join key is *availability time*, because that is what a real serving request at *T* could actually have read. A feature whose underlying event happened at 10:00 but which did not become servable until 10:10 was *not available* to a decision made at 10:05, and using it leaks. This is why a feature store must store *feature history*, not just the latest value, in the offline store: without the time series of values and their availability timestamps, an honest as-of join is impossible to reconstruct, and backtests quietly diverge from production. The discipline mirrors the time-based-split rule for training: the offline world must only ever see what the online world knew at the moment of the decision.
 
+Mechanically, point-in-time retrieval is a nearest-preceding-version query:
+
+```sql
+-- For each training example, find the latest feature value available at decision time.
+SELECT e.example_id,
+       e.entity_id,
+       e.decision_time,
+       f.value AS account_risk
+FROM training_examples e
+LEFT JOIN LATERAL (
+  SELECT value
+  FROM feature_history f
+  WHERE f.entity_id = e.entity_id
+    AND f.feature_name = 'account_risk'
+    AND f.availability_time <= e.decision_time
+  ORDER BY f.availability_time DESC
+  LIMIT 1
+) f ON true;
+```
+
+At scale this is not executed as one nested lookup per row; the implementation is a sorted merge over `(entity_id, availability_time)`:
+
+```text
+training examples:  (entity_id, decision_time) sorted ascending
+feature history:    (entity_id, availability_time) sorted ascending
+
+for each entity:
+  advance feature cursor while availability_time <= decision_time
+  emit current feature value for that decision_time
+```
+
+That merge is why feature-history layout matters. Partition by date alone and every entity lookup scans too much. Partition by entity hash alone and time-window backfills become expensive. Most systems choose a hybrid: date partitions for batch pruning, clustered or sorted by entity and availability time inside each partition.
+
 ---
 
 ## Materialization: Getting Features From Definition to the Online Store
@@ -82,6 +115,29 @@ Once materialization is in place, *freshness* — how old the value in the onlin
 The reason freshness must be an explicit SLO is that staleness is invisible from inside the serving path. The online store returns a value with the same latency whether that value was updated three seconds ago or three days ago; nothing about a successful read reveals that the materialization job died last night. The only way to detect staleness is to measure the *age of the latest update* per feature group and compare it to a declared budget. A fraud feature might carry a 60-second freshness SLO; a churn feature might tolerate 24 hours. When the measured age exceeds the budget, the system should react — page the owner, fail closed, or route to a fallback model that does not depend on the stale feature — rather than continuing to serve confidently wrong predictions.
 
 The design rule that follows is that *freshness is a declared property of every feature*, recorded in the registry and enforced in production. A feature whose freshness is not stated has no definition of "broken," and a materialization pipeline that is not watched for staleness is a silent failure waiting to happen.
+
+A feature contract should make this operational, not implicit:
+
+```yaml
+feature: failed_login_count_10m
+version: v4
+entity: user_id
+owner: identity-risk-platform
+source: login_events:v12
+semantics: "count failed login attempts by event_time over trailing 10 minutes"
+materialization: streaming
+freshness_slo: { p99_age_seconds: 60 }
+online_store: redis_cluster_identity_features
+offline_store: iceberg.identity_features.failed_login_count_10m
+join_time: availability_time
+backfill_policy: append_correction_not_overwrite
+allowed_default: 0
+consumers:
+  - fraud_classifier:v42
+  - account_takeover_model:v17
+```
+
+The `consumers` field is not bookkeeping; it powers impact analysis. If `login_events:v12` had a parsing bug from 10:00 to 11:00, the registry should answer which feature versions, models, and production decisions were affected.
 
 ---
 
@@ -124,6 +180,22 @@ The characteristic failures of a feature store are direct consequences of its du
 **Point-in-time leakage** is the offline-side mirror of skew: a training join that uses feature values not knowable at the label's timestamp. It inflates offline metrics and collapses in production. The defense is as-of joins keyed on availability time, plus stored feature history to make those joins reconstructible.
 
 **Hot-key load** appears when a few entities — a celebrity user, a viral item, a high-volume merchant — concentrate read traffic on a handful of online-store keys, creating tail-latency spikes exactly as they would in any [partitioned KV store](../02-distributed-databases/05-partitioning-strategies.md). The defense is the usual cache toolkit: replicate hot keys, add a local read cache in front of the online store, or precompute and pin aggregates for known-hot entities.
+
+A production incident runbook should be pre-written because feature incidents are silent from the model's perspective:
+
+```text
+Alert: failed_login_count_10m freshness p99_age_seconds > 60 for 5 minutes
+1. Stop the bleeding: serving gateway marks feature group stale.
+2. Degrade safely: route dependent models to fallback model/rules that do not consume it.
+3. Identify scope: registry query consumers(feature=failed_login_count_10m:v4).
+4. Inspect materialization: stream lag, dead-letter rate, source schema changes.
+5. Backfill/correct: append corrected feature values with observed_at and correction reason.
+6. Re-evaluate: rerun affected offline metrics and monitor prediction distribution.
+7. Decide retrain: if production decisions consumed stale values long enough to affect labels,
+   trigger lineage-based retraining after labels mature.
+```
+
+The key is step 2: a model should not continue serving confident predictions on known-stale features just because Redis still returns a value.
 
 ---
 

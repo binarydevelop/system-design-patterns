@@ -84,6 +84,20 @@ The reason SRM is so diagnostic is that the split ratio has *no business reason 
 
 The operational rule is absolute: **an experiment that fails the SRM check is invalid, and its metrics must not be read.** A team that "eyeballs the SRM but ships anyway because the win is large" has learned nothing, because the same bug that broke the ratio likely manufactured the win. A trustworthy platform surfaces SRM before it surfaces the primary metric, so the integrity verdict is reached before anyone forms an opinion about the result. SRM is the experimentation analog of a checksum failure: you do not interpret corrupted data, you fix the corruption.
 
+SRM triage runbook:
+
+```text
+Alert: expected 50/50 split, observed 48.7/51.3, p < 1e-6
+1. Freeze decision: hide effect metrics and mark experiment invalid.
+2. Check assignment logs: bucket function, salt, config rollout, client/server mismatch.
+3. Check exposure logs: is one arm logging later, less often, or after an extra redirect?
+4. Check filtering: bots, fraud filters, geography, app versions, privacy consent by arm.
+5. Check caching: CDN/app cache keys include experiment and variant?
+6. Backfill only if the missingness mechanism is proven random; otherwise restart experiment.
+```
+
+Most SRMs are not fixable by reweighting because the missing users are usually missing for a reason correlated with the treatment.
+
 ---
 
 ## Statistical Concepts as Design Constraints
@@ -91,6 +105,19 @@ The operational rule is absolute: **an experiment that fails the SRM check is in
 The statistics an experimentation system needs are not a textbook of derivations; they are a handful of constraints that shape how the system is built and operated. Each one, gotten wrong, quietly converts the platform from a truth-teller into a random-number generator.
 
 **Statistical power and minimum detectable effect** govern how much traffic an experiment needs. Power is the probability of detecting a real effect of a given size; the convention is 80%. The smaller the effect you want to detect — the *minimum detectable effect* — the more samples you need, and the relationship is steep: halving the detectable effect roughly quadruples the required sample size. The engineering implication is that an underpowered experiment is worse than no experiment, because it consumes traffic and produces a confident-looking "no significant difference" that is actually a failure to measure. Before running, a platform should compute the required sample size from the baseline rate and the smallest effect worth shipping, and refuse experiments that cannot reach it in a reasonable window. Variance-reduction techniques like CUPED — which regresses out each user's pre-experiment behavior — buy back power without more traffic, often cutting required sample size by a third to a half, and are pure efficiency: same answer, less traffic.
+
+A rough binary-metric sample-size estimate makes the trade-off visible:
+
+```text
+n_per_arm ≈ 16 × p(1-p) / δ²      # 80% power, 5% alpha, rule-of-thumb
+
+baseline conversion p = 0.10
+minimum detectable absolute lift δ = 0.002  (10.0% → 10.2%)
+
+n_per_arm ≈ 16 × 0.10 × 0.90 / 0.002² ≈ 360,000 users per arm
+```
+
+Halving the MDE to 0.1 percentage points requires roughly four times the users. This is why "just run it for a day" is not an experiment plan; it is a traffic allocation with unknown sensitivity.
 
 **Peeking** is the most common way honest teams fool themselves. A fixed-horizon significance test is only valid if you look *once*, at the pre-committed end. If you check the dashboard every day and stop the first time `p < 0.05`, you are running many tests and reporting the luckiest one; the true false-positive rate inflates from the nominal 5% to 20% or more. This is not a statistical nuance to wave away — it is the difference between a platform that ships real wins and one that ships noise. There are only two correct designs: fix the horizon in advance and do not stop early, or adopt a *sequential testing* method (always-valid p-values, group-sequential boundaries) that is mathematically built to permit continuous monitoring. What you cannot do is use a fixed-horizon test and peek; the system should enforce this by hiding the verdict until the pre-registered duration or by computing sequential boundaries natively.
 
@@ -133,6 +160,29 @@ This is why slice analysis is a required stage, not an optional drill-down: the 
 The deepest lesson from the literature — Kohavi, Tang, and Xu's *Trustworthy Online Controlled Experiments* (2020) distilling two decades at Amazon, Microsoft, and beyond — is that an experimentation platform is as much an institution as a piece of software. Its product is *trust*: when a result says treatment is better, the organization must be able to act on it without re-litigating whether the pipeline was broken, whether someone peeked, or whether the metric was chosen after the fact. That trust is fragile and is destroyed faster by one celebrated false win than it is built by a hundred honest ones.
 
 This is the practical meaning of **Twyman's law** — "any figure that looks interesting or different is usually wrong" — which is the experimenter's first reflex. A result that is too good to be true (a 25% lift from a button color) is far more likely to be a logging bug, an SRM, or a leak than a genuine discovery, and the trustworthy response is to distrust it until the integrity checks pass. The cultural apparatus that protects trust includes pre-registration of the primary metric and duration, automated SRM and data-quality gates that the analyst cannot bypass, an institutional review of consequential launches, and a maintained registry so that experiments expire, flags are cleaned up, and assignment logic stays legible. An experiment platform without this discipline does not produce weaker results; it produces *untrustworthy* ones, which is worse, because the organization acts on them anyway.
+
+A production experiment registry should make the decision auditable:
+
+```yaml
+experiment: feed_ranker_2026q2
+owner: recommendations-platform
+hypothesis: "new ranker improves long-term satisfied sessions"
+unit: user_id
+assignment: { hash: murmur3, salt: exp_8f21, allocation: { control: 50, treatment: 50 } }
+primary_metric: satisfied_sessions_per_user_7d
+guardrails:
+  - p99_latency_ms
+  - hide_report_rate
+  - creator_diversity
+  - new_user_retention
+minimum_duration_days: 14
+power: { baseline: 0.42, mde_relative: 0.01, required_users_per_arm: 1_200_000 }
+analysis: { method: fixed_horizon, cuped: true, peeking_allowed: false }
+status: running
+expires_at: 2026-07-31
+```
+
+The registry prevents two common long-term failures: orphaned experiments that keep assigning users forever, and undocumented metric changes after a team has seen the result.
 
 ---
 

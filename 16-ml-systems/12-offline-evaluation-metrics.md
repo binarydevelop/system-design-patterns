@@ -80,6 +80,19 @@ This means the metric should match the decision surface:
 
 The anti-pattern is choosing the metric because it is standard. AUC is standard; it may be irrelevant. If the business can review only 10,000 cases per day, the metric that matters is quality in the top 10,000, not average ranking over every case. If the model output is used as a calibrated risk estimate, ranking metrics are insufficient because the probability value itself is a contract.
 
+A design review should force metric choice into a table like this:
+
+| System | Decision constraint | Primary metric | Guardrails | Diagnostics |
+|---|---|---|---|---|
+| Fraud review | 20K reviews/day, low false-negative tolerance | Precision@20K and recall at fixed FPR | false-positive rate by country, review SLA, chargeback dollars | PR curve, score deciles, feature drift |
+| Credit underwriting | Legal/financial decision, calibrated risk | Expected cost under policy and calibration error | adverse-action reason quality, protected-slice disparity, appeal rate | ROC/PR-AUC, monotonicity checks |
+| Search ranking | Position-sensitive relevance | NDCG@K or MRR | latency, coverage, diversity, zero-result rate | recall@K, per-query-class metrics |
+| Recommendation slate | Long-term satisfaction, exploration | online experiment primary; offline NDCG/recall as filter | diversity, creator/item exposure, churn proxy | candidate recall, novelty, popularity bias |
+| Forecasting | Asymmetric over/under cost | pinball loss or weighted absolute error | capacity stockout/overstock rate | residuals by horizon, seasonality error |
+| Abuse moderation | Harm minimization with appeal path | recall at bounded false-positive/appeal load | protected-slice FPR, reviewer load, reversal rate | confusion matrix by policy class |
+
+The primary metric should map to the production decision. Guardrails protect constraints the primary metric would happily violate. Diagnostics explain failures but should not silently become promotion criteria after results are known.
+
 ---
 
 ## Accuracy Is Usually the Wrong Metric
@@ -130,6 +143,34 @@ For high-impact systems, evaluate a **policy curve**:
 
 This curve is more useful than one headline metric because it shows the trade space. It also protects against threshold migration bugs during deployment: if `v42` has a different score distribution than `v41`, the old threshold may not mean the old action rate.
 
+Threshold migration should be explicit. If the incumbent policy reviews the top 25,000 transactions/day, the candidate threshold should often be selected by matching capacity, not by reusing the old numeric cutoff:
+
+```text
+incumbent threshold 0.85 on v41 → 25,000 reviews/day
+candidate score distribution shifted upward
+reusing 0.85 on v42 → 41,000 reviews/day  (ops overload)
+capacity-matched v42 threshold → 0.91 for 25,000 reviews/day
+```
+
+A deployment bundle should therefore record both the model and policy:
+
+```yaml
+threshold_migration:
+  baseline_model: fraud_classifier:v41
+  candidate_model: fraud_classifier:v42
+  old_policy: fraud_policy:v9
+  migration_rule: match_review_capacity
+  target_capacity_per_day: 25000
+  selected_threshold: 0.91
+  expected_precision: 0.27
+  expected_recall: 0.74
+  blocked_if:
+    precision_delta_ci_low_below: 0
+    fpr_slice_regression: true
+```
+
+A model version without its threshold policy is not a production decision system; it is only a score generator.
+
 ---
 
 ## Calibration: When the Number Must Mean Probability
@@ -146,6 +187,17 @@ Among examples scored 0.90-1.00, is the positive rate roughly 95%?
 Common metrics include Brier score, expected calibration error, calibration curves, and log loss. Calibration must be evaluated by slice because a model can be calibrated globally and miscalibrated for a country, device, tenant, or protected group.
 
 Calibration also drifts when base rates change. A model trained when fraud prevalence was 1% may over- or under-estimate probabilities when fraud prevalence is 3%, even if ranking remains decent. This is why monitoring prediction distributions and delayed labels matters after deployment.
+
+A concrete calibration report bins predictions and compares predicted risk to observed frequency:
+
+| Score bin | Count | Avg predicted | Observed positive rate | Gap | Action |
+|---|---:|---:|---:|---:|---|
+| 0.00-0.10 | 800,000 | 0.04 | 0.05 | +0.01 | pass |
+| 0.10-0.30 | 160,000 | 0.18 | 0.16 | -0.02 | pass |
+| 0.30-0.60 | 35,000 | 0.43 | 0.31 | -0.12 | recalibrate |
+| 0.60-1.00 | 5,000 | 0.78 | 0.52 | -0.26 | block for high-risk policy |
+
+This table is more actionable than a single Brier score. It shows where the probability contract breaks and whether the break occurs near the thresholds that drive decisions. For regulated or financial decisions, calibration should also be reported by pre-declared slices; global calibration can hide a group-specific overestimate or underestimate.
 
 ---
 
@@ -237,6 +289,21 @@ candidate - baseline PR-AUC = +0.004
 verdict = inconclusive, not pass
 ```
 
+A minimal bootstrap algorithm is simple enough to make part of the evaluation contract:
+
+```text
+unit = customer_id                    # not row_id if rows are correlated
+for b in 1..1000:
+    sample units with replacement
+    compute metric(candidate, sample)
+    compute metric(baseline, sample)
+    store delta_b
+ci_95 = percentile(delta, [2.5, 97.5])
+pass if ci_95.lower > minimum_practical_effect
+```
+
+The `minimum_practical_effect` matters. With very large evaluation sets, tiny deltas can be statistically confident and operationally irrelevant. A candidate that improves AUC by 0.0002 but adds 20ms p99 latency, larger serving cost, and migration risk should not pass just because the p-value is impressive.
+
 The promotion gate should evaluate the delta and its uncertainty, not only the point estimate. A small noisy win is not a win. This discipline prevents model teams from shipping random variation as progress.
 
 ---
@@ -296,6 +363,21 @@ Offline pass → shadow for runtime safety → canary for operational guardrails
 
 A team that ships directly from offline metrics is assuming away the entire reason production ML is hard.
 
+Use an offline-to-online gap checklist before promotion:
+
+| Question | If answer is no |
+|---|---|
+| Was the evaluation data generated under a policy close to the candidate policy? | Expect logged-policy bias; require shadow/canary caution |
+| Are labels mature for the decision horizon? | Treat quality metrics as provisional |
+| Are features point-in-time correct and served by the same definitions? | Block until skew is tested |
+| Does the offline metric match the online product objective? | Use offline only as a safety filter |
+| Are important slices powered enough to detect harm? | Restrict rollout or collect more data |
+| Is the candidate changing retrieval/candidate generation? | Do not trust old-candidate-set ranking alone |
+| Could the candidate change future labels or user behavior? | Require online experiment or causal design |
+| Are threshold, calibration, and capacity migrated together? | Block deployment bundle |
+
+The checklist should live in the evaluation report so a reviewer can see which risks remain for shadow, canary, and experiment stages.
+
 ---
 
 ## Failure Modes
@@ -346,7 +428,9 @@ Offline evaluation that answers these well is a trustworthy gate. Offline evalua
 7. Ranking metrics require candidate-set and exposure context; otherwise they answer an incomplete question.
 8. Leakage makes bad models look excellent; point-in-time correctness and honest splits are non-negotiable.
 9. Averages hide harmed slices; pre-register guardrail slices and report uncertainty.
-10. Offline wins must pass through shadow, canary, and experiments before being treated as production wins.
+10. Bootstrap confidence intervals should use the true independent unit and a minimum practical effect, not only a p-value.
+11. Threshold migration is part of deployment; match the policy constraint instead of blindly reusing numeric cutoffs.
+12. Offline wins must pass through shadow, canary, and experiments before being treated as production wins.
 
 ---
 

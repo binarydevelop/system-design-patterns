@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-A machine learning system is unlike traditional software in one decisive way: its behavior is defined by *data*, not just code. The model itself is a small box; almost all the operational risk lives in the system around it — data collection, feature extraction, configuration, serving infrastructure, monitoring, and the feedback loops that quietly reshape future training data. This is the central thesis of Sculley et al.'s *Hidden Technical Debt in Machine Learning Systems* (2015), and it reframes the whole discipline: you are not building a model, you are building a system whose correctness is statistical, whose specification is implicit in a dataset, and whose dependencies change underneath you without warning. Everything in this section — feature stores, serving, monitoring, training pipelines, label systems, governance — exists to manage that fundamental difference.
+A machine learning system is unlike traditional software in one decisive way: its behavior is defined by *data*, not just code. The model itself is a small box; almost all the operational risk lives in the system around it — data collection, feature extraction, configuration, serving infrastructure, monitoring, and the feedback loops that quietly reshape future training data. This is the central thesis of Sculley et al.'s *Hidden Technical Debt in Machine Learning Systems* (2015), and it reframes the whole discipline: you are not building a model, you are building a system whose correctness is statistical, whose specification is implicit in a dataset, and whose dependencies change underneath you without warning. Everything in this section — feature stores, dataset versioning, offline evaluation, serving, monitoring, training pipelines, label systems, registries, capacity planning, experimentation, and governance — exists to manage that fundamental difference.
 
 ---
 
@@ -96,6 +96,118 @@ flowchart LR
 Each handoff is owned by a different team and guarantees a different contract. The data platform owes fresh, deduplicated, schema-versioned data to the feature layer. The feature owner owes point-in-time-correct values to training. Training owes a reproducible artifact and honest metrics to evaluation. Evaluation owes a promotion decision against guardrails to deployment. Serving owes runtime compatibility and the feature parity that prevents skew. Monitoring owes early detection of degradation back to the retraining trigger. When any one of these contracts is informal — a handshake instead of a validated interface — the lifecycle decays at exactly that seam, and because the seam spans an org boundary, it becomes nobody's responsibility until an incident forces an owner to claim it.
 
 The lifecycle is also a *loop*, not a line: the last arrow feeds back into the first. Monitoring drives retraining, retraining produces new data dependencies, and the system circles continuously rather than terminating at "deployed." This is why an ML system is never "done" the way a feature ship is done — it has to be operated indefinitely, and the cost of that operation, not the cost of the initial model, dominates the system's total cost of ownership.
+
+---
+
+## Reference Architecture: The ML Platform as a Control System
+
+A mature ML platform is best understood as a control system wrapped around a decision function. The model scores requests, but the platform controls *which* model scores them, *which* features it may read, *which* labels later judge it, *which* metrics can promote it, *which* rollout path exposes it, and *which* rollback path stops it.
+
+```mermaid
+flowchart TD
+    SRC["Source systems\nevents, tables, logs"] --> DATA["Dataset/version store\nimmutable snapshots"]
+    SRC --> FEAT["Feature platform\ndefinitions + materialization"]
+    FEAT --> OFF["Offline features\nfull history"]
+    FEAT --> ON["Online features\nlow-latency latest"]
+    DATA --> TRAIN["Training pipeline\nreproducible DAG"]
+    OFF --> TRAIN
+    LABEL["Label/ground-truth system\ndelayed outcomes"] --> TRAIN
+    TRAIN --> EVAL["Offline evaluation\nmetrics + slices + leakage checks"]
+    EVAL --> REG["Model registry\nlineage + state + contracts"]
+    REG --> DEPLOY["Deployment control plane\nshadow/canary/rollback"]
+    DEPLOY --> SERVE["Serving data plane\nmodels + feature fetch + policy"]
+    ON --> SERVE
+    SERVE --> PRED["Prediction/exposure log"]
+    PRED --> MON["Monitoring\ndrift, quality, SLOs"]
+    PRED --> LABEL
+    MON --> TRAIN
+    GOV["Governance/audit\nrisk gates + approvals"] -.-> REG
+    GOV -.-> DEPLOY
+```
+
+The diagram is deliberately not model-centric. The model is one artifact in a larger loop. Distinguished engineering work lives in the edges: whether the dataset snapshot is immutable, whether the online feature is the same semantic feature as the offline one, whether the label joins to the exact prediction, whether the registry can name the rollback target, whether monitoring can distinguish a data incident from a concept-drift incident, and whether the deployment system can stop harm before labels mature.
+
+---
+
+## Control Plane vs Data Plane
+
+ML systems fail when control-plane decisions leak into ad hoc scripts or data-plane code. The split should be explicit.
+
+| Plane | Owns | Correctness requirement | Failure if weak |
+|---|---|---|---|
+| Data plane | feature reads, model inference, prediction logging, online policy execution | low latency, bounded queues, graceful degradation | user-facing latency/outage or silent wrong decisions |
+| Training data plane | batch extraction, feature computation, training jobs, evaluation jobs | reproducible execution, idempotent outputs, efficient I/O | expensive failed jobs, unreproducible artifacts |
+| Control plane | model registry, deployment pointers, traffic splits, promotion gates, approvals | strong metadata consistency, auditability, atomic state transitions | wrong model active, unapproved rollout, impossible rollback |
+| Observability plane | drift jobs, label joins, slice metrics, alert routing | versioned baselines, delayed-label semantics, actionability | dashboards that are green while quality burns |
+| Governance plane | risk tiers, policy-as-code, audit logs, access control | enforceability, separation of duties, retention | governance theater; controls exist but block nothing |
+
+The control plane should decide *what is allowed*; the data plane should execute it quickly. If business logic says `if model_version == v42 then use threshold 0.91` inside an application service, the control plane has leaked into the data plane. That makes rollout, audit, and rollback harder because the decision is now hidden in code rather than represented as registry state.
+
+The strongest platforms make critical state transitions atomic and auditable:
+
+```text
+register artifact → attach lineage → attach evaluation → approve → shadow → canary → production
+                                      ↑ every arrow is a gate, not a convention
+```
+
+A model should not become production by uploading a file. It becomes production when the control plane validates lineage, serving contract, metrics, approvals, rollback target, and traffic policy, then atomically moves the active pointer.
+
+---
+
+## Load-Bearing Invariants
+
+The easiest way to review an ML architecture is to ask which invariants it enforces mechanically. These are the invariants that matter most:
+
+| Invariant | Why it matters | Enforced by |
+|---|---|---|
+| Every model has complete provenance | rollback, audit, debugging | training pipeline + registry |
+| Every training row is point-in-time correct | prevents future leakage | feature store + dataset builder |
+| Every label has a definition, maturity state, and source | prevents target drift and premature negatives | label system |
+| Every feature semantic change creates a new version | prevents silent train/serve mismatch | feature registry |
+| Every prediction logs model, feature, policy, and experiment versions | enables monitoring, labels, audit, experiments | serving gateway |
+| Every promotion has an evaluation report and rollback target | prevents unreviewed irreversible releases | model registry + deployment gate |
+| Every high-risk decision is reconstructable | governance and contestability | audit log + lineage graph |
+| Every automated loop has a kill switch | prevents bad data from self-deploying | deployment control plane |
+
+If an invariant is documented but not enforced, it is not an invariant; it is an aspiration. A distinguished-engineer review should identify which of these are guaranteed by infrastructure and which depend on humans remembering a process under deadline pressure.
+
+---
+
+## Maturity Model
+
+ML maturity is not measured by model sophistication. It is measured by how safely the organization can change the model under uncertainty.
+
+| Level | Operating mode | What exists | Characteristic risk |
+|---|---|---|---|
+| 0. Notebook | manual artifact handoff | notebook, exported file | cannot reproduce or rollback |
+| 1. Scripted | repeatable training command | source control, basic job runner | data and environment still mutable |
+| 2. Reproducible | versioned training pipeline | dataset snapshots, lineage, registry | weak monitoring and rollout safety |
+| 3. Operated | production ML service | serving SLOs, drift monitoring, canary, rollback | delayed labels hide quality regressions |
+| 4. Governed | risk-tiered decision system | audit logs, approvals, policy gates, human override | controls may lag new use cases |
+| 5. Adaptive | safe continuous improvement loop | automated retraining, experiments, fast rollback, mature labels | automation can amplify bad signals if gates weaken |
+
+Most teams should not rush to level 5. Continuous retraining before level 3 monitoring and level 4 rollback is not maturity; it is an incident accelerator. The mature path is to earn automation by proving the safety mechanisms around it.
+
+---
+
+## Distinguished-Engineer Design Review Checklist
+
+For any consequential ML system, a senior review should be able to answer the following without relying on tribal memory:
+
+1. **Decision boundary:** What exact action does the model influence, and what deterministic guardrails bound it?
+2. **Data contract:** Which upstream sources, features, labels, and snapshots define the model's behavior?
+3. **Point-in-time correctness:** Could any feature or label contain information unavailable at prediction time?
+4. **Evaluation honesty:** Does the offline split mirror the production question, and are slices and uncertainty reported?
+5. **Serving path:** What is the p99 budget, and is the bottleneck model compute, feature fetch, queueing, or cold start?
+6. **Version contract:** Are model, features, preprocessing, runtime, thresholds, and fallback versioned as one release unit?
+7. **Monitoring:** What can fail silently, how soon is it detectable, and which signal triggers rollback versus investigation?
+8. **Feedback loop:** What data does the model create or suppress by acting, and how is exploration or auditing preserved?
+9. **Rollback:** What is the exact rollback target, is it warm/loadable, and what user harms are irreversible?
+10. **Governance:** Who owns the model, what risk tier is it, what approvals are enforced, and can a decision be reconstructed?
+11. **Cost:** What is cost per prediction/training run, what utilization assumption drives it, and what quota prevents runaway spend?
+12. **Retirement:** When does the model become stale, who is paged, and how is it removed safely?
+
+A design that cannot answer these is not ready for production, regardless of its AUC. A design that answers them with queryable platform state — not screenshots, Slack messages, or notebook cells — is approaching production maturity.
 
 ---
 
