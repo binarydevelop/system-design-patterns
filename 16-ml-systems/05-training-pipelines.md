@@ -12,6 +12,25 @@ The defining mistake in production ML is treating training as a step rather than
 
 The reason this matters is that a model is the product of a long chain of decisions, most of them invisible in the artifact itself. The same model file can be produced by two different datasets, two different feature definitions, or two different library versions, and behave completely differently in production. Unlike a compiled binary — which is a deterministic function of its source — a model is a function of source *plus* data *plus* environment *plus* a dozen implicit choices. If any link in that chain is unrecorded, the model is unreproducible, and an unreproducible model is unrollbackable, unauditable, and undebuggable.
 
+The failure trajectory is concrete. Watch what a "notebook model" costs three months after it ships:
+
+```text
+Day 0    Notebook trains model, exports fraud_model.pkl, hands to eng.
+         Recorded: nothing. Lives in: someone's laptop + S3 bucket.
+Day 30   Model quality drops 8%. Question: "what changed?"
+         - Which data did it train on?      → "last quarter's, I think"
+         - Which commit produced it?         → notebook was edited in place
+         - Which feature definitions?        → feature SQL changed since
+         - Which library versions?           → laptop was reimaged
+Day 31   Try to retrain to compare → numbers don't match → can't isolate
+         whether the regression is data, code, or environment.
+Day 32   Try to roll back to "the good model" → the previous .pkl was
+         overwritten → no known-good version exists.
+Result   A production model that cannot be explained, compared, or reverted.
+```
+
+Every one of those dead ends is a missing record, and each is cheap to capture at training time and impossible to reconstruct afterward. The pipeline is the machinery that captures them automatically, so that "what changed?" is a query, not an archaeology project.
+
 This is the core insight from Sculley et al.'s *Hidden Technical Debt in Machine Learning Systems* (2015): the model code is a small box in the middle of a large diagram, and almost all the operational risk lives in the boxes around it — data collection, feature extraction, configuration, data verification, process management, serving infrastructure. The training pipeline is the discipline that turns those surrounding boxes from informal scripts into versioned, owned, monitored components.
 
 A useful test: if the person who built a model left the company tomorrow, could someone else rebuild the exact same model from what is recorded in the system? If the answer is no, you have a notebook, not a pipeline.
@@ -107,6 +126,39 @@ The most expensive way to discover a data problem is in production, weeks after 
 
 The categories of data failure are well understood. **Schema failures** — a column disappears, a type changes — are the easiest to catch and the most common after an upstream refactor. **Range failures** — a negative age, a probability above one, a transaction amount of ten billion dollars — catch corruption that schema checks miss. **Distribution failures** are subtler and more dangerous: the schema is intact, the values are in range, but the *shape* of the data shifted, because a new market launched, a logging bug halved the event volume, or an upstream join started dropping rows. **Completeness failures** — forty percent of labels suddenly missing — silently bias the model toward whatever subpopulation still has labels. **Uniqueness failures** — duplicated events — inflate the apparent frequency of whatever the duplicates represent.
 
+| Failure class | Example | Cheapest check | Misses what |
+|---|---|---|---|
+| Schema | `amount` column dropped or retyped | type + presence assertion | values that are valid but wrong |
+| Range | `age = -3`, `prob = 1.4` | min/max + domain bounds | in-range corruption |
+| Distribution | mean order value halves overnight | divergence vs baseline (PSI/KS) | per-slice shifts hidden in aggregate |
+| Completeness | 40% of labels missing | null-rate + row-count delta | nulls concentrated in one segment |
+| Uniqueness | events double-counted | primary-key dedup + count | near-duplicates that aren't exact |
+
+The validation suite is itself a versioned artifact, declared next to the pipeline and enforced as a gate. A practical encoding looks like an explicit contract rather than scattered `assert` statements:
+
+```yaml
+# data_contract: fraud_training_inputs·v7  (evaluated before training starts)
+transactions:
+  schema:
+    transaction_id: { type: string, unique: true, required: true }
+    amount_usd:     { type: float,  min: 0, max: 1_000_000, required: true }
+    event_type:     { type: enum,   allowed: [purchase, refund, auth] }   # new value = fail
+  freshness:
+    max_lag_minutes: 90              # else: stale upstream, fail closed
+  volume:
+    expected_rows_per_day: 50_000_000
+    tolerance: 0.20                  # ±20% day-over-day, else page data owner
+  distribution:
+    amount_usd: { baseline: model_v41_train_fingerprint, max_psi: 0.2 }
+labels:
+  completeness:
+    min_label_rate: 0.95            # <95% labeled → biased training set, fail
+  delay:
+    max_observed_delay_days: 30     # contract from Label & Ground-Truth Systems
+```
+
+The `baseline` reference is the load-bearing part: distribution checks compare against the *statistical fingerprint of the data the current production model was trained on*, persisted as a versioned artifact, not against a rolling recent window (which would silently track the very drift it is meant to catch — the same baseline-drift trap that defeats [model monitoring](./04-model-monitoring.md)).
+
 The deeper principle is that *type compatibility does not imply semantic compatibility*. The `event_type` enum gaining a new value, or `total_spend` switching from gross to net, will pass every type check and every null check while quietly poisoning the model. This is why mature validation compares against a *baseline distribution* — the statistical fingerprint of the data the current production model was trained on — and flags divergence even when every value is individually valid. Google's TensorFlow Data Validation and tools like Great Expectations exist precisely to make these distributional contracts explicit, versioned, and enforced before training consumes a single GPU-hour.
 
 The operational rule is *fail fast, fail loud*. A validation failure should stop the pipeline and page the data owner, not log a warning that scrolls past. A change to an upstream enum is a breaking change to every model downstream of it, and the validation suite is the only place that breaking change can be caught cheaply.
@@ -121,7 +173,53 @@ The reason leakage is so hard to eliminate is that it hides inside joins and tim
 
 This is why the central defense against leakage is *point-in-time correctness*: every feature value in the training set must reflect what was actually knowable at the prediction timestamp, not the value the table holds today. Building a point-in-time-correct dataset requires distinguishing three timestamps that are easy to conflate — when the event happened (event time), when the system recorded it (ingestion time), and when the value became available to serve (availability time). A feature materialized at 10:10 was not available for a decision made at 10:05, and a training join that uses it leaks the future.
 
+The difference between a leaky join and a correct one is one predicate, and it is worth seeing side by side:
+
+```sql
+-- LEAKY: joins the label row to the feature value the table holds *today*.
+-- The account was flagged at 10:40, after the 10:05 decision — the model
+-- is handed the answer.
+SELECT t.txn_id, t.label, f.account_risk
+FROM   labeled_txns t
+JOIN   account_features f USING (account_id);          -- no time bound = time travel
+
+-- CORRECT: as-of join. Take the latest feature value whose availability_time
+-- is <= the decision time. The 10:40 value is invisible to a 10:05 decision.
+SELECT t.txn_id, t.label, f.account_risk
+FROM   labeled_txns t
+LEFT JOIN LATERAL (
+  SELECT account_risk
+  FROM   account_features f
+  WHERE  f.account_id = t.account_id
+    AND  f.availability_time <= t.decision_time      -- the one predicate that matters
+  ORDER BY f.availability_time DESC
+  LIMIT 1
+) f ON true;
+```
+
+The timeline the correct query enforces:
+
+```text
+        event_time      decision_time     availability_time
+          10:00             10:05              10:40
+            |-----------------|------------------|
+  feature value computed AFTER the decision  ▲
+  → a real serving request at 10:05 could NOT have read it
+  → so the training join must not read it either
+```
+
 The split strategy is the second leakage defense, and it must mirror the production question. If the model predicts the future, a random row split is dishonest: it lets the model train on Tuesday and test on Monday, learning patterns that include foreknowledge. A time-based split — train on the past, evaluate on a held-out future window — is the only honest choice for any system that makes forward-looking predictions. When the goal is to generalize to *new* entities (users, merchants, items the model has never seen), an entity split is required, ensuring no entity appears in both train and test; otherwise the model's apparent skill is partly memorization.
+
+The split must match the question the production system actually asks:
+
+| Split | Mirrors the question | Leak it prevents | Honest for |
+|---|---|---|---|
+| Random row | "predict a random held-out row" | none — allows train-on-future | IID data with no time/entity structure |
+| Time-based | "predict next week from this week" | training on the future | any forward-looking prediction |
+| Entity-disjoint | "score a user/merchant never seen" | memorizing entity history | cold-start / new-entity generalization |
+| Group / session | "generalize across correlated groups" | within-group contamination | clustered or repeated-measure data |
+
+The two failure modes are mirror images: a random split on time-series data trains on the future and overstates skill; a time split on data that has no temporal structure needlessly throws away data. The split is part of the *measurement instrument*, so it must be materialized and versioned with the dataset, not recomputed ad hoc with a fresh random seed each run (see [Offline Evaluation and Metric Design](./12-offline-evaluation-metrics.md)).
 
 A pragmatic heuristic catches a large fraction of leaks: *any single feature that pushes AUC above 0.98 is guilty until proven innocent.* Real-world prediction is hard; a feature that makes it trivial is almost always a leak — a label encoded in disguise, a future value joined by mistake, an identifier that proxies the target. The leakage detection checklist is short but non-negotiable: no feature may use post-decision data, no label may be derivable from the features, entity splits must be disjoint, and every suspiciously powerful feature must be audited for time-travel.
 
@@ -139,7 +237,28 @@ The architecture separates a control plane from a data plane. The control plane 
 
 The single largest efficiency gain in a mature pipeline comes from *not recomputing work that has already been done*. If the inputs to a feature-computation step are unchanged, there is no reason to recompute the features. But "unchanged" is a deceptively hard predicate.
 
-The correct foundation is *content addressing*: a step's cache key is a hash of its inputs' *content* (not their paths), plus the code version, plus the environment digest, plus the parameters. Two runs with identical content-keys are guaranteed to produce identical outputs, so the second can reuse the first's result. The failures here are instructive because they all stem from an incomplete key. Keying on file *paths* means a renamed-but-identical file invalidates nothing yet breaks reproducibility tracking. Omitting the *code version* means a changed transformation function silently returns the old cached result. Omitting the *environment* means a NumPy upgrade that changes numerical behavior is masked by a stale cache. And a step that reads "latest" data or consults the wall clock is *fundamentally uncacheable*, because its output is not a pure function of its declared inputs — non-determinism and caching are mutually exclusive.
+The correct foundation is *content addressing*: a step's cache key is a hash of its inputs' *content* (not their paths), plus the code version, plus the environment digest, plus the parameters. Two runs with identical content-keys are guaranteed to produce identical outputs, so the second can reuse the first's result.
+
+```text
+cache_key(step) = H(
+    H(input_artifact_contents),   # WHAT went in (content hash, not path)
+    code_version,                 # the transformation logic
+    environment_digest,           # libraries, CUDA, base image by digest
+    step_parameters               # window sizes, thresholds, seeds
+)
+# identical key  ⇒  identical output  ⇒  safe to reuse
+```
+
+The failures here are instructive because they all stem from an incomplete key:
+
+| What the key omits | Silent bug it causes |
+|---|---|
+| input *content* (keys on path instead) | renamed-but-identical file invalidates nothing; moved file recomputes everything |
+| code version | a changed transform returns the *old* cached result |
+| environment digest | a NumPy/CUDA upgrade that shifts numerics is masked by a stale cache |
+| parameters | a new window size or seed reuses results computed under the old one |
+
+And a step that reads "latest" data or consults the wall clock is *fundamentally uncacheable*, because its output is not a pure function of its declared inputs — non-determinism and caching are mutually exclusive. The fix is to make the nondeterministic input explicit: pin "latest" to a snapshot id and pass the clock in as a parameter, turning an impure step into a pure one of its declared inputs.
 
 ### Lineage as the Foundation of Trust
 
@@ -157,7 +276,33 @@ A counterintuitive truth dominates the economics of deep-learning pipelines: the
 
 This reframes a large part of pipeline design as a *data delivery* problem. The storage format matters: columnar formats like Parquet excel at feature joins and selective reads; sequential formats like TFRecord and WebDataset excel at the streaming, full-scan reads that training demands; reading directly from the warehouse keeps data fresh but makes the warehouse the bottleneck and the bill. The sharding matters: data must be split into chunks that parallel workers can read disjointly, and the shard size is a genuine tuning parameter — shards too small drown in metadata overhead, shards too large create stragglers that idle every other worker while one finishes.
 
-The decisive technique is *overlapping I/O with compute through prefetching*. While the GPU processes batch N, the data loader should already be fetching batches N+1 through N+4 on separate worker threads, so the accelerator never waits. When prefetching is insufficient, the fix ladder runs from cheap to expensive: add I/O workers until the CPU saturates, cache shards on local NVMe so each epoch does not re-read object storage, increase the prefetch depth, switch to a sequential format, and finally co-locate compute with storage to cut network latency. The principle underneath all of these is the same one that governs any pipeline — *the slowest stage sets the throughput*, and in training that stage is usually the one moving bytes, not the one doing matrix multiplication.
+The decisive technique is *overlapping I/O with compute through prefetching*. While the GPU processes batch N, the data loader should already be fetching batches N+1 through N+4 on separate worker threads, so the accelerator never waits.
+
+The cost of getting this wrong is a direct multiplier on the bill, and the arithmetic is worth doing explicitly:
+
+```text
+GPU step compute time:                    80 ms
+Data fetch+decode time (cold, serial):   120 ms   ← slower than compute
+
+Without overlap:  step = max-bound by I/O ≈ 120 ms  → GPU util ≈ 80/120 = 67%
+With overlap:     step = max(80,120 hidden) but prefetched → GPU util → ~95%+
+
+On an 8×A100 job at ~$33/hr, running at 67% util instead of 95% wastes
+~30% of every hour — about $7/hr, ~$170 over a 24h run — to do nothing but
+wait on bytes.
+```
+
+When prefetching alone is insufficient, the fix ladder runs from cheap to expensive:
+
+```text
+1. add data-loader workers        until CPU decode saturates
+2. cache shards on local NVMe      so epoch 2+ doesn't re-read object storage
+3. increase prefetch depth         deeper queue absorbs fetch-time variance
+4. switch to a sequential format   TFRecord/WebDataset for full-scan reads
+5. co-locate compute with storage  cut the network RTT on every batch
+```
+
+The principle underneath all of these is the same one that governs any pipeline — *the slowest stage sets the throughput* (the same bottleneck law that governs [batch processing](../13-data-pipelines/01-batch-processing.md) and shows up as Little's law in [capacity planning](../01-foundations/10-capacity-planning.md)) — and in training that stage is usually the one moving bytes, not the one doing matrix multiplication.
 
 ---
 
@@ -166,6 +311,14 @@ The decisive technique is *overlapping I/O with compute through prefetching*. Wh
 Distributed training is best understood not as a machine-learning technique but as a distributed-systems problem with machine-learning constraints. The moment training spans more than one accelerator, the pipeline inherits coordination, fault tolerance, and communication-overhead concerns that single-machine training never faced.
 
 The topologies map to distinct constraints. *Data parallelism* — every worker holds a full copy of the model and processes a different data shard, synchronizing gradients each step — is the default when the model fits on one device but the dataset does not. Its limit is communication: as worker count grows, the gradient all-reduce after every step becomes the bottleneck, and beyond some scale adding GPUs *slows* training. *Model parallelism* — splitting the model itself across devices — is the answer when the model is too large for any single device, at the cost of "pipeline bubbles" where devices idle waiting for the previous stage. *Sharded approaches* like FSDP and ZeRO partition the model parameters, gradients, and optimizer state across workers, gathering what each needs on demand; this is how trillion-parameter models train at all, and the trade-off is more communication and harder debugging.
+
+| Topology | Use when | Splits across devices | Dominant cost |
+|---|---|---|---|
+| Data parallel | model fits on one device, dataset does not | the data | gradient all-reduce per step |
+| Model parallel | model too large for one device | the model layers | pipeline bubbles (idle stages) |
+| Sharded (FSDP/ZeRO) | model + optimizer state too large | params, grads, optimizer state | gather/scatter communication |
+
+The scaling intuition is that more workers do not buy linear speedup: each added worker adds communication, and past a domain-specific point the all-reduce dominates and throughput-per-GPU *falls*. The number to watch is scaling efficiency — `speedup_N / N` — and the right cluster size is the one where it is still acceptable, not the largest one the quota allows.
 
 The reason this belongs in a discussion of pipelines, rather than of model architecture, is that distributed training reshapes the *operational* requirements. Long multi-device jobs run for hours or days, which makes them statistically certain to encounter hardware failures and spot-instance preemptions. A six-hour job that cannot resume from an interruption will, in expectation, never finish on cheap preemptible hardware. This makes *checkpointing* not an optimization but a correctness requirement: the job must periodically persist enough state — model weights, optimizer state, step counter — that a relaunched job resumes from the last checkpoint rather than from zero. The economic payoff is large: running primary workers on spot instances with disciplined checkpointing typically cuts training cost by half to two-thirds, at the price of a few percent overhead from occasional preemption recovery. Distributed training, in other words, is mostly a story about making expensive hardware fail gracefully and cheaply.
 
@@ -185,11 +338,43 @@ The subtlest requirement is *gang scheduling*, and it is unique to distributed j
 
 Training pipelines fail partway through. A job dies at hour five of six; a worker is preempted; a transient network blip kills a step. The pipeline's job is to make these partial failures recoverable rather than catastrophic, and the discipline is the same idempotency-and-atomicity discipline that governs any [durable workflow system](../18-workflow-job-systems/06-retry-idempotency-compensation.md).
 
-The foundational invariant is that *a step's output is either fully present or fully absent — never partial*. A step that writes directly to its output location and crashes midway leaves a corrupt half-file, and the next run either fails confusingly or, worse, mistakes the partial output for a completed one and skips the step. The fix is *atomic commit*: the step writes to a temporary location and atomically renames to the final location only on success. A relaunched pipeline then sees a clean binary state at every step — done or not done — and can safely skip completed work and resume incomplete work.
+The foundational invariant is that *a step's output is either fully present or fully absent — never partial*. A step that writes directly to its output location and crashes midway leaves a corrupt half-file, and the next run either fails confusingly or, worse, mistakes the partial output for a completed one and skips the step. The fix is *atomic commit*: the step writes to a temporary location and atomically renames to the final location only on success. This is the same write-temp-then-rename discipline that gives filesystems and [write-ahead logs](../03-storage-engines/04-write-ahead-logging.md) their crash-atomicity.
 
-Not every failure should be retried, and conflating retriable and non-retriable failures is its own bug. A transient infrastructure failure — a network timeout, an evicted pod — should retry with exponential backoff. A spot-instance preemption should resume from checkpoint. But a *deterministic* failure — a schema mismatch, an exception in the training logic — must fail fast and page a human, because retrying it three times only wastes time and obscures the real defect. The retry policy is a classification problem, and getting the classification wrong turns a clear bug into an intermittent mystery.
+```text
+# WRONG: write in place → crash leaves a corrupt half-file the next run trusts
+write(features, "s3://bucket/features/v7/part-0001.parquet")
+
+# RIGHT: stage then atomic rename → final path appears only on success
+tmp = "s3://bucket/features/v7/_staging/run=8821/part-0001.parquet"
+write(features, tmp)
+atomic_rename(tmp, "s3://bucket/features/v7/part-0001.parquet")   # commit point
+```
+
+A relaunched pipeline then sees a clean binary state at every step — done or not done — and can safely skip completed work and resume incomplete work.
+
+Not every failure should be retried, and conflating retriable and non-retriable failures is its own bug. The retry policy is a classification problem, and getting the classification wrong turns a clear bug into an intermittent mystery:
+
+| Failure | Class | Correct response |
+|---|---|---|
+| Network timeout, throttled read | transient | retry with exponential backoff + jitter |
+| Spot-instance preemption, evicted pod | interruption | resume from last checkpoint |
+| Schema mismatch, NaN loss, code exception | deterministic | fail fast, page a human — retrying wastes hours |
+| OOM at a given batch size | deterministic-ish | fail fast; retrying unchanged repeats the crash |
+
+The trap is retrying a deterministic failure: three automatic retries of a schema mismatch burn time, bury the real error in noise, and turn a clear defect into a flaky-looking one. Retry the failures that are genuinely caused by the environment; surface the ones caused by the data or the code.
 
 For steps long enough to span failures — training itself, large feature computations — checkpoint-as-you-go extends the same logic inside the step. By persisting progress every N steps, a failed job resumes from the last checkpoint and loses at most N steps of work rather than the entire run. The checkpoint is the commit point; everything between checkpoints is work the system is willing to redo.
+
+```text
+step   1000 ── checkpoint {weights, optimizer_state, step=1000, rng_state}
+step   2000 ── checkpoint ...
+step   2730 ── ⚡ spot preemption
+             ↓
+ relaunch → load checkpoint@2000 → resume at 2001
+            lost work = 730 steps (not 2730)
+```
+
+The checkpoint interval is a tunable cost trade-off, not a constant: checkpoint too rarely and a preemption near the end discards hours; checkpoint too often and the serialization overhead taxes every run. A useful rule is to size the interval so that *expected re-done work ≈ checkpoint write cost* — if a checkpoint costs 30 seconds to write and preemptions arrive roughly hourly, checkpointing every few minutes keeps both terms small. Crucially, the checkpoint must capture *all* state needed to resume bit-identically — weights, optimizer moments, the step counter, the data-loader position, and the RNG state — or the "resumed" run silently diverges from the one that would have completed uninterrupted.
 
 ---
 
@@ -199,6 +384,15 @@ Deciding when to retrain is a risk-management question disguised as a scheduling
 
 The strategies form a clear progression of automation and risk. *Manual retraining* suits low-change or high-stakes models where a human should be in the loop for every release. *Scheduled retraining* — daily or weekly — fits domains with predictable data arrival, accepting that some runs retrain on data that has not meaningfully changed. *Triggered retraining* fires when a drift or quality metric crosses a threshold, responding to change rather than the calendar, at the cost of noisy triggers. *Continuous training* retrains and redeploys on a tight loop and belongs only to fast-moving domains with mature automation around it.
 
+| Strategy | Trigger | Fits | Prerequisite safety nets |
+|---|---|---|---|
+| Manual | human decision | high-stakes, slow-changing | review + reproducibility |
+| Scheduled | calendar (daily/weekly) | predictable data arrival | validation gates |
+| Triggered | drift/quality threshold | non-stationary domains | drift monitoring + baselines |
+| Continuous | every new data batch | fast-moving (ads, feeds) | fast monitoring + auto-rollback + full lineage |
+
+Each row down the table buys faster adaptation and adds a faster path for bad data to reach production.
+
 The critical discipline is that automation must *follow* trust, not precede it. The progression from manual to continuous retraining is not a ladder to climb as fast as possible; each rung adds a way for bad data to reach production faster. Continuous training is only safe atop real-time monitoring that detects degradation within minutes, automatic rollback that recovers within minutes, and complete lineage for every deployed artifact. A team that automates retraining before it has validation, monitoring, and rollback has not built a self-improving system; it has built a machine for amplifying its next data bug into a production incident at full speed. Most teams should sit at scheduled or triggered retraining with human-approved promotion, and earn each further step of automation by demonstrating the safety nets that justify it.
 
 ---
@@ -207,7 +401,19 @@ The critical discipline is that automation must *follow* trust, not precede it. 
 
 Training cost should be a number the team predicts before a run, not a surprise on the monthly cloud bill. The estimate is not complicated, but making it explicit changes behavior.
 
-For a single-accelerator job, cost is simply training hours times the hourly accelerator rate plus attached compute and storage. A gradient-boosted model on a hundred million rows might train in two hours on one A100 for roughly ten dollars all-in. A distributed job multiplies by device count: a two-tower retrieval model on four A100s for six hours is closer to a hundred dollars. The expense that surprises teams is *hyperparameter search*, because it multiplies the base cost by the number of trials. Fifty trials, even with early stopping that cuts each to forty percent of a full run, turns a hundred-dollar training into a multi-thousand-dollar search. Annualized, a daily scheduled retrain is a few thousand dollars; add a monthly hyperparameter search and the number jumps an order of magnitude.
+For a single-accelerator job, cost is simply training hours times the hourly accelerator rate plus attached compute and storage. A gradient-boosted model on a hundred million rows might train in two hours on one A100 for roughly ten dollars all-in. A distributed job multiplies by device count: a two-tower retrieval model on four A100s for six hours is closer to a hundred dollars. The expense that surprises teams is *hyperparameter search*, because it multiplies the base cost by the number of trials.
+
+```text
+base single run:      4 × A100 × 6 h × ~$4/h        ≈   $96
+HPO search (50 trials, early-stop to 40% avg):
+     50 × 0.40 × $96                              ≈ $1,920   ← 20× the base run
+
+annualized:
+     daily scheduled retrain:   365 × $96          ≈ $35K/yr
+     + monthly HPO search:       12 × $1,920       ≈ $23K/yr
+```
+
+A single training run looks cheap; the search around it and the cadence on top of it are where the budget actually goes. Annualized, a daily scheduled retrain is tens of thousands of dollars; add a regular hyperparameter search and the number jumps again.
 
 The operational payoff of estimating cost is not just budgeting; it is *anomaly detection*. When cost is a logged metric on every run, a sudden increase becomes an early warning — data volume grew unexpectedly, the search space expanded, a configuration drifted, a job stopped using spot instances. Cost is a proxy for "something about this pipeline changed," and a pipeline that does not watch its own cost is blind to a whole class of regressions.
 
