@@ -2,659 +2,164 @@
 
 ## TL;DR
 
-Recommendation systems are multi-stage retrieval and ranking pipelines optimized for relevance, diversity, freshness, and business constraints under tight latency budgets. The core architecture is candidate generation, ranking, re-ranking, exploration, logging, and feedback. The hardest production problems are feedback loops, cold start, stale embeddings, slice regressions, and metric mismatch.
+A recommendation system is the infrastructure that selects a handful of items from a catalog of millions and presents them in tens of milliseconds, then learns from what the user did next. The hard parts are not the models; they are the *funnel* that makes the latency budget achievable, the *feedback loop* that makes the system improve without poisoning itself, and the *logging discipline* that makes any of it measurable. Treated as a system, a recommender is a latency-bounded, multi-stage retrieval pipeline wrapped around a data-integrity problem: the system trains on data it generated, so every flaw in how it logs, explores, and de-biases that data compounds into the next model.
 
 ---
 
-## Multi-Stage Architecture
+## The Funnel Is the Architecture
 
-A single global model rarely serves the whole path. Candidate generation optimizes recall across a large corpus. Ranking optimizes precision on a small candidate set. Re-ranking applies constraints that are hard to learn or should remain policy-controlled.
+The single defining constraint of a recommender is the gap between catalog size and latency budget. A catalog has millions of items. The response must arrive in tens of milliseconds. No model that scores a million items one-by-one can meet that budget, so the entire architecture is organized around *progressive narrowing*: cheap operations reduce millions to thousands, more expensive operations reduce thousands to hundreds, and the most expensive operations touch only the few hundred items that survive.
 
 ```mermaid
 flowchart LR
-    USER["User context"] --> CAND["Candidate generation"]
-    ITEM["Item corpus"] --> CAND
-    CAND --> FILTER["Eligibility filters"]
-    FILTER --> RANK["Ranker"]
-    RANK --> RERANK["Re-ranker<br/>diversity, policy, freshness"]
-    RERANK --> RESP["Top N recommendations"]
-    RESP --> LOG["Exposure and feedback logs"]
-    LOG --> TRAIN["Training data"]
-    TRAIN --> CAND
-    TRAIN --> RANK
+    CATALOG["Catalog (10^6-10^9 items)"] --> RETRIEVE["Candidate generation<br/>cheap, recall-oriented"]
+    RETRIEVE --> RANK["Ranking<br/>expensive, precision-oriented"]
+    RANK --> RERANK["Re-ranking / policy<br/>business + diversity constraints"]
+    RERANK --> SERVE["Final list (10^1 items)"]
 ```
 
-### Why Multi-Stage?
+This is the same principle that governs any system facing an impossible per-item cost at scale: you do not make the expensive operation faster, you make sure it runs on far fewer items. A database does this with an index that turns a full-table scan into a B-tree lookup; a recommender does it with a retrieval stage that turns a full-catalog scan into an approximate-nearest-neighbor lookup. The funnel exists because the cost asymmetry between stages is enormous — retrieval might spend microseconds per item while ranking spends milliseconds — and the only way to afford the precise stage is to feed it a short list.
 
-A single model scoring millions of items per request is impossible at production latency. The stages solve different problems:
-
-| Stage | Problem | Input size | Output size | Metric |
-|---|---|---|---|---|
-| Candidate generation | Recall | Millions | Hundreds | Recall@K |
-| Ranking | Precision | Hundreds | Tens | NDCG, AUC |
-| Re-ranking | Constraints | Tens | Tens | Business metrics |
+The consequence that teams underappreciate is that **each stage has a different objective, and conflating them is a design error.** Retrieval optimizes for *recall*: it must not miss the good items, and it tolerates including mediocre ones because a later stage will filter them. Ranking optimizes for *precision*: given a small, already-decent set, it orders them as accurately as possible. Re-ranking optimizes for *constraints* the score ignores: diversity, freshness, business rules, fairness. A team that tries to make retrieval precise pays for ranking-quality computation across the whole catalog and blows the latency budget; a team that relies on ranking to fix retrieval's misses never recovers an item retrieval failed to surface. The stages are specialized on purpose.
 
 ---
 
-## Candidate Generation
+## Candidate Generation: Recall Under a Microsecond Budget
 
-Candidate generation reduces millions or billions of items to hundreds or thousands.
+Candidate generation answers one question — *which few thousand of these millions of items are even worth scoring?* — and it must answer in roughly a millisecond. The dominant pattern is *embedding retrieval*: represent the user and every item as vectors in a shared space, and retrieve the items whose vectors are closest to the user's. The modeling technique that produces those vectors (a two-tower network, matrix factorization, a graph embedding) is interchangeable; the *system* property that matters is that the item vectors can be precomputed and indexed, so serving-time work is reduced to a single vector lookup.
 
-| Strategy | Strength | Weakness |
-|---|---|---|
-| Collaborative filtering | Learns behavior similarity | Cold-start users/items |
-| Content-based retrieval | Works for new items with metadata | Can be narrow and repetitive |
-| Approximate nearest neighbor | Fast vector retrieval | Embedding freshness and index rebuilds |
-| Popular/trending lists | Simple fallback | Popularity bias |
-| Graph traversal | Captures social or entity structure | Expensive and can overfit communities |
-| Rules/editorial pools | High control | Low personalization |
+This precomputation is what makes retrieval affordable. Item embeddings change slowly, so they are computed in a batch job and loaded into an index. The user embedding is computed once per request. Retrieval then becomes "find the nearest item vectors to this user vector" — and crucially, that search is *approximate*. Exact nearest-neighbor search over millions of vectors is too slow; approximate-nearest-neighbor (ANN) indexes like HNSW and IVF-PQ trade a small, tunable amount of recall for one to two orders of magnitude in speed. The engineering decision is explicit: how much recall are you willing to lose to hit the latency target? An ANN index that returns 95% of the true top-K in 1ms is almost always a better system than an exact index that returns 100% in 50ms, because the lost 5% are largely re-surfaced by other retrieval sources and the latency saving funds the rest of the funnel.
 
-Most large systems blend multiple candidate sources and record the source for each candidate. Source attribution makes debugging and exploration possible.
-
-### Two-Tower Retrieval (YouTube DNN Style)
-
-The most common production retrieval architecture today is the two-tower model:
-
-```mermaid
-flowchart LR
-    subgraph User Tower
-        UF["User features<br/>history, demos, context"] --> UT["User tower<br/>DNN"]
-        UT --> UE["User embedding<br/>d=256"]
-    end
-
-    subgraph Item Tower
-        IF["Item features<br/>title, category, stats"] --> IT["Item tower<br/>DNN"]
-        IT --> IE["Item embedding<br/>d=256"]
-    end
-
-    UE --> DOT["Dot product / cosine"]
-    IE --> DOT
-    DOT --> SCORE["Relevance score"]
-```
-
-The user tower runs online. The item tower runs offline (or is precomputed) and stored in an ANN index. At serving time, the user embedding is computed once and used to query the index.
-
-```python
-# Simplified two-tower training
-import torch
-import torch.nn as nn
-
-class TwoTower(nn.Module):
-    def __init__(self, user_dim, item_dim, emb_dim=256):
-        super().__init__()
-        self.user_tower = nn.Sequential(
-            nn.Linear(user_dim, 512), nn.ReLU(),
-            nn.Linear(512, 256),  nn.ReLU(),
-            nn.Linear(256, emb_dim)
-        )
-        self.item_tower = nn.Sequential(
-            nn.Linear(item_dim, 512), nn.ReLU(),
-            nn.Linear(512, 256),  nn.ReLU(),
-            nn.Linear(256, emb_dim)
-        )
-        self.temperature = nn.Parameter(torch.tensor(0.07))
-
-    def compute_embeddings(self, user_features, item_features):
-        user_emb = self.user_tower(user_features)
-        item_emb = self.item_tower(item_features)
-        # Normalize to unit sphere for cosine similarity
-        user_emb = nn.functional.normalize(user_emb, dim=1)
-        item_emb = nn.functional.normalize(item_emb, dim=1)
-        return user_emb, item_emb
-
-    def forward(self, user_features, item_features):
-        user_emb, item_emb = self.compute_embeddings(user_features, item_features)
-        # In-batch softmax: positive is diagonal, negatives are other items in batch
-        logits = user_emb @ item_emb.T / self.temperature
-        labels = torch.arange(len(logits))  # diagonal
-        loss = nn.functional.cross_entropy(logits, labels)
-        return loss
-```
-
-In-batch negatives are the standard training trick: every other item in the batch becomes a negative example for free. This avoids materializing explicit negatives at the cost of popularity bias (popular items appear more often as negatives, pushing them down).
-
-### ANN Index at Serving Time
-
-Once item embeddings are trained, they are indexed for fast approximate nearest neighbor search:
-
-```python
-# Indexing item embeddings (simplified)
-import faiss
-import numpy as np
-
-# item_embeddings: (num_items, emb_dim) precomputed offline
-item_embeddings = np.random.randn(10_000_000, 256).astype('float32')
-
-# Build IVF index — clusters embeddings into centroids for fast lookup
-nlist = 4096  # number of clusters
-quantizer = faiss.IndexFlatIP(256)  # inner product = cosine on normalized vectors
-index = faiss.IndexIVFFlat(quantizer, 256, nlist, faiss.METRIC_INNER_PRODUCT)
-index.train(item_embeddings)
-index.add(item_embeddings)
-
-# At serving time: user_emb is computed online
-user_emb = np.random.randn(1, 256).astype('float32')
-nprobe = 64  # search this many clusters
-index.nprobe = nprobe
-distances, item_ids = index.search(user_emb, k=500)
-
-# Expected latency: ~5-15 ms on a single CPU core for 10M items, 256 dims
-```
-
-The trade-off: more `nprobe` clusters = higher recall, higher latency. Fewer `nlist` = faster index build, coarser quantization. Most teams tune `nprobe` as a recall-vs-latency dial and monitor recall@K against exact brute-force search.
-
-### Multi-Source Blending
-
-Real systems don't rely on one source. YouTube, Instagram, and Netflix all blend:
-
-```
-Final candidates = ANN retrieval (50%) + trending (15%) + social graph (15%) + new items (10%) + editorial (10%)
-```
-
-Each source's contribution is logged per candidate. If a slice degrades, source attribution tells you which pipeline broke.
+Mature systems do not retrieve from a single source. They *blend* — an embedding-based source for personalized relevance, a popularity source so new users get something reasonable, a freshness source so recent items get exposure, a graph source for "users like you also engaged with." Each source is a recall strategy with different failure modes, and blending them is a hedge: the embedding source fails for cold users, the popularity source fails to personalize, and the union covers for both. This is a deliberately redundant design, the recommender equivalent of combining multiple indexes because no single access path serves every query.
 
 ---
 
-## Ranking Layer
+## Ranking: Precision on a Short List
 
-The ranker scores candidates using user, item, context, and interaction features.
+Once retrieval has narrowed the catalog to a few hundred or few thousand candidates, ranking can afford to be expensive, because it runs on a short list. This inversion is the whole point of the funnel: the per-item budget grew by orders of magnitude precisely because the item count shrank by orders of magnitude. Ranking can now use rich cross-features between the user and each candidate — features that would have been impossibly expensive to compute across the full catalog.
 
-```mermaid
-flowchart TD
-    U["User features<br/>demographics, history, embeddings"] --> R["Ranking model"]
-    I["Item features<br/>title, category, freshness, stats"] --> R
-    C["Context features<br/>time, device, location, session"] --> R
-    X["Cross features<br/>user-item affinity, bucketized interactions"] --> R
-    R --> S["Score"]
-```
+The system-design substance of ranking is not the model architecture; it is *feature hydration*. To score a candidate, the ranker needs features about the user, the item, and their interaction, and those features live in different stores with different latencies. Fetching them naively — one round trip per candidate per feature — turns a few hundred candidates into thousands of sequential lookups and destroys the latency budget. The fix is the same batching-and-caching discipline that governs any latency-bounded service: fetch user features once per request (not once per candidate), batch all item-feature lookups into a single multi-get, cache hot item features in memory, and compute the model forward pass over the whole batch at once. The ranker's quality is bounded by the model, but its *latency* is bounded by how disciplined the feature hydration is, and hydration is where ranking systems most often miss their budget.
 
-### Wide & Deep Architecture (Google Play)
-
-The canonical ranking architecture from Google's 2016 paper:
-
-```python
-# Wide & Deep ranking model (simplified)
-class WideAndDeep(nn.Module):
-    def __init__(self, num_categorical, num_continuous, emb_dims, hidden=[1024, 512, 256]):
-        super().__init__()
-        # Deep part: embeddings + MLP
-        self.embeddings = nn.ModuleList([
-            nn.Embedding(vocab_size, dim) for vocab_size, dim in emb_dims
-        ])
-        deep_input_dim = sum(dim for _, dim in emb_dims) + num_continuous
-        layers = []
-        prev = deep_input_dim
-        for h in hidden:
-            layers.extend([nn.Linear(prev, h), nn.ReLU(), nn.Dropout(0.2)])
-            prev = h
-        self.deep = nn.Sequential(*layers)
-
-        # Wide part: linear on raw features + cross-product transformations
-        wide_input_dim = num_categorical + num_continuous  # simplified
-        self.wide = nn.Linear(wide_input_dim, 1)
-
-        # Final layer
-        self.final = nn.Linear(hidden[-1] + 1, 1)
-
-    def forward(self, categorical, continuous, wide_features):
-        # Deep path
-        embs = [emb(categorical[:, i]) for i, emb in enumerate(self.embeddings)]
-        deep_in = torch.cat(embs + [continuous], dim=1)
-        deep_out = self.deep(deep_in)
-
-        # Wide path: memorization of feature crosses
-        wide_out = self.wide(wide_features)
-
-        # Combine
-        combined = torch.cat([deep_out, wide_out], dim=1)
-        return torch.sigmoid(self.final(combined))
-```
-
-The wide part memorizes specific feature interactions (e.g., "user installed app X AND app Y" → high probability of installing Z). The deep part generalizes to unseen feature combinations. This is the fundamental trade-off: memorization vs. generalization.
-
-### Ranking Objective Design
-
-Ranking models optimize a predicted metric: click, watch time, purchase, retention. The chosen objective shapes user behavior — it is a product and safety decision, not only an ML decision.
-
-```python
-# Click-through rate: standard binary cross-entropy
-loss_ctr = nn.BCELoss()(pred, click_label)
-
-# Watch time (YouTube): weighted logistic regression
-# Weight each positive by watch time, negatives by 1.0
-weights = watch_time_label * click_label + 1.0 * (1 - click_label)
-loss_watch_time = nn.BCEWithLogitsLoss(weight=weights)(logit, click_label)
-
-# Multi-task: predict click + completion + satisfaction simultaneously
-class MultiTaskRanker(nn.Module):
-    def __init__(self, shared_dim, task_names):
-        super().__init__()
-        self.shared = nn.Sequential(
-            nn.Linear(shared_dim, 512), nn.ReLU(),
-            nn.Linear(512, 256), nn.ReLU()
-        )
-        self.tasks = nn.ModuleDict({
-            name: nn.Linear(256, 1) for name in task_names
-        })
-
-    def forward(self, features):
-        shared = self.shared(features)
-        return {name: head(shared) for name, head in self.tasks.items()}
-
-# Loss: weighted sum of task losses
-# Task weights are tuned via grid search or learned (uncertainty weighting)
-```
-
-Multi-task learning is the norm in production ranking. A YouTube-style system might jointly predict click, watch time, like, share, and survey satisfaction. The shared bottom layers learn representations useful for all tasks, while task-specific heads specialize.
+A subtle and important point is that ranking systems increasingly optimize *multiple objectives at once* — not just "will the user click" but "will they engage deeply, will they be satisfied tomorrow, will this harm long-term retention." The reason this is a system concern and not just a modeling one is that each objective needs its own logged signal, its own label-delay window, and its own weight in the final score, and those weights are *policy*, tuned through experimentation, not learned. The decision to weight long-term satisfaction over immediate clicks is a business decision encoded in the serving layer, and keeping it explicit and tunable — rather than buried in a loss function — is what lets a team adjust the system's behavior without retraining.
 
 ---
 
-## Re-Ranking and Policy Layer
+## Re-Ranking: Where Policy Becomes Explicit
 
-The highest-scoring list is not always the best list.
+The ranker produces a relevance-ordered list. Shipping that list directly is almost always wrong, because pure relevance ignores everything the business and the user care about beyond immediate relevance: diversity, freshness, fairness, de-duplication, and hard rules. Re-ranking is the stage where those constraints become explicit, operating on the final short list where their cost is affordable.
 
-Re-ranking may enforce:
+Diversity is the canonical example and reveals why re-ranking is its own stage. A purely relevance-ordered list tends to be monotonous — ten variations of the same item the user clicked once — because each individually scores well. But a list of ten near-identical items is worse for the user than a varied list of slightly-lower-scoring items, and no per-item relevance score captures that, because the badness is a property of the *set*, not of any item. Re-ranking optimizes the set: it balances relevance against the marginal diversity each item adds, whether through a determinantal point process, a greedy diversity penalty, or explicit category quotas. The mechanism matters less than the architectural point — *set-level objectives require a set-level stage*, and that stage must come after per-item ranking because it operates on the chosen few.
 
-- Diversity across categories, creators, price bands, or topics.
-- Freshness for news, feeds, and marketplaces.
-- Deduplication and near-duplicate removal.
-- Safety or policy suppression.
-- Inventory fairness or seller exposure constraints.
-- Business constraints such as availability, margin, or campaign rules.
-- Exploration slots for learning.
-
-Keep these controls explicit. If every constraint is hidden inside a model objective, rollback and policy review become difficult.
-
-### Determinantal Point Processes (DPP) for Diversity
-
-A common approach to diversity re-ranking:
-
-```python
-# Simplified greedy DPP for diversity
-import numpy as np
-
-def dpp_greedy(item_scores, item_embeddings, k, diversity_weight=0.3):
-    """
-    Greedy maximum a posteriori (MAP) inference for DPP.
-    Balances relevance (score) and diversity (embedding cosine distance).
-    """
-    n = len(item_scores)
-    selected = []
-    candidates = list(range(n))
-
-    for _ in range(k):
-        best_idx = None
-        best_score = -float('inf')
-
-        for i in candidates:
-            relevance = item_scores[i]
-
-            # Diversity penalty: max similarity to already-selected items
-            if selected:
-                selected_embs = item_embeddings[selected]
-                similarities = selected_embs @ item_embeddings[i]
-                diversity_penalty = diversity_weight * np.max(similarities)
-            else:
-                diversity_penalty = 0.0
-
-            combined = relevance - diversity_penalty
-            if combined > best_score:
-                best_score = combined
-                best_idx = i
-
-        if best_idx is not None:
-            selected.append(best_idx)
-            candidates.remove(best_idx)
-
-    return selected
-```
-
-In practice, DPP and similar diversity algorithms are applied as a final pass over the top 50-100 candidates, adding ~1-2 ms to the re-ranking budget.
+Re-ranking is also where hard business rules live, and keeping them here rather than in the model is deliberate. "Never show out-of-stock items," "respect this regulatory restriction," "honor this user's blocklist," "don't repeat what they saw an hour ago" — these are constraints that must be *guaranteed*, not learned as soft tendencies. A model can be coaxed toward a behavior; only an explicit policy filter can promise it. Putting these rules in a transparent, auditable re-ranking layer means they can be reasoned about, changed without retraining, and verified — which is exactly what compliance and product teams need.
 
 ---
 
-## Latency Budget
+## The Feedback Loop Is the Real System
 
-A concrete budget for a feed recommendation system:
+Everything above describes serving a single request. The property that makes a recommender a *system* — and the source of its deepest failure modes — is that it trains on data it produced. The model decides what to show; the user reacts only to what was shown; that reaction becomes training data for the next model. This closed loop is what lets a recommender improve continuously, and it is also what lets a recommender quietly destroy itself.
 
-```text
-Total p99 budget: 150 ms
+The foundational requirement of the loop is *honest logging of what the user was actually shown*. Most engagement data answers "what did the user click," but the question the model needs is "what did the user click *given the specific set of options presented, in the specific order, by the specific model version*." A click on the top item means something very different from a click on the tenth, and a non-click on an item the user never scrolled to is not a signal of dislike — it is no signal at all. The *exposure log* is therefore the most important data artifact in the entire system: for every request it records what was shown, in what positions, by which model and policy version, under which experiment, and what the user did with each. Without this, the system cannot compute unbiased metrics, cannot train a calibrated model, and cannot attribute a behavior change to a model change.
 
-User/context fetch        20 ms
-Candidate generation      45 ms
-Eligibility filters       15 ms
-Feature hydration         25 ms
-Ranking                   25 ms
-Re-ranking                10 ms
-Response/logging          10 ms
-```
-
-Feature hydration is often the bottleneck. If the ranker needs hundreds of per-user-per-item features, ranking 1,000 candidates can overwhelm the feature store. Precompute item features, cache hot user features, and reserve request-time features for the highest-value signals.
-
-### Feature Hydration Optimization
-
-```python
-# DON'T: fetch features for every candidate individually
-for candidate in candidates:
-    item_features = feature_store.get(candidate.item_id)  # 1000 network calls
-    user_features = feature_store.get(user_id)             # redundant
-
-# DO: batch fetch item features, cache user features
-item_ids = [c.item_id for c in candidates]
-item_features = feature_store.batch_get(item_ids)  # 1 network call
-user_features = user_cache.get(user_id)             # local cache
-
-# Feature budget calculation:
-# - 1000 candidates × 50 features each = 50,000 feature values
-# - If feature store p99 is 5 ms per batch of 100 keys:
-#   1000 / 100 = 10 batches × 5 ms = 50 ms — already 1/3 of budget
-# Mitigation: precompute item features in the index, only fetch at request time
-#   for user features (50 features) + cross features (user × item affinity)
-```
+This logging carries the same lineage burden as any auditable system. The exposure record must pin the model version and policy version that produced it, because months later, debugging a regression requires knowing exactly which model showed what. A recommender without disciplined exposure logging is in the same position as a training pipeline without lineage: it works until something breaks, at which point no one can explain what happened or roll it back.
 
 ---
 
-## Feedback Logging
+## Why the Loop Poisons Itself, and How to Stop It
 
-Recommendation systems need more than clicks.
+A recommender trained naively on its own logs degrades in characteristic, well-documented ways. Understanding these failure trajectories matters more than any single countermeasure, because they all stem from the same root: *the model only sees feedback on items it chose to show, so it cannot learn about the items it didn't.*
 
-Log:
+**Popularity bias** is the gravitational pull of the loop. Popular items get shown more, so they accumulate more positive feedback, so the model ranks them higher, so they get shown even more. Left unchecked, the system collapses toward a small set of blockbusters and the long tail goes dark — not because users dislike tail items, but because the system stopped giving them a chance to express interest. The defense is to *correct for exposure* in training: down-weight feedback in proportion to how often an item was shown, so an item that earned engagement despite rare exposure is recognized as genuinely good rather than merely lucky to be popular.
 
-- Candidate IDs shown and not shown.
-- Rank position and page/surface.
-- Candidate source.
-- Model and policy version.
-- User context and eligibility filters.
-- Impressions, clicks, dwell time, conversions, hides, reports.
-- Timestamp and session context.
+**The filter bubble** is the same dynamic applied to a single user. The system learns a user likes one category, shows more of it, gets more confirmation, and narrows relentlessly until the user sees only that category and the system has no idea what else they might enjoy. The defense is the diversity constraint in re-ranking plus deliberate exploration — the system must occasionally show something outside its confident prediction to keep learning.
 
-Without exposure logs, you cannot distinguish "user did not like it" from "user never saw it."
+**Position bias** corrupts the labels themselves. Items at the top of the list get more clicks *because* they are at the top, independent of relevance. A model that treats a top-position click as pure relevance signal learns position, not quality, and the bias compounds. The defense is to model position explicitly — log the position, account for it during training so the model learns relevance net of position, and serve as if every item were in a neutral slot.
 
-### Exposure Log Schema
+**Objective hacking** is the failure of optimizing a proxy. A system tuned purely for immediate clicks learns to show clickbait — items that earn the click and betray it. The metric improves while the product degrades, because the metric was never the goal, only a measurable stand-in for it. The defense is guardrail metrics and long-term objectives: optimize for engagement that predicts satisfaction and retention, and block any model that improves clicks while harming the guardrails.
 
-```yaml
-exposure_log:
-  request_id: "req_abc123"
-  timestamp_ms: 1719705600000
-  user_id: "user_456"
-  surface: "home_feed"
-  experiment_id: "exp_rank_v42"
-  model_version: "ranker_v17"
-  policy_version: "policy_v9"
-  candidates:
-    - item_id: "video_789"
-      rank: 1
-      source: "ann_retrieval"
-      score: 0.923
-      shown: true
-    - item_id: "video_101"
-      rank: 2
-      source: "trending"
-      score: 0.891
-      shown: true
-    - item_id: "video_202"
-      rank: 3
-      source: "ann_retrieval"
-      score: 0.845
-      shown: true
-      # filtered by diversity re-ranker, still logged
-      # user scrolled past, also logged
-  feedback:
-    - item_id: "video_789"
-      impression: true
-      click: true
-      dwell_time_ms: 45000
-      completed: false
-      share: false
-    - item_id: "video_101"
-      impression: true
-      click: false
-```
-
-Exposure logs are the foundation for debiasing training data, computing position-adjusted metrics, and debugging regressions. Store them in a columnar format (Parquet, BigQuery) for efficient analysis.
+The unifying lesson is that **a recommender cannot be trusted to optimize its own training data without explicit countermeasures**, because the loop rewards every shortcut. Exposure correction, diversity constraints, position de-biasing, and guardrail metrics are not refinements; they are the load-bearing structure that keeps the loop from converging on a degenerate equilibrium.
 
 ---
 
-## Exploration
+## Exploration: Paying to Stay Informed
 
-Pure exploitation makes the system self-confirming. The model keeps showing what it already believes is good, so it stops learning about alternatives.
+The feedback loop has a fundamental blind spot: the system never learns about items or matches it never tries. If the model is uncertain whether a user would like a new category, the safe play is to keep showing what it already knows works — but that certainty is self-fulfilling, because the only way to reduce the uncertainty is to show the thing and observe the reaction. A purely exploitative system optimizes itself into ignorance.
 
-Common exploration strategies:
+Exploration is the deliberate decision to sometimes show an item the model is *unsure* about rather than the item it is most confident in, accepting a small short-term cost to gather information that improves long-term decisions. The simplest form perturbs a fraction of slots with random or under-explored candidates; more sophisticated forms allocate exploration in proportion to uncertainty, concentrating it where the information payoff is highest. The system-design requirement underneath all exploration strategies is the same: *exploration must be logged as exploration.* When the system shows an item because it was exploring rather than because it scored highest, the resulting feedback has different statistical properties, and using it correctly — for unbiased evaluation, for off-policy learning — requires knowing it was exploratory. Exploration without logging is just noise injected into the metrics.
 
-| Strategy | Use when | Risk |
-|---|---|---|
-| Epsilon-greedy | Simple exploration slots | Can hurt experience if random pool is weak |
-| Thompson sampling | Need adaptive exploration | Harder to explain and debug |
-| UCB | Need uncertainty-aware ranking | Requires reliable uncertainty estimates |
-| Stratified exploration | Need coverage across item/user slices | More operational setup |
-| Editorial exploration pools | Need quality-controlled discovery | Less automated learning |
-
-### Epsilon-Greedy with Logging
-
-```python
-import random
-
-def rank_with_exploration(candidates, ranker, epsilon=0.02):
-    """
-    Epsilon-greedy: with probability epsilon, insert a random item
-    into the top K positions and log exploration.
-    """
-    ranked = ranker.score_and_sort(candidates)
-    top_k = ranked[:20]
-
-    if random.random() < epsilon:
-        # Pick a random slot in top K to replace
-        slot = random.randint(0, min(4, len(top_k) - 1))  # explore in top 5
-        explore_candidate = random.choice(candidates)
-        explore_candidate.exploration = True
-        explore_candidate.source = "exploration_epsilon"
-        top_k[slot] = explore_candidate
-
-    return top_k
-```
-
-Exploration should have budgets and guardrails. Randomness without policy is not experimentation. A reasonable starting point: 1-2% exploration traffic for well-established surfaces, higher (5-10%) for new surfaces building their initial feedback data.
+The economic framing is useful: exploration is the system spending a known, bounded amount of current engagement to buy information that prevents the filter-bubble and popularity-collapse failures. A system that refuses to spend it saves money today and goes blind tomorrow.
 
 ---
 
-## Cold Start
+## Cold Start: The Loop Has No History to Stand On
 
-| Problem | Mitigation |
-|---|---|
-| New user | Ask preferences, use context, geography, device, referrer, trending fallback |
-| New item | Content embeddings, metadata, creator history, controlled exploration |
-| New market | Global prior plus local exploration budget |
-| Sparse domain | Hybrid rules and content retrieval before collaborative signals mature |
+The feedback loop assumes history, so it breaks precisely where history is absent: new users and new items. This is not an edge case to be patched later; it is a structural gap that every recommender must design around, because new users and items arrive continuously.
 
-### New Item Cold Start Pipeline
+A new item has no embedding learned from interactions, so the embedding-retrieval source cannot surface it — and if it is never surfaced, it never earns the interactions that would give it an embedding, a chicken-and-egg deadlock that exploration alone is too slow to break. The system-level fix is to bootstrap the new item from *content* rather than behavior: derive an initial embedding from its metadata, category, and text so it can be retrieved on day one, then let interaction data progressively refine it. New items also need a deliberate exploration budget — a guaranteed slice of exposure — precisely because the loop would otherwise starve them.
 
-```python
-def new_item_candidate_generation(new_item, item_corpus, user_context):
-    """
-    Blend multiple signals for new items with no interaction history.
-    """
-    candidates = []
-
-    # 1. Content-based: use item metadata embedding
-    content_emb = text_encoder.encode(new_item.title + " " + new_item.description)
-    similar_items = ann_index.search(content_emb, k=50)
-    candidates.extend(similar_items)
-
-    # 2. Creator affinity: users who liked this creator's past items
-    creator_items = creator_index.get(new_item.creator_id, top_k=20)
-    candidates.extend(creator_items)
-
-    # 3. Freshness boost: all items published in last 24h get a slot
-    fresh_items = recent_items_store.get(hours=24, limit=20)
-    candidates.extend(fresh_items)
-
-    # 4. Guaranteed exploration: allocate 1 slot in top N for new items
-    # This ensures the item gets at least some impressions to gather feedback
-
-    return deduplicate_and_merge(candidates)
-```
-
-Cold-start fallback quality determines whether the system can bootstrap new inventory and new users. The exploration budget for new items is a product decision: too aggressive and users see irrelevant content; too conservative and new creators never get distribution.
+A new *user* presents the mirror problem: the system has nothing to personalize on. The honest design acknowledges this and degrades gracefully — lean on popularity and context (location, device, time, referral) rather than fabricating personalization, and treat the first session as an intensive exploration window to learn preferences quickly. The architectural point is that the blended, multi-source retrieval design pays off exactly here: the popularity and content sources carry the experience while the personalized source has nothing to say, and the system stays useful through the gap.
 
 ---
 
-## Embedding Freshness
+## Embedding Freshness: A Cache-Invalidation Problem
 
-Candidate retrieval uses precomputed embeddings. Stale embeddings produce irrelevant recommendations.
+Item embeddings are precomputed and indexed, which is what makes retrieval fast — but precomputation means the index is a *cache*, and like every cache it can go stale. An item whose nature changed, a trend that shifted, a new item awaiting its first index build: each is a case where the served vectors no longer reflect reality, and the system silently retrieves on outdated representations.
 
-```text
-Embedding freshness lifecycle:
+This reframes embedding freshness as the classic cache-invalidation trade-off. Rebuilding the entire index from scratch is simple and correct but slow and expensive, so it cannot run often, which means it leaves a long staleness window. Incrementally updating only changed and new items keeps the index fresh at much lower cost but adds the complexity of tracking what changed and reconciling incremental updates against periodic full rebuilds. The right design is usually both: frequent incremental updates to keep new and changed items current, plus periodic full rebuilds to correct the drift that incremental updates accumulate. The decision of how fresh the index must be is a domain question — a news recommender measures staleness tolerance in minutes, a movie recommender in days — and it sets the entire freshness architecture.
 
-1. Item embedding computed offline: daily batch job
-2. User embedding computed online: per request
-3. Item index rebuilt: daily (full rebuild) or incremental (streaming)
-4. New item embedding: computed on publish, added to index within minutes
+---
 
-Freshness SLOs:
-- Item embedding: < 24 hours for stable items, < 5 minutes for new items
-- User embedding: computed per request (always fresh)
-- Index rebuild: < 2 hours (daily batch), < 1 minute (incremental adds)
-```
+## The Latency Budget Is a System Contract
 
-### Incremental Index Update
+The funnel exists to meet a latency budget, and that budget is best treated as an explicit contract allocated across stages. A typical end-to-end budget of a few tens of milliseconds must cover candidate generation, feature hydration, ranking inference, and re-ranking, and every stage spends against the same fixed account. When a stage overspends, the system must shed work gracefully rather than blow the budget — return fewer candidates, skip an expensive re-ranking pass, serve a cached result — because a recommendation that arrives too late is worse than a slightly less perfect one that arrives on time.
 
-```python
-# Full rebuild: daily, replaces the entire index
-# Incremental: add new items, remove deleted items
-
-def incremental_index_update(index, new_items, deleted_ids):
-    """Add new item embeddings to the index without full rebuild."""
-    for item in new_items:
-        emb = item_embedding_tower.encode(item.features)
-        index.add_with_ids(np.array([emb]), np.array([item.id]))
-    for item_id in deleted_ids:
-        index.remove_ids(np.array([item_id]))
-    return index
-
-# Monitoring: if incremental drift exceeds threshold, trigger full rebuild
-# Compare recall@K of incremental vs full index on a query sample
-```
+The dominant cost is usually not model inference; it is feature hydration, the I/O of gathering the features each stage needs. This mirrors the lesson from training pipelines, where I/O dominates compute: the expensive part of a recommender at serving time is moving data — fetching user features, item features, and interaction features from their respective stores — not the matrix multiplications. Consequently the highest-leverage latency optimizations are the data-movement ones: cache hot features in memory, batch all lookups, precompute what can be precomputed, and co-locate features with the serving path. A team that profiles a slow recommender almost always finds the time in the fetches, not the forward pass.
 
 ---
 
 ## Failure Modes
 
-### Popularity Bias
+The recurring failures of recommender systems are, almost without exception, failures of the feedback loop rather than the model.
 
-Popular items receive more exposure, gather more feedback, and become even more popular.
+**Popularity collapse** is the system converging on a handful of blockbusters as the loop amplifies exposure into engagement into more exposure. The tail goes dark and the catalog effectively shrinks. Defense: exposure-corrected training and a guaranteed exploration budget for the tail.
 
-Mitigation: exploration slots, debiased training data, source quotas, and slice-level exposure monitoring.
+**The filter bubble** is per-user collapse — the system narrows a user's experience to a single confirmed interest until it knows nothing else about them. Defense: diversity constraints in re-ranking and deliberate per-user exploration.
 
-The in-batch negative sampling used in two-tower training amplifies this: popular items appear more often as negatives. Mitigation techniques:
+**Position-bias contamination** is the model learning that top position causes clicks and optimizing for a signal that is mostly an artifact of its own ordering. Defense: log positions and de-bias them in training.
 
-```python
-# Logit correction for in-batch negative sampling bias
-# Each item's logit is adjusted by its estimated sampling probability
-import math
+**Objective hacking** is the model maximizing a proxy metric while degrading the real product — clickbait that earns the click and loses the user. Defense: long-term objectives and guardrail metrics that block click-improving, satisfaction-harming models.
 
-def corrected_logits(logits, item_frequencies, batch_items):
-    """
-    Subtract log(item_frequency) to correct for popularity bias in negatives.
-    Items that appear frequently in batches get a penalty.
-    """
-    freqs = item_frequencies[batch_items]
-    correction = torch.log(torch.clamp(freqs, min=1e-8))
-    return logits - correction
-```
+**Stale embeddings** are the silent retrieval failure: the index serves vectors that no longer reflect items or trends, and the degradation is invisible because nothing errors. Defense: incremental index updates plus periodic full rebuilds, sized to the domain's freshness tolerance.
 
-### Filter Bubble
-
-The system over-personalizes and narrows the user's experience.
-
-Mitigation: diversity constraints, long-term satisfaction metrics, novelty budgets, and user controls.
-
-### Objective Hacking
-
-The model optimizes a proxy metric like click-through rate while harming retention, trust, or satisfaction.
-
-Mitigation: guardrail metrics, long-term metrics, negative feedback, and human review of top-ranked examples.
-
-### Stale Embeddings
-
-Candidate retrieval uses old embeddings for users or items, so candidates become irrelevant.
-
-Mitigation: embedding freshness SLOs, incremental index updates, fallback retrieval sources, and index rollback.
-
-### Position Bias
-
-Items shown higher get more clicks regardless of relevance.
-
-Mitigation: randomized interleaving, position-aware models, exploration logs, and counterfactual evaluation where appropriate.
-
-```python
-# Position-aware model: add position as a feature during training
-# but set it to a constant (e.g., position=1) at inference time
-class PositionAwareRanker(nn.Module):
-    def __init__(self, feature_dim, max_position=100):
-        super().__init__()
-        self.position_embedding = nn.Embedding(max_position + 1, 16)
-        self.mlp = nn.Sequential(
-            nn.Linear(feature_dim + 16, 256), nn.ReLU(),
-            nn.Linear(256, 128), nn.ReLU(),
-            nn.Linear(128, 1)
-        )
-
-    def forward(self, features, position):
-        pos_emb = self.position_embedding(position)
-        combined = torch.cat([features, pos_emb], dim=1)
-        return self.mlp(combined)
-
-    def predict(self, features):
-        """At inference, fix position to 1 (top position)."""
-        position = torch.ones(len(features), dtype=torch.long)
-        return self.forward(features, position)
-```
+Every one of these passes through production unnoticed unless the system is explicitly instrumented to catch it, which is why a recommender's monitoring must track catalog coverage, diversity, and long-term outcomes — not just the click-through rate that all of these failures can improve while the system rots.
 
 ---
 
-## Metrics
+## Metrics: Why Offline Numbers Mislead
 
-| Layer | Metrics |
-|---|---|
-| Retrieval | Recall@K, source contribution, candidate freshness, ANN latency |
-| Ranking | NDCG, MAP, AUC, calibration, score distribution |
-| Online | CTR, conversion, dwell time, retention, hides/reports |
-| Diversity | Category coverage, creator coverage, novelty, repetition rate |
-| Fairness/slices | Exposure by segment, quality by segment, cold-start success |
-| Operations | p99 latency, cache hit rate, feature-store load, index freshness |
+Recommender metrics form a hierarchy, and the danger is mistaking a lower rung for the top one. Offline metrics — does the model rank held-out engaged items highly — are cheap and fast but systematically optimistic, because they are computed on logged data that the *old* model generated, and they cannot observe how users would react to recommendations the old model never made. A model that looks better offline can perform worse online precisely because offline evaluation is blind to the counterfactual.
 
-Offline ranking metrics are useful for iteration. Online experiments decide production impact.
-
-### Metric Hierarchy
-
-```
-Primary:    Long-term retention (monthly active users)
-Guardrail:  Hides/reports rate < 0.5%, creator coverage > 80%
-Diagnostic: CTR, dwell time, diversity score, session length
-Slice:      New user retention, new creator exposure, per-language quality
-```
-
-If a model improves CTR by 5% but drops retention by 2%, the model does not ship. Guardrail metrics block promotion even when the primary metric looks good.
+Online metrics from controlled experiments are the real measure, but even here the hierarchy matters: immediate engagement (clicks) is easy to move and easy to hack, while the metrics that actually matter — long-term satisfaction, retention, diversity of consumption — are slower, noisier, and harder to attribute. The discipline is to treat immediate engagement as a *guarded* primary metric: promote on it only when guardrail metrics confirm the system is not buying short-term clicks with long-term harm. This is the same promotion-gate philosophy that governs any consequential ML rollout (see [Online Experiments](./08-online-experiments.md) and [ML Risk & Governance](./09-ml-risk-governance.md)) — the metric you optimize must be guarded by the metrics you refuse to sacrifice.
 
 ---
 
 ## When to Use
 
-Use recommendation systems when users face a large item space, relevance varies by user/context, and feedback can be logged safely.
+A recommendation system earns its considerable complexity when users face a large item space, relevance genuinely varies by user and context, and feedback can be logged and acted on safely. The funnel, the feedback loop, and the de-biasing machinery are all justified by scale and personalization need.
 
-Avoid heavy personalization when inventory is tiny, deterministic rules are more explainable, feedback is too sparse, or the system cannot tolerate feedback loops.
+Skip heavy personalization when the inventory is small enough to show everything, when deterministic rules are more explainable and sufficient, when feedback is too sparse to learn from, or when the domain cannot tolerate feedback loops — because a recommender's machinery is overhead that only pays off when there is genuinely too much to show and enough signal to learn what to show.
 
 ---
 
 ## Key Takeaways
 
-1. Recommendations are retrieval plus ranking plus policy, not one model.
-2. Two-tower models with ANN indexing are the standard retrieval pattern.
-3. Exposure logging is required for learning and evaluation.
-4. Re-ranking makes product and safety constraints explicit.
-5. Exploration prevents the system from becoming self-confirming.
-6. Optimize for long-term user and business outcomes, not only immediate clicks.
-7. Guardrail metrics block promotion even when primary metrics improve.
+1. A recommender is a latency-bounded funnel: cheap recall-oriented retrieval narrows millions to thousands, expensive precision-oriented ranking orders the survivors, and policy-oriented re-ranking applies set-level constraints.
+2. Each stage has a distinct objective; conflating recall, precision, and constraints is a design error that either blows the latency budget or degrades quality.
+3. Retrieval is fast because item embeddings are precomputed and served from an approximate-nearest-neighbor index — an explicit recall-for-latency trade.
+4. The feedback loop is the real system: the model trains on data it generated, so logging, exploration, and de-biasing determine whether it improves or self-destructs.
+5. The exposure log — what was shown, where, by which version — is the most important data artifact; without it the system is unmeasurable and unrollbackable.
+6. Popularity bias, filter bubbles, position bias, and objective hacking are all loop failures requiring explicit countermeasures, not modeling refinements.
+7. Cold start is a structural gap, not an edge case; bootstrap new items from content and reserve exploration budget for them.
+8. At serving time, feature hydration (I/O) dominates inference (compute); the latency budget is won in the data-movement path.
 
 ---
 
