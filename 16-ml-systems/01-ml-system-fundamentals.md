@@ -2,274 +2,180 @@
 
 ## TL;DR
 
-Machine learning systems are software systems whose behavior depends on code, data, features, labels, model artifacts, and feedback loops. The core design problem is not "train a model"; it is keeping training, serving, monitoring, and retraining aligned as the world changes. Treat data and model artifacts as versioned production dependencies with the same rigor as code.
+A machine learning system is unlike traditional software in one decisive way: its behavior is defined by *data*, not just code. The model itself is a small box; almost all the operational risk lives in the system around it — data collection, feature extraction, configuration, serving infrastructure, monitoring, and the feedback loops that quietly reshape future training data. This is the central thesis of Sculley et al.'s *Hidden Technical Debt in Machine Learning Systems* (2015), and it reframes the whole discipline: you are not building a model, you are building a system whose correctness is statistical, whose specification is implicit in a dataset, and whose dependencies change underneath you without warning. Everything in this section — feature stores, serving, monitoring, training pipelines, governance — exists to manage that fundamental difference.
 
 ---
 
-## The ML System Boundary
+## An ML System Is Defined by Data, Not Just Code
 
-Traditional services usually ship code and configuration. ML systems ship a decision function produced by a pipeline.
+In traditional software, behavior is fully determined by code. A function that returns `a + b` will return the sum forever; you can read it, test it exhaustively against a specification, and reason about it in isolation. The code *is* the behavior, and the behavior is deterministic, inspectable, and stable until someone edits the source.
+
+An ML system breaks every part of that contract. The behavior of a fraud classifier is not written in its code — the code is a generic training procedure that could just as easily produce a recommender or an image classifier. The behavior is *learned* from data, which means the dataset is the real specification, and that specification is implicit, enormous, and constantly shifting. Two teams can run identical code on different data and ship systems that behave nothing alike. The same team can run identical code on *the same source* a month later and ship a meaningfully different system, because the world the data describes has moved.
+
+This is why Sculley's diagram is the foundational mental model for the entire field: the box labeled "ML code" is tiny, surrounded by far larger boxes for data collection, feature extraction, data verification, configuration, process management, analysis tooling, serving infrastructure, and monitoring. The engineering implication is blunt — if you budget your attention proportional to the code, you will spend ninety percent of your effort on the box that holds five percent of the risk.
 
 ```mermaid
 flowchart LR
-    RAW["Raw events"] --> DATA["Training data"]
-    DATA --> FEAT["Features"]
-    FEAT --> TRAIN["Training job"]
-    TRAIN --> MODEL["Model artifact"]
-    MODEL --> SERVE["Serving path"]
-    SERVE --> PRED["Predictions"]
-    PRED --> USER["User / system action"]
-    USER --> FEEDBACK["Outcomes / labels"]
-    FEEDBACK --> RAW
-
-    CODE["Code"] --> TRAIN
-    CODE --> SERVE
-    CONFIG["Config"] --> TRAIN
-    CONFIG --> SERVE
+    DC["Data collection"] --> FE["Feature extraction"]
+    FE --> DV["Data verification"]
+    DV --> ML["ML code"]
+    CFG["Configuration"] --> ML
+    ML --> SI["Serving infrastructure"]
+    SI --> MON["Monitoring"]
+    MON -.->|feedback| DC
 ```
 
-The feedback loop is the difference. A recommender changes what users see, which changes what they click, which changes future training data. A fraud model blocks transactions, which changes the observed label distribution. A ranking model shifts traffic toward items it already believes are good.
-
-> This section covers classic predictive ML (tabular, ranking, vision, fraud). For LLM-based systems — agents, RAG, inference serving, evaluation — see [LLM Systems](../17-llm-systems/01-agent-fundamentals.md); the lifecycle discipline here (versioning, monitoring, rollback) applies to both, while the serving economics diverge sharply ([LLM Infrastructure](../17-llm-systems/05-llm-infrastructure.md)).
+The model is the smallest box in the picture. Treating it as the whole system is the original sin of production ML.
 
 ---
 
-## Production ML Components
+## Why ML Systems Are Harder to Operate
 
-| Component | Owns | Common failure |
-|---|---|---|
-| Data ingestion | Raw events and source freshness | Missing partitions, duplicate events, schema drift |
-| Feature pipeline | Transformations used by training and serving | Training-serving skew, stale features |
-| Training pipeline | Dataset, algorithm, hyperparameters, evaluation | Non-reproducible model, leakage |
-| Model registry | Artifact versions and promotion state | Wrong model deployed, missing lineage |
-| Serving layer | Online or batch prediction | Latency spike, resource exhaustion |
-| Monitoring | Data, prediction, quality, and business signals | Silent degradation |
-| Human review | Approval for risky model changes | Optimizing proxy metrics that hurt users |
+Four properties make ML systems structurally harder to operate than the services around them, and each one defeats a tool that traditional engineering relies on.
 
----
+**Correctness is statistical, not deterministic.** A traditional service is either correct or it has a bug. An ML system is *correct on average* and wrong on some fraction of inputs by design — a 95%-accurate model is wrong one time in twenty, and that is the intended behavior, not a defect. This dissolves the binary notion of "working." You cannot ask "is the model right?"; you can only ask "is its error rate, on this slice, within tolerance right now?" — and the answer changes as the input distribution changes.
 
-## ML System Control Planes
+**There is no clean specification.** The spec for a sorting function is a sentence. The spec for "detect fraudulent transactions" is a moving, contested, partly-unknowable target encoded in millions of historical examples that were themselves labeled by imperfect processes. Because the spec lives in the data, you cannot review it, version it as prose, or reason about it the way you reason about an interface. When the data is wrong, the spec is wrong, and nothing in the code will tell you.
 
-Production ML systems have several control planes. Treating all of them as "the model" hides the actual blast radius.
+**Tests cannot fully capture behavior.** Unit tests pin down deterministic logic, but no finite test suite captures a model's behavior across an unbounded, drifting input space. You can test that the serving code loads an artifact and returns a number in range; you cannot unit-test that the model is *good*, because goodness is a statistical property of live data you have not seen yet. Validation in ML is therefore continuous and distributional — comparing live behavior to a baseline — rather than a gate you pass once at build time. (See [Model Monitoring](./04-model-monitoring.md).)
 
-| Plane | Controls | Example incident when weak |
-|---|---|---|
-| Data plane | Ingestion, labels, joins, backfills, retention | Model learns from duplicated events or leaked future labels |
-| Feature plane | Feature definitions, online/offline parity, freshness | Online model sees stale or semantically changed features |
-| Model plane | Artifacts, registry state, runtime, rollback | Wrong artifact or incompatible runtime reaches production |
-| Decision plane | Thresholds, policies, fallbacks, human review | Better AUC creates worse user actions because policy stayed old |
-| Experiment plane | Assignment, exposure logging, metrics, guardrails | Team ships a model because of biased or broken experiment data |
-| Governance plane | Risk tier, ownership, audit, approval, retirement | High-impact model runs with no owner or appeal path |
+**Failure is silent.** When a traditional service breaks, it throws errors, latency spikes, dashboards turn red. When an ML system degrades, the service stays up, latency is fine, error rate is zero, and the predictions quietly get worse because the world changed. Silent degradation is the signature failure of ML systems, and it is invisible to every reliability tool built for deterministic software. The whole apparatus of model monitoring exists because uptime monitoring cannot see this class of failure at all.
 
-If a design review cannot say which plane owns a change, the system is not ready for production.
+The engineering takeaway is that the operational playbook from traditional services — tests, type checks, error budgets on uptime and latency — remains necessary but is no longer sufficient. It covers the box labeled "code" and is blind to the data that actually drives behavior.
 
 ---
 
-## Training vs Serving
+## The Training/Serving Divide
+
+Every ML system has two halves that must agree but rarely share an implementation. The *offline* half trains models over large historical datasets, optimizing for quality with hours of latency budget and no real-time constraints. The *online* half serves predictions under live traffic, optimizing for latency and reliability with milliseconds to spare. These halves are usually written by different people, in different languages, against different data stores, on different schedules.
+
+The defining hazard of this divide is **training-serving skew**: the two paths compute the *same feature name* to mean *different things*. A feature like `avg_purchase_7d` is computed in offline batch from a warehouse table during training, and recomputed online from a streaming store during serving. If the windowing logic, the timezone handling, the null-filling, or the data freshness differs even slightly between the two implementations, the model is served inputs that do not match what it learned from. Offline evaluation looks excellent — it was computed with the training-side logic — and production quality silently drops, because the model is now answering a subtly different question than the one it was trained to answer.
+
+Skew is insidious because it produces no error and no alert. The feature has the right name, the right type, and a plausible value; it is simply the *wrong* value. The structural defenses are architectural rather than ad hoc: define each feature once and compute it from a single shared definition for both paths (the core promise of a [feature store](./02-feature-stores.md)), log the exact feature values served in production so they can be replayed and compared against an offline recomputation, and treat any divergence between served and recomputed values as a sev-worthy incident rather than a rounding curiosity. The training/serving boundary is the most important reliability boundary in an ML system, and most production quality mysteries trace back to it.
+
+---
+
+## The Data Dependency Problem
+
+A model depends on upstream data it does not own and cannot control, and this is a category of dependency that traditional code-level dependency management never had to handle. A library dependency has a version number, a changelog, and a maintainer who follows semantic versioning; breaking changes announce themselves. A *data* dependency has none of this. An upstream team can change the meaning of a column, the unit of a field, the cardinality of an enum, or the population that a table covers — all without changing a single type signature, all without anyone telling you.
+
+Sculley calls these *unstable data dependencies*, and they are more dangerous than unstable code dependencies precisely because they are invisible to the compiler. Consider a concrete, well-understood pattern: a finance team refactors a revenue table so that `total_spend` switches from gross to net. Every type check passes. Every null check passes. The job runs green. But every model trained after the change learns from systematically smaller numbers, and the model's behavior shifts in a direction no one chose. A silent *semantic* change upstream becomes a silent model *regression* downstream, and the gap between the two can be weeks, with no error connecting cause to effect.
+
+A second, subtler hazard is the *underutilized* data dependency — a feature the model consumes but barely needs. It adds no real predictive value, yet it couples the model to an upstream source that can break, drift, or disappear. Every input is a liability as well as an asset, and a feature carrying its weight in risk but not in signal is pure downside.
+
+The engineering implications follow directly. Data dependencies must be made explicit and versioned the way code dependencies are: a model should record exactly which feature versions it consumed, and a semantic change to a feature should be a *new feature name*, never an in-place edit (see [Training Pipelines](./05-training-pipelines.md) and [Feature Stores](./02-feature-stores.md)). Inputs must be validated against a baseline distribution before they reach training or serving, because distributional checks are the only mechanism that catches a type-compatible, semantically-broken change. And the relationship across the boundary must be a *contract* with an owner, so that a violation fails loudly at the seam instead of being silently absorbed into a worse model.
+
+---
+
+## Feedback Loops: The System Influences Its Own Future Data
+
+Traditional software reads the world; ML systems frequently *change* the world they will later learn from, and this closes a loop that has no analog in deterministic software. A recommender changes what users see, which changes what they click, which becomes the training data for the next recommender. A fraud model blocks transactions it believes are fraudulent, which means the labels for "what those transactions would have done" never exist, biasing the next model's view of fraud. A search ranker concentrates traffic on items it already ranks highly, manufacturing the very engagement signal it then treats as evidence those items are good.
+
+These feedback loops are the source of some of the most confusing pathologies in production ML. A *direct* loop is when a model's own outputs become its future inputs — the system slowly converges on a self-confirming worldview, mistaking the consequences of its past decisions for ground truth about the world. An *indirect* or *hidden* loop is worse: two models influence each other through the shared environment, so that improving one degrades the other through a channel that appears nowhere in either system's design. Sculley flags hidden feedback loops as one of the hardest forms of technical debt precisely because no component owns them and no test reveals them.
+
+The engineering implication is that the data an ML system collects about itself is not a neutral observation of the world — it is contaminated by the system's own past behavior, and naively training on it amplifies whatever bias the previous model had. The defenses are structural: preserve a slice of *exploration* traffic that is not controlled by the current model, so the system keeps seeing outcomes it would not have chosen; log the candidates that were *not* shown, not only the ones that were, so counterfactual analysis is possible at all; and separate observational metrics, which the model can game through the loop, from causal experiments on held-out traffic that the current model does not control (see [Online Experiments](./08-online-experiments.md)). Without an exploration path, an ML system gradually becomes a machine for confirming its own past opinions.
+
+---
+
+## The ML Lifecycle Is a System of Handoffs
+
+It is tempting to draw the ML lifecycle as a linear pipeline — data, features, training, evaluation, deployment, serving, monitoring, retraining — and treat it as a sequence of steps. The more useful framing is that each *arrow* between those stages is a reliability boundary with an ownership contract, and the system fails at the arrows far more often than at the boxes.
 
 ```mermaid
-flowchart TB
-    subgraph Offline["Offline path"]
-        HIST["Historical data"] --> SNAP["Point-in-time dataset"]
-        SNAP --> TRAIN["Train model"]
-        TRAIN --> EVAL["Evaluate"]
-        EVAL --> REG["Register model"]
-    end
-
-    subgraph Online["Online path"]
-        REQ["Request"] --> LOAD["Load online features"]
-        LOAD --> INF["Run inference"]
-        INF --> RESP["Return decision"]
-    end
-
-    REG --> DEPLOY["Deploy artifact"]
-    DEPLOY --> INF
+flowchart LR
+    DATA["Data"] --> FEAT["Features"]
+    FEAT --> TRAIN["Training"]
+    TRAIN --> EVAL["Evaluation"]
+    EVAL --> DEPLOY["Deployment"]
+    DEPLOY --> SERVE["Serving"]
+    SERVE --> MON["Monitoring"]
+    MON --> RETRAIN["Retraining"]
+    RETRAIN --> DATA
 ```
 
-Training optimizes quality over large historical datasets. Serving optimizes latency and reliability under live traffic. The hard part is making sure both paths compute the same meaning for the same feature names.
+Each handoff is owned by a different team and guarantees a different contract. The data platform owes fresh, deduplicated, schema-versioned data to the feature layer. The feature owner owes point-in-time-correct values to training. Training owes a reproducible artifact and honest metrics to evaluation. Evaluation owes a promotion decision against guardrails to deployment. Serving owes runtime compatibility and the feature parity that prevents skew. Monitoring owes early detection of degradation back to the retraining trigger. When any one of these contracts is informal — a handshake instead of a validated interface — the lifecycle decays at exactly that seam, and because the seam spans an org boundary, it becomes nobody's responsibility until an incident forces an owner to claim it.
+
+The lifecycle is also a *loop*, not a line: the last arrow feeds back into the first. Monitoring drives retraining, retraining produces new data dependencies, and the system circles continuously rather than terminating at "deployed." This is why an ML system is never "done" the way a feature ship is done — it has to be operated indefinitely, and the cost of that operation, not the cost of the initial model, dominates the system's total cost of ownership.
 
 ---
 
-## Problem-to-Architecture Matrix
+## CACE: Changing Anything Changes Everything
 
-Different ML problems need different system shapes.
+The single most counterintuitive property of ML systems is entanglement, which Sculley captures in the CACE principle: **Changing Anything Changes Everything.** In modular software, you can reason about a component in isolation behind a stable interface. In an ML model, there is no such isolation. The model mixes all of its input features into a single learned function, so changing the distribution of *one* feature, adding a new feature, removing a stale one, or even re-ordering how features are computed can shift the learned weights on *every other* feature and change the model's behavior in ways no local analysis predicts.
 
-| Problem | Typical architecture | Latency pressure | Main risk |
-|---|---|---:|---|
-| Fraud / abuse decision | Online model + feature store + rules fallback + review queue | High | False positives and delayed labels |
-| Recommendation feed | Candidate generation + ranker + re-ranker + exploration logs | High | Feedback loops and objective mismatch |
-| Search ranking | Retrieval + ranking + interleaving/A-B tests | High | Position bias and stale indexes |
-| Churn / lifecycle prediction | Batch scoring + campaign system | Low | Stale segments and weak causal attribution |
-| Forecasting | Batch/streaming pipeline + planning workflow | Medium | Backtest leakage and seasonality shifts |
-| Content moderation | Multi-stage classifier + policy thresholds + human review | Medium | Irreversible action and policy drift |
-| Anomaly detection | Streaming features + online scoring + alert routing | Medium | Alert fatigue and baseline drift |
+The practical consequence is that there is no such thing as a small, local change to a model. Adding a seemingly harmless input feature is not additive — it re-balances the entire model. Dropping a feature that "wasn't doing much" can degrade an unrelated slice of predictions, because the model had been quietly using that feature to compensate for a weakness elsewhere. This is why ML changes cannot be reasoned about purely by inspection and must be *measured*: the only reliable way to know what a change did is to evaluate the whole model against a baseline, because the blast radius of any change is the entire model.
 
-The architecture should follow the decision loop. A fraud system needs fast features and review controls; a churn model needs reproducible batch scoring and causal measurement; a recommender needs exposure logs and exploration.
+CACE is also the deep reason why training-serving skew, data dependencies, and feedback loops are so dangerous in combination: entanglement means a small perturbation in any one of them propagates everywhere. A system where everything affects everything cannot be made safe through modularity; it can only be made safe through *measurement and monitoring* of the whole. That is the engineering rationale for treating reproducibility, lineage, and monitoring as first-class concerns rather than nice-to-haves.
 
 ---
 
-## Core Design Decisions
+## Why Reproducibility, Lineage, and Monitoring Are First-Class
 
-### Batch, Online, or Streaming Prediction
+Because behavior lives in data, because failure is silent, and because everything is entangled, three properties that are optional conveniences in traditional software become load-bearing reliability features in ML systems.
 
-| Mode | Use when | Avoid when |
-|---|---|---|
-| Batch prediction | Results can be precomputed, latency budget is hours | Decisions depend on fresh request context |
-| Online prediction | User-facing decision must be made now | Model is too slow or too costly per request |
-| Streaming prediction | Continuous event decisions or near-real-time scoring | State handling and exactly-once guarantees are immature |
-| Hybrid | Candidate generation can be offline, final ranking online | Ownership between offline and online teams is unclear |
+**Reproducibility** is the ability to rebuild the exact same model from recorded metadata — code commit, data snapshot, feature versions, parameters, and environment digest. It is foundational because every other guarantee depends on it: you cannot roll back to a model you cannot rebuild, cannot audit a decision whose inputs you cannot reconstruct, and cannot debug a regression whose training conditions you cannot recreate. A model without a reproducibility contract is not a release; it is a liability with no maintainer. ([Training Pipelines](./05-training-pipelines.md) treats this as its central property.)
 
-### Model as Library vs Service
+**Lineage** is the queryable record of what produced what — which dataset and code produced which model, and conversely, which models depend on a given dataset. It answers the question that arrives during every data incident: a source table double-counted events for a week, so *which production models trained on that window and must be retrained?* Without forward lineage the only honest answer is "we don't know, retrain everything," which is both expensive and an admission that the system is not auditable.
 
-| Deployment | Strength | Weakness |
-|---|---|---|
-| Embedded library | Lowest latency, simple local call | Harder to update independently |
-| Shared model service | Centralized rollout and observability | Adds network hop and service dependency |
-| Batch scoring job | Cheap and controllable | Stale predictions |
-| Edge model | Works near device/user | Hard model update and observability problem |
+**Monitoring** in ML is not uptime and latency — those are necessary but blind to the failure that matters. ML monitoring watches the *data and the predictions*: input distribution drift, prediction distribution shift, feature freshness, and, where labels eventually arrive, realized quality against a baseline. It exists because silent degradation produces no error to alert on, so the only way to detect it is to measure the statistical behavior of the system continuously and compare it to what "healthy" looked like (see [Model Monitoring](./04-model-monitoring.md)).
 
-### Rules, ML, or LLM
-
-| Approach | Use when | Watch out for |
-|---|---|---|
-| Rules | Logic is explicit, stable, and explainable | Rule explosion and hidden ordering bugs |
-| Classic ML | Many examples exist and prediction target is measurable | Data drift, leakage, and proxy metrics |
-| LLM | Task needs language reasoning or flexible generation | Cost, nondeterminism, prompt injection, evaluation difficulty |
-| Hybrid | Rules define safety boundaries; ML ranks or scores inside them | Ownership between policy and model can blur |
-
-Do not use ML to hide unclear product policy. First define the action, fallback, and acceptable failure mode.
+These three are not separate hygiene tasks. They are the minimum machinery required to operate a system whose behavior is defined by changing data — reproducibility to recover, lineage to trace, monitoring to detect. A team that ships a model without them has shipped something it cannot roll back, cannot trace, and cannot tell is broken.
 
 ---
 
 ## Failure Modes
 
-### Training-Serving Skew
+The characteristic failures of ML systems recur across organizations, and naming them is half of preventing them. They share a family resemblance: each is invisible to the tools built for deterministic software.
 
-Training uses one transformation and serving uses another. Offline evaluation looks good, but production quality drops.
+**Training-serving skew** is the same feature name computed differently in the offline and online paths. Offline metrics look great because they used the training-side logic; production quality drops because the model is served inputs it never learned from. The defense is a single shared feature definition for both paths, plus logging served values for replay and comparison.
 
-Mitigations:
+**Silent data-dependency regression** is a semantic change to an upstream source — a unit, a definition, a covered population — that passes every type and null check while quietly corrupting every model downstream of it. The defense is distributional validation against a baseline before data reaches training, and explicit versioned data contracts with an owner who is paged when the contract breaks.
 
-- Use shared feature definitions.
-- Test training and serving feature parity.
-- Log serving features for replay.
-- Compare online feature values against offline recomputation.
+**Silent model degradation** is the slow drift of the world away from the model's training distribution: the service stays up, errors stay at zero, and predictions get worse with no signal in any uptime dashboard. The defense is monitoring input and prediction distributions, tracking delayed labels when they arrive, and keeping a rollback path ready.
 
-### Data Leakage
+**Feedback-loop contamination** is the system learning from data its own past decisions shaped, slowly converging on a self-confirming worldview. The defense is preserving exploration traffic, logging unshown candidates, and validating on causal experiments rather than observational metrics the loop can game.
 
-Training data includes information unavailable at prediction time. This often appears through timestamps, joins, or labels written back into source tables.
+**Proxy objective mismatch** is optimizing a metric that is easy to label but not the outcome the system needs — click-through that rewards clickbait, fraud recall that blocks legitimate users, watch time that erodes long-term satisfaction. The defense is a metric hierarchy with explicit guardrails, review of the worst false positives and negatives rather than only aggregates, and keeping contested product policy *outside* the model where it can be reviewed.
 
-Mitigations:
-
-- Build point-in-time correct datasets.
-- Separate event time from processing time.
-- Review every feature for availability at decision time.
-- Run leakage tests against suspicious high-performing features.
-
-### Silent Model Degradation
-
-The service stays up, latency is fine, and errors are low, but predictions become worse because the world changed.
-
-Mitigations:
-
-- Monitor input distributions and prediction distributions.
-- Track delayed labels when available.
-- Tie model metrics to business and user impact metrics.
-- Keep rollback and champion/challenger paths available.
-
-### Feedback Loops
-
-The model influences future training data. Recommenders, ads, search, abuse detection, and marketplace systems are especially exposed.
-
-Mitigations:
-
-- Preserve exploration traffic.
-- Log candidates that were not shown.
-- Separate observational metrics from causal experiments.
-- Evaluate on holdout traffic not fully controlled by the current model.
-
-### Proxy Objective Mismatch
-
-The model optimizes a metric that is easy to label but not the outcome the system actually needs.
-
-Examples:
-
-- Optimizing click-through rate increases low-quality clickbait.
-- Optimizing fraud recall blocks too many legitimate users.
-- Optimizing watch time reduces long-term satisfaction.
-
-Mitigations:
-
-- Define a metric hierarchy: primary, guardrail, diagnostic, slice.
-- Review top false positives and false negatives, not just aggregate metrics.
-- Promote models through online experiments when user impact matters.
-- Keep business policy outside the model when it must be reviewed explicitly.
+**Entanglement surprise** is the CACE failure: a "small" change — one added feature, one dropped input — shifts behavior on an unrelated slice because the model had been silently using that input to compensate elsewhere. The defense is to never trust local reasoning about a model change and always measure the whole model against a baseline.
 
 ---
 
-## Operational Metrics
+## Decision Framework: Do You Actually Need ML?
 
-| Layer | Metrics |
-|---|---|
-| Data | Freshness, completeness, null rate, duplicate rate, schema changes |
-| Features | Online/offline skew, feature freshness, value distribution drift |
-| Training | Pipeline duration, failure rate, data version, artifact hash, reproducibility |
-| Evaluation | Precision/recall, calibration, loss, fairness slices, business metric deltas |
-| Serving | p50/p95/p99 latency, error rate, timeout rate, CPU/GPU utilization, queue depth |
-| Model behavior | Prediction distribution, confidence distribution, drift score, rejection rate |
-| Business | Conversion, fraud loss, retention, revenue, user complaints, manual review load |
+The most consequential ML system decision is whether to build one at all. ML introduces every cost in this document — data dependencies, skew, silent failure, feedback loops, entanglement, and a permanent operational burden — and a large fraction of "ML problems" are better solved by deterministic logic that has none of those costs. The framework is a sequence of honest questions.
 
----
+*Can the decision be expressed as explicit rules that a person can read and a reviewer can audit?* If yes, write the rules. Deterministic logic is inspectable, testable, instantly explainable, and free of drift. ML is justified only when the decision boundary is genuinely too complex or too fluid to enumerate — recognizing objects in images, ranking among millions of items, detecting novel fraud patterns — not merely because rules feel tedious to write.
 
-## Architecture Review Checklist
+*Does enough labeled or behavioral data exist, and will it keep arriving?* A model is only as good as its training data, and a model with no plan for fresh labels will drift into irrelevance the moment the world moves. If the data is sparse, stale, or unrepresentative, ML will underperform a thoughtful heuristic while costing far more to operate.
 
-- Is every training dataset reproducible from versioned code and data snapshots?
-- Are features point-in-time correct?
-- Are online and offline features defined from the same contract?
-- Can a model be rolled back without rolling back application code?
-- Can production predictions be traced to model version, feature values, and request context?
-- Are quality metrics monitored after deployment, not only before deployment?
-- Is there a plan for delayed labels and missing labels?
-- Does the system have a safe exploration path to avoid self-confirming feedback loops?
+*Are individual errors tolerable or reviewable?* Because ML is statistically correct and wrong by design on some inputs, it fits decisions where a wrong answer is recoverable — a mediocre recommendation, a flagged transaction sent to human review. It is a poor fit for decisions where a single wrong answer is catastrophic and unreviewable, unless a human or a deterministic guardrail sits between the model and the irreversible action.
 
----
+*Can the organization own the lifecycle after launch?* An ML system is not a feature you ship; it is a system you operate indefinitely — monitoring, retraining, investigating drift, maintaining data contracts. A team that can build a model but cannot staff its operation should not deploy it, because an unmonitored model is a silent-failure incident waiting for the data to change.
 
-## Maturity Model
-
-| Level | Characteristics | Risk |
-|---|---|---|
-| 0. Notebook model | Manual data pulls, ad hoc evaluation, manual deploy | Not reproducible |
-| 1. Scheduled training | Pipeline exists, but weak lineage and manual promotion | Bad data can train quietly |
-| 2. Registered models | Artifacts, metrics, and owners in a registry | Serving and feature parity may still drift |
-| 3. Controlled rollout | Shadow/canary, rollback, monitoring, feature contracts | Delayed labels still require process |
-| 4. Governed decision system | Risk tiering, audit logs, human controls, retirement | Higher process cost |
-
-Most teams should not jump from Level 0 to Level 4. Move one risk boundary at a time: reproducibility, then registry, then controlled rollout, then governance.
-
----
-
-## When to Use ML
-
-Use ML when the decision boundary is hard to express as rules, enough labeled or behavioral data exists, and small errors are acceptable or reviewable.
-
-Do not use ML when deterministic rules are sufficient, the cost of wrong decisions is unacceptable without human review, the data distribution is unstable with no monitoring plan, or the organization cannot own the lifecycle after launch.
+The strongest architectures are usually *hybrids*: deterministic rules define the hard safety boundaries and the non-negotiable policy, and ML ranks or scores *inside* those boundaries where its statistical strengths pay off and its failures are bounded. The anti-pattern to avoid is using ML to paper over an undefined product policy — when the action, the fallback, and the acceptable failure mode have not been decided, no model can decide them for you.
 
 ---
 
 ## Key Takeaways
 
-1. The model is only one artifact in an ML system.
-2. Data, features, labels, and feedback loops are production dependencies.
-3. Training and serving must be designed together.
-4. Offline evaluation is necessary but not sufficient.
-5. Monitoring model behavior matters as much as monitoring service uptime.
-6. Rollback, lineage, and reproducibility are core reliability features.
+1. An ML system's behavior is defined by data, not just code; the model is the smallest box, and almost all operational risk lives in the system around it.
+2. ML correctness is statistical, has no clean specification, cannot be fully unit-tested, and fails silently — so traditional reliability tooling is necessary but not sufficient.
+3. The training/serving divide is the most important reliability boundary; skew between the two paths is the defining hazard and the most common source of quality mysteries.
+4. Data dependencies are unstable and invisible to the compiler; a silent semantic change upstream becomes a silent model regression downstream.
+5. ML systems influence the data they later train on, so feedback loops can make a system converge on a self-confirming worldview unless exploration is preserved.
+6. The lifecycle is a loop of handoffs, and each arrow is a reliability boundary with an ownership contract that fails loudly or decays quietly.
+7. CACE — Changing Anything Changes Everything — means there are no local changes to a model; the blast radius of any change is the whole model, so changes must be measured, not reasoned about.
+8. Reproducibility, lineage, and monitoring are first-class reliability features, not hygiene: recover, trace, detect.
+9. Use ML only when rules cannot express the decision, enough fresh data exists, errors are tolerable or reviewable, and the org can own the lifecycle; otherwise prefer deterministic logic, and prefer hybrids that bound ML inside rules.
 
 ---
 
 ## References
 
-1. [Hidden Technical Debt in Machine Learning Systems](https://proceedings.neurips.cc/paper_files/paper/2015/file/86df7dcfd896fcaf2674f757a2463eba-Paper.pdf)
-2. [TFX: A TensorFlow-Based Production-Scale Machine Learning Platform](https://dl.acm.org/doi/10.1145/3097983.3098021)
-3. [Data Validation for Machine Learning](https://mlsys.org/Conferences/2019/doc/2019/167.pdf)
-4. [TensorFlow Serving: Flexible, High-Performance ML Serving](https://arxiv.org/abs/1712.06139)
-5. [Rules of Machine Learning](https://developers.google.com/machine-learning/guides/rules-of-ml)
+1. [Hidden Technical Debt in Machine Learning Systems](https://proceedings.neurips.cc/paper_files/paper/2015/file/86df7dcfd896fcaf2674f757a2463eba-Paper.pdf) — Sculley et al., 2015
+2. [Rules of Machine Learning: Best Practices for ML Engineering](https://developers.google.com/machine-learning/guides/rules-of-ml) — Zinkevich
+3. [TFX: A TensorFlow-Based Production-Scale Machine Learning Platform](https://dl.acm.org/doi/10.1145/3097983.3098021) — Baylor et al., 2017
+4. [Data Validation for Machine Learning](https://mlsys.org/Conferences/2019/doc/2019/167.pdf) — Breck et al., 2019
+5. [The ML Test Score: A Rubric for ML Production Readiness](https://research.google/pubs/pub46555/) — Breck et al., 2017
+6. [Machine Learning: The High-Interest Credit Card of Technical Debt](https://research.google/pubs/pub43146/) — Sculley et al., 2014
