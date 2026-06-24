@@ -2,587 +2,198 @@
 
 ## TL;DR
 
-ML governance is the operational system that keeps model decisions accountable. It is not only compliance paperwork. It includes risk tiering, model documentation, lineage, approval gates, access control, audit logs, slice monitoring, human override, incident response, and retirement. The higher the consequence of a wrong prediction, the more the system needs explicit controls outside the model.
+ML governance is the system of *enforced controls* that makes a model's decisions auditable, accountable, and reversible. The central failure of governance is treating it as documentation — a model card in a wiki, a policy PDF, a one-time fairness review — rather than as machinery wired into the deployment path. A control that does not block something is theater: a fairness threshold nobody gates on, a lineage requirement the registry does not enforce, an approval that happens after the model already serves traffic. Effective governance is the set of controls the *system* enforces automatically — a registry that refuses an unlineaged artifact, a promotion gate that blocks an unreviewed high-risk model, an audit log dense enough to reconstruct any decision after the fact. Everything in this file follows from one principle: **govern through infrastructure, not intention.**
 
 ---
 
-## Risk Tiers
+## Governance Fails When It Is Documentation, Not Enforcement
 
-Not every model needs the same process.
+The defining mistake in ML governance is the same one [training pipelines](./05-training-pipelines.md) make with reproducibility — treating a property the organization *wants* as a property the system *guarantees*. A governance program built on documents produces an impressive binder and no actual control. The model card describes intended use, but nothing stops the model from being repurposed. The policy says high-risk models require sign-off, but the deploy script does not check. The fairness review happened once, at launch, and the world moved on without it.
 
-| Tier | Example | Required controls |
+The engineering implication is sharp: **a control that is not on the critical path of deployment is not a control.** If the only thing standing between a model and production is a human remembering to follow a process, the process will be skipped under deadline pressure, forgotten after reorgs, and quietly abandoned as the team that wrote it disperses. The controls that survive are the ones the system enforces whether or not anyone remembers them — exactly like the training-pipeline rule that *no artifact enters the registry without a complete lineage contract*. Governance inherits that rule and extends it: no model reaches a regulated tier without its required controls satisfied, and "satisfied" is a state the registry stores and the gate checks, not a checkbox a human ticked.
+
+A useful test mirrors the reproducibility test from training pipelines. If every engineer who knows the governance process left tomorrow, would the system still refuse to deploy an unreviewed credit model? If the answer depends on human memory, you have documentation. If the answer is "yes, the gate blocks it," you have governance.
+
+---
+
+## Risk Tiering: Not Every Model Needs the Same Scrutiny
+
+A model that recommends songs and a model that approves loans are both "ML in production," but governing them identically is a category error. Apply the loan model's controls to the song recommender and you bury low-risk work in bureaucracy until teams route around governance entirely. Apply the recommender's controls to the loan model and you ship a life-altering decision system as an ordinary code change. **Risk tiering is the decision framework that allocates scrutiny in proportion to consequence**, and it is the single most important design choice in a governance system because every other control derives from it.
+
+The dimensions that determine a tier are not technical accuracy but *impact*: **who is affected** (an internal dashboard versus the general public versus a protected class), **reversibility** (can the affected person appeal, or is the decision final), and **regulatory exposure** (does the decision fall under credit, employment, health, or housing law). A high-accuracy model that denies someone a mortgage with no appeal path is higher-risk than a mediocre model suggesting playlists, regardless of which has the better AUC.
+
+| Tier | Example | Controls the system must enforce |
 |---|---|---|
-| Low | Internal recommendation, developer productivity ranking | Basic lineage, owner, monitoring |
-| Medium | Marketing personalization, support routing | Experiment review, guardrails, slice monitoring |
-| High | Fraud holds, pricing, abuse enforcement | Human override, audit logs, rollback, policy approval |
-| Critical | Credit, employment, health, legal access decisions | Formal review, explainability, strict data governance, periodic audit |
+| Low | Internal ranking, dev-productivity tooling | Owner, lineage, basic monitoring |
+| Medium | Marketing personalization, support routing | + experiment review, guardrails, slice monitoring |
+| High | Fraud holds, dynamic pricing, abuse enforcement | + human override, audit log, rollback, policy approval |
+| Critical | Credit, hiring, health, legal-access decisions | + explainability, contestability, strict data governance, periodic audit |
 
-Risk tiering prevents low-risk models from being buried in bureaucracy while ensuring high-impact models do not ship as ordinary code changes.
-
-### Risk Tier Classification Flow
+The tier is not advisory metadata; it is the input that *parameterizes the deployment path*. The engineering implication is that tiering must be assigned early and stored where the gate can read it, because the tier decides which gates run.
 
 ```mermaid
 flowchart TD
-    Q1{"Does the model make<br/>a decision that affects<br/>a person directly?"}
+    Q1{"Does the model decide<br/>something about a person?"}
     Q1 -->|"no"| LOW["Low tier"]
-    Q1 -->|"yes"| Q2{"Is the decision<br/>reversible or<br/>appealable?"}
+    Q1 -->|"yes"| Q2{"Is the decision<br/>reversible or appealable?"}
     Q2 -->|"yes"| MED["Medium tier"]
-    Q2 -->|"no"| Q3{"Is the decision<br/>legally or financially<br/>significant?"}
+    Q2 -->|"no"| Q3{"Is it legally or<br/>financially significant?"}
     Q3 -->|"no"| HIGH["High tier"]
     Q3 -->|"yes"| CRIT["Critical tier"]
 ```
 
-### Risk Tier Registry
+---
 
-```python
-@dataclass
-class ModelRiskProfile:
-    model_name: str
-    risk_tier: str  # "low", "medium", "high", "critical"
-    decision_type: str  # "recommendation", "hold", "block", "price", "deny"
-    reversibility: str  # "reversible", "appealable", "irreversible"
-    affected_population: str  # "internal", "all_users", "protected_class"
-    financial_impact: str  # "none", "user_level", "life_altering"
-    regulatory_domain: list[str]  # e.g., ["GDPR", "FCRA", "EU_AI_Act"]
+## Auditability and Lineage: You Cannot Govern What You Cannot Reconstruct
 
-    required_controls: list[str] = field(default_factory=list)
+Every governance question — *why was this person denied? was this model reviewed? what data did it learn from? can we roll it back?* — reduces to a reconstruction problem. If the system cannot reconstruct the conditions of a past decision, no amount of policy can govern it. **Lineage is therefore the foundation on which every other control rests**, the same way reproducibility is the foundation of the training pipeline.
 
-    def __post_init__(self):
-        controls = {
-            "low": ["lineage", "owner", "basic_monitoring"],
-            "medium": ["lineage", "owner", "monitoring", "experiment_review",
-                       "guardrails", "slice_monitoring"],
-            "high": ["lineage", "owner", "monitoring", "experiment_review",
-                     "guardrails", "slice_monitoring", "human_override",
-                     "audit_logs", "rollback", "policy_approval"],
-            "critical": ["lineage", "owner", "monitoring", "experiment_review",
-                         "guardrails", "slice_monitoring", "human_override",
-                         "audit_logs", "rollback", "policy_approval",
-                         "explainability", "data_governance", "periodic_audit",
-                         "retirement_plan", "incident_response_plan"],
-        }
-        self.required_controls = controls[self.risk_tier]
-```
+The governance requirement extends the training pipeline's [reproducibility contract](./05-training-pipelines.md) from "what produced this model" to "what produced this *decision*." A production decision must be traceable along three axes: the **model version** that made it, the **training data and features** that shaped that version, and the **specific inputs** present at decision time. Pin all three and an auditor — internal, regulatory, or a court — can answer "why" months later. Drop any one and the decision is unreconstructable, which under regimes like GDPR or the EU AI Act is itself a violation, not merely an inconvenience.
+
+The enforcement point is an append-only **audit log** for every high-impact decision, recording at minimum the timestamp, the model and policy versions, the feature references consumed (by version, not raw sensitive values), the score and threshold, the final action, and any human override and its reason. The log is immutable by design — you cannot govern an audit trail that the system being audited can edit — and it doubles as the raw material for incident analysis and the labels for the next retraining cycle. The discipline that makes this work is the same one that makes lineage work in training: the metadata is captured *automatically at decision time*, not reconstructed afterward from memory or scattered logs, because reconstruction after the fact is exactly the capability whose absence defines an ungovernable system.
 
 ---
 
-## Governance Control Plane
+## Approval Gates and Separation of Duties
 
-```mermaid
-flowchart TD
-    MODEL["Candidate model"] --> DOC["Model documentation"]
-    MODEL --> LINEAGE["Lineage metadata"]
-    MODEL --> EVAL["Evaluation report"]
-    DOC --> REVIEW["Risk review"]
-    LINEAGE --> REVIEW
-    EVAL --> REVIEW
-    REVIEW --> APPROVE{"Approved?"}
-    APPROVE -->|"yes"| DEPLOY["Deploy with controls"]
-    APPROVE -->|"no"| BLOCK["Block / remediate"]
-    DEPLOY --> MON["Monitoring and audit"]
-    MON --> REVIEW
-```
+For tiers above "low," the question *who is allowed to put this in front of real people?* must have an enforced answer. An approval gate is the control that makes promotion to a regulated tier conditional on a sign-off from someone who is not the model's author — **separation of duties**, the principle that the person who builds a system should not be the only person who approves it. The author optimizes for shipping; the reviewer optimizes for not harming users. Collapsing the two roles removes the only check on "ship it, the metric went up."
 
-Governance should be encoded into the platform where possible: required metadata, promotion gates, audit logs, and model registry states.
+The enforcement point is the **model registry**, the same component that anchors [deployment and rollouts](./06-model-deployment-rollouts.md). The registry stores each model's lifecycle state — experimental, shadow, canary, production, deprecated, retired — and the promotion gate refuses to advance a high-tier model to production unless the registry records the required approval, complete lineage, and a passing evaluation against the tier's guardrails. This is the governance analogue of the training pipeline's promotion gate: the registry is the source of truth, and a model whose approval is "someone said yes in Slack" is not approved, because the gate cannot read Slack.
 
----
-
-## Model Documentation
-
-Model documentation should answer engineering and accountability questions.
-
-| Section | Questions |
-|---|---|
-| Intended use | What decision does this model support? Who uses it? |
-| Not intended use | Where should it not be used? |
-| Training data | What data, time range, labels, and exclusions were used? |
-| Features | What feature groups and sensitive proxies are involved? |
-| Evaluation | Which metrics, slices, and guardrails were checked? |
-| Limitations | Known failure cases and low-confidence domains |
-| Human controls | Review, override, escalation, appeal |
-| Monitoring | Drift, quality, fairness/slice checks, business guardrails |
-| Owner | Team, on-call, review cadence |
-
-Documentation should be versioned with the model artifact, not kept in an unowned wiki page.
-
-### Model Card Template
+The engineering implication is that approval must be a *state in the registry*, queryable and enforced, not an event in a human's memory. A small declarative policy, evaluated by the gate, is enough:
 
 ```yaml
-# Model Card — versioned with the artifact, not a wiki page
-model_card:
-  model_name: "fraud_classifier"
-  version: "v42"
-  risk_tier: "high"
-  owner:
-    team: "identity-risk"
-    on_call: "identity-risk-oncall@example.com"
-    review_cadence: "quarterly"
-
-  intended_use:
-    description: "Predicts likelihood of fraudulent transaction at authorization time"
-    users: "Payment authorization system"
-    decision: "Block, manual review, or allow based on score and policy thresholds"
-
-  out_of_scope_use:
-    - "Not for credit decisions"
-    - "Not for employment screening"
-    - "Not for insurance underwriting"
-    - "Not for use outside supported geographies"
-
-  training_data:
-    source: "warehouse.ml.fraud_training_examples"
-    time_range: "2025-01-01 to 2026-06-10"
-    label_definition: "Chargeback confirmed within 30 days of transaction"
-    label_delay_days: [7, 45]
-    exclusions: "Test accounts, internal employees, transactions < $1"
-    positive_rate: 0.023
-    train_examples: 12_345_678
-    test_examples: 3_086_419
-
-  features:
-    sensitive_proxies_reviewed: true
-    feature_groups:
-      - name: "account_risk"
-        version: "v12"
-        contains_sensitive: false
-      - name: "device_velocity"
-        version: "v7"
-        contains_sensitive: false
-    excluded_features: ["precise_location", "device_contacts"]
-
-  evaluation:
-    overall_auc_roc: 0.942
-    false_positive_rate_at_recall_80: 0.018
-    slices:
-      - name: "geography_us"
-        auc_roc: 0.948
-      - name: "geography_eu"
-        auc_roc: 0.935
-      - name: "new_accounts"
-        auc_roc: 0.891
-        note: "Lower performance expected; falls back to rules for very new accounts"
-    guardrails:
-      - "FPR < 2% overall"
-      - "No slice below AUC 0.85"
-      - "Calibration error < 0.05"
-
-  limitations:
-    - "Not calibrated for transactions above $50,000 (insufficient training data)"
-    - "May underperform during major shopping events (seasonal distribution shift)"
-    - "Does not use real-time merchant reputation signals"
-    - "Delayed labels mean quality can only be fully assessed after 30+ days"
-
-  human_controls:
-    review_queue: "Transactions with score 0.70-0.95 → manual review"
-    override: "Review agent can override block to allow"
-    appeal: "Users can appeal blocked transactions via support"
-    escalation: "Review agent can escalate to risk team for ambiguous cases"
-
-  monitoring:
-    drift_checks: ["PSI on input features", "prediction distribution KL divergence"]
-    quality_checks: ["FPR on mature labels", "AUC on 30-day labels"]
-    fairness_checks: ["FPR by geography", "approval rate by account age"]
-    business_guardrails: ["manual review queue depth < 500", "block rate < 5%"]
-
-  regulatory:
-    jurisdictions: ["US", "EU"]
-    gdpr_article_22: "Automated decision with human review as safeguard"
-    eu_ai_act_risk_category: "Limited risk (with human review)"
-    data_retention: "Prediction logs retained 13 months; appeal data retained 3 years"
-
-  retirement:
-    plan: "Deprecate when successor model v43 achieves lower FPR on mature labels"
-    rollback_target: "v41"
-    minimum_retention: "12 months after deprecation for audit purposes"
+# Evaluated by the promotion gate before any tier>=high model serves traffic
+promote_to_production:
+  require_lineage_contract: complete      # else: refuse (no contract, no registry entry)
+  require_slice_metrics:    passing       # gated on pre-declared protected slices
+  require_approval_from:     "risk-review" # a role distinct from the model's author
+  require_rollback_target:   present       # a known-good version to revert to
 ```
 
 ---
 
-## Data and Feature Risk
+## Access Control: Who Is Allowed to Change a Consequential Model
 
-Risk often enters through data, not model code.
+An approval gate is worthless if anyone can bypass it. Separation of duties only holds when the *permission* to promote, to edit a threshold, or to overwrite a feature definition is itself an enforced control. This is the access-control layer of governance, and it is the one teams most often leave implicit — every engineer has production credentials, and the gate is a convention rather than a constraint.
 
-| Risk | Example | Control |
+The principle is that the blast radius of a change must scale with the risk tier. Editing the threshold of a critical credit model is a higher-privilege action than editing a song recommender, and the system should treat it that way: changes to high-tier models require credentials the author alone does not hold, every such change is attributed to an identity and written to the audit log, and the production policy a model serves is itself a versioned, access-controlled artifact — not a value an on-call engineer can quietly tweak at 2 a.m. The engineering implication is that *who changed what, when, and with whose approval* must be reconstructable for every consequential model, which makes access control a precondition for the audit trail rather than a separate concern. A registry that records approvals but lets anyone flip a model's state is recording fiction.
+
+---
+
+## Explainability and Contestability: A System Requirement, Not a Model Property
+
+When a regulated decision goes against someone — a denied loan, a rejected job application, a flagged account — the law in much of the world grants them a right to an explanation and a path to contest it. **GDPR Article 22** (in force since 2018) gives individuals the right not to be subject to solely automated decisions with legal or similarly significant effects, and to obtain human intervention and contest the outcome. The **EU AI Act**, adopted in 2024 and phasing its high-risk obligations into 2026–2027, hardens this into concrete requirements for human oversight, transparency, and record-keeping on high-risk systems.
+
+The engineering implication is the part teams miss: **explainability and contestability are system requirements, not model properties.** It is not enough that a model is "interpretable" in the abstract. The system must have logged enough — the model version, the inputs, the relevant feature attributions — to *reconstruct why this specific decision was made* when the affected person asks weeks later. And contestability requires a real human-in-the-loop path: a review queue, an override mechanism, and an appeal process that can reverse the decision. A SHAP value computed at decision time and discarded explains nothing later; the same value written to the audit log makes the decision contestable. Explainability that is not persisted is not a control.
+
+This reframes a research-flavored topic as an infrastructure one. The question is not "which interpretability method is most faithful" but "does the system retain, per decision, the artifacts needed to explain and reverse it" — and is that retention enforced, or does it depend on someone remembering to log it.
+
+---
+
+## Fairness as a Continuous, Gated Operational Concern
+
+Fairness fails most often not because a team ignored it but because they checked it *once*. A model audited for disparate impact at launch and never again will drift, because the population it serves drifts, the data drifts, and an upstream feature quietly changes meaning. **Fairness is an operational property that must be measured continuously and gated on, not a one-time certificate.**
+
+Holding this at the system level — rather than inside the data-science fairness-metric debate — yields three concrete infrastructure requirements. First, **define the metric before deploy.** Disparate impact, equal opportunity, and calibration across groups can conflict, and which one matters is a decision to make deliberately and record, not to discover after an incident. Second, **measure it across protected slices continuously**, reusing the same [slice-monitoring](./04-model-monitoring.md) machinery that tracks quality regressions and the [experiment slice analysis](./08-online-experiments.md) that catches a launch that helps the average while harming a subgroup. Third, **gate on it**: a promotion that improves aggregate AUC while regressing a protected slice must be *blocked by the gate*, not merely noted in a dashboard nobody reads.
+
+The cautionary cases are concrete and well documented. The **Apple Card** launch in 2019 drew a New York regulator investigation after public reports that the algorithm offered women lower credit limits than men with similar finances. **Amazon scrapped an internal recruiting tool in 2018** after discovering it penalized résumés containing the word "women's," having learned from a decade of male-dominated hiring data. The **Dutch childcare-benefits scandal** (SyRI and the related fraud-detection systems, exposed around 2019–2021) saw an automated risk system wrongly accuse tens of thousands of families of fraud, disproportionately those with dual nationality, contributing to the resignation of the Dutch government in 2021. In every case the technical fairness flaw was downstream of a *governance* flaw: no enforced, continuous, slice-level measurement gating the system's decisions.
+
+---
+
+## Privacy and Data Governance
+
+A model is a function of its training data, and training data is where most regulatory and ethical exposure originates. Three governance concerns live here. **Provenance and consent**: the system must record where training data came from and whether its use is permitted for this purpose — the lineage contract from training pipelines, extended to legal basis. **PII in features**: sensitive attributes and their proxies (a ZIP code proxying race, a first name proxying gender) must be reviewed before they enter a feature set, because a model cannot be governed for fairness if no one knows it is consuming a protected proxy. **The right to deletion versus the model that memorized**: GDPR grants a right to erasure, but a model trained on a person's data may have *memorized* it, and deleting the row from the warehouse does not delete it from the weights. The engineering implication is that deletion must be a tracked, lineage-aware operation — knowing which models trained on a given record is the same forward-lineage *impact query* that training pipelines need for bad-data backfills, and a governance system without it can promise deletion it cannot deliver.
+
+---
+
+## Incident Response and Accountability
+
+Every model in a regulated tier needs a named owner — not a team that has since dissolved, but an accountable individual or on-call rotation responsible for the model's harms. The **orphaned model** with no owner is one of the most common and most dangerous governance failures: it runs in production making consequential decisions, and when it goes wrong there is no one whose job it is to notice, explain, or stop it.
+
+ML incidents demand a different playbook from service incidents because a model can be perfectly *healthy* — low latency, no errors — while causing real harm. The relevant severity scale is keyed to harm, not to system health.
+
+| Severity | Definition | Response |
 |---|---|---|
-| Sensitive attribute use | Age, health, precise location | Data classification and feature allowlists |
-| Proxy feature | ZIP code as proxy for protected class | Slice evaluation and review |
-| Label bias | Historical enforcement labels reflect past policy | Label audit and human review |
-| Consent mismatch | Data collected for one purpose used for another | Data usage contracts |
-| Retention violation | Training set keeps data beyond allowed window | Dataset expiration and deletion workflow |
+| Sev1 | Irreversible harm or legal violation | Kill switch, executive escalation, regulatory notification |
+| Sev2 | Significant financial or user harm | Rollback, incident review within 24h |
+| Sev3 | Detectable quality or fairness degradation | Investigate, canary rollback |
+| Sev4 | Drift or anomaly detected | Triage during business hours |
 
-Feature stores and training pipelines should enforce data classification, ownership, and retention metadata.
-
-### Proxy Feature Detection
-
-```python
-def detect_proxy_features(model, feature_names, protected_attribute,
-                          threshold: float = 0.1):
-    """
-    Identify features that may act as proxies for a protected attribute.
-    A proxy is a feature that predicts the protected attribute well but
-    is not itself the protected attribute.
-    """
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.metrics import roc_auc_score
-
-    proxies = []
-    for i, feat in enumerate(feature_names):
-        # Can this feature alone predict the protected attribute?
-        X = model.training_data[:, i].reshape(-1, 1)
-        clf = RandomForestClassifier(n_estimators=50, max_depth=3)
-        scores = cross_val_score(clf, X, protected_attribute, cv=5, scoring="roc_auc")
-        auc = scores.mean()
-
-        if auc > 0.5 + threshold:
-            proxies.append({
-                "feature": feat,
-                "auc_predicting_protected": auc,
-                "risk": "high" if auc > 0.8 else "medium",
-            })
-
-    return proxies
-
-# Example output:
-# [
-#   {"feature": "zip_code", "auc": 0.72, "risk": "medium"},
-#   {"feature": "browser_language", "auc": 0.65, "risk": "medium"},
-# ]
-# These features should be reviewed: are they legitimate business signals
-# or proxies for protected attributes?
-```
+The decisive governance control here is **rollback**, and it must be wired the same way [deployment and rollouts](./06-model-deployment-rollouts.md) wires it: the system must be able to disable a model or revert to a known-good version *via configuration, in under a minute, without redeploying the service*. A governance program that can detect harm but cannot quickly stop it is incomplete. After containment comes the **post-incident review**, whose governing question is not "who erred" but "what gate or check would have caught this" — because the durable output of an incident is a new enforced control, not a new line in a document.
 
 ---
 
-## Human-in-the-Loop Patterns
+## The Regulatory Landscape, Mapped to Controls
 
-| Pattern | Use when | Failure mode |
-|---|---|---|
-| Human review queue | Model confidence is low or action is high-impact | Reviewers rubber-stamp under load |
-| Human override | Operators need emergency control | Overrides are not logged or audited |
-| Appeal path | Users can contest decision | Appeal data never reaches model owners |
-| Two-stage action | Model recommends, human decides | Latency and staffing cost |
-| Auto-decision with audit | Low-risk high-volume action | Silent bias or quality drift |
+The point of surveying regulation is not legal completeness but recognition that the major regimes all map onto the controls above — they are demands for enforced infrastructure, not new categories of work.
 
-Human review is a system with capacity, quality, and latency constraints. It needs metrics like any other service.
+- **SR 11-7** (US Federal Reserve / OCC, 2011) established model risk management for banking: independent validation, an inventory of models with owners, and ongoing monitoring. It is essentially a mandate for risk tiering, a model registry, and separation of duties — a decade before most ML teams adopted them.
+- **GDPR Article 22** (EU, 2018) maps onto explainability, contestability, the human-in-the-loop override path, and lineage dense enough to reconstruct a decision.
+- **The EU AI Act** (adopted 2024, high-risk obligations phasing in through 2026–2027) defines explicit risk tiers — prohibited, high-risk, limited, minimal — and mandates human oversight, transparency, data governance, and record-keeping for high-risk systems. Its tiering is the same impact-based framework above, given legal teeth, and its 2026 timeline is why these controls are moving from optional to mandatory for anyone serving EU users now.
 
-### Review Queue SLOs
-
-```python
-@dataclass
-class ReviewQueueSLO:
-    """SLAs for human review — it's a service, not a safety valve."""
-    p95_queue_time_minutes: int = 15    # time from submission to first review
-    p95_decision_time_minutes: int = 5  # time from review start to decision
-    reviewer_accuracy: float = 0.95     # agreement rate with expert adjudication
-    queue_depth_limit: int = 500        # alert if queue exceeds this
-    reviewer_capacity_per_hour: int = 20
-
-    def check_health(self, queue_metrics):
-        alerts = []
-        if queue_metrics.p95_queue_time > self.p95_queue_time_minutes:
-            alerts.append(f"Review queue p95 time: {queue_metrics.p95_queue_time}min")
-        if queue_metrics.depth > self.queue_depth_limit:
-            alerts.append(f"Review queue depth: {queue_metrics.depth}")
-        if queue_metrics.reviewer_accuracy < self.reviewer_accuracy:
-            alerts.append(f"Reviewer accuracy: {queue_metrics.reviewer_accuracy:.1%}")
-        return alerts
-
-# When the review queue exceeds its SLO:
-# 1. Alert the on-call
-# 2. Auto-adjust model threshold to reduce review volume (temporary)
-# 3. Escalate to risk team for capacity planning
-```
+The engineering takeaway: a team that has already built enforced risk tiering, lineage, approval gates, slice monitoring, and rollback is most of the way to compliance with all three. A team that has only documents is not.
 
 ---
 
-## Explainability as an Operational Tool
+## Failure Modes
 
-Explainability should be tied to an action:
+The characteristic ways governance fails recur across organizations, and naming them is half of preventing them.
 
-- Debugging a production incident.
-- Helping reviewers make consistent decisions.
-- Supporting user-facing explanations.
-- Auditing model behavior on slices.
-- Detecting suspicious proxy features.
+**Governance-as-theater** is the root failure: controls that exist on paper but enforce nothing — a fairness threshold no gate checks, an approval that happens after launch, a model card that drifts from the deployed reality. The defense is to wire every required control into the deployment path so the system, not a human, enforces it.
 
-Explanations can be misleading if treated as truth. Use them as diagnostic artifacts alongside logs, feature values, and counterfactual tests.
+**The unreconstructable decision** is the audit that cannot answer "why." A regulator or court asks why a person was denied, and the system cannot reconstruct the model version, inputs, and reasoning. The defense is the per-decision audit log, captured automatically and stored immutably.
 
-### SHAP for Incident Debugging
+**Untiered, one-size-fits-all governance** either buries low-risk models in bureaucracy until teams evade it, or ships high-risk models as ordinary code changes. The defense is a tiering framework that allocates scrutiny by impact and parameterizes the gate.
 
-```python
-import shap
+**Fairness-as-a-one-time-check** certifies a model at launch and lets it drift. The defense is continuous slice monitoring with a pre-declared metric that the promotion gate enforces.
 
-def explain_incident_prediction(model, prediction_log_entry):
-    """
-    When a model makes a surprising decision, use SHAP to identify
-    which features drove the prediction. This is diagnostic, not the truth.
-    """
-    # Load the feature values from the prediction log
-    features = prediction_log_entry["feature_values"]
+**The orphaned model** runs in production with no owner, so no one notices, explains, or stops its harms. The defense is mandatory owner metadata, stale-model alerts, and a retirement path — a model without a retirement plan becomes permanent operational debt.
 
-    # Compute SHAP values for this single prediction
-    explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(features)
-
-    # Identify top contributing features
-    contributions = sorted(
-        zip(feature_names, shap_values[0]),
-        key=lambda x: abs(x[1]), reverse=True
-    )
-
-    print(f"Prediction: {prediction_log_entry['score']:.3f}")
-    print(f"Decision: {prediction_log_entry['decision']}")
-    print("Top feature contributions:")
-    for feat, contrib in contributions[:5]:
-        direction = "↑" if contrib > 0 else "↓"
-        print(f"  {feat}: {contrib:+.4f} {direction}")
-
-    return contributions
-
-# Caveats:
-# - SHAP values are local approximations, not causal explanations
-# - Feature importance depends on the reference distribution
-# - Use alongside logs, counterfactuals, and slice analysis
-# - Never present SHAP as "the reason" to an end user without human review
-```
+**Rubber-stamp review** is the human gate that approves 99% of decisions because the queue is too deep and the SLA too tight. A review queue with 99% agreement is not a review queue; it is a latency tax. The defense is to treat human review as a service with SLOs — monitor reviewer accuracy against expert adjudication, bound queue depth, and rotate reviewers.
 
 ---
 
-## Audit Log
+## Decision Framework: Risk Tier → Required Controls
 
-High-impact decisions need an audit trail:
+Designing or reviewing an ML system's governance reduces to a short sequence of questions, each one a control the system must *enforce*, not a box a human ticks.
 
-- Request and decision timestamp.
-- Model version and policy version.
-- Input feature values or approved references.
-- Prediction, threshold, and final action.
-- Human reviewer and override reason when applicable.
-- Experiment or rollout assignment.
-- Downstream outcome and appeal result.
+1. **What risk tier is this model**, by who is affected, reversibility, and regulatory exposure? The tier parameterizes everything below.
+2. **Can every production decision be reconstructed** — model version, training data, inputs — from recorded metadata alone? If not, the system is unauditable and ungovernable.
+3. **Does promotion to a regulated tier require enforced sign-off** from someone other than the author, with the registry as the source of truth? If not, there is no separation of duties.
+4. **For regulated decisions, is enough logged to explain and contest them**, with a real human-override and appeal path? If not, GDPR Article 22 and the EU AI Act are violated.
+5. **Is fairness measured continuously across pre-declared protected slices and gated on**, not checked once at launch?
+6. **Can the model be disabled or rolled back via config in under a minute**, without redeploying the service?
+7. **Does the model have a named owner and a retirement path?** An owner-less model is an incident waiting for no one to respond.
 
-The audit log is also the raw material for incident analysis and retraining.
-
-### Audit Log Schema
-
-```python
-# Immutable audit log entry for every high-impact decision
-audit_log_entry = {
-    "event_id": "evt_abc123",
-    "timestamp": "2026-06-24T14:30:00Z",
-    "decision_type": "fraud_block",
-
-    # Model context
-    "model_name": "fraud_classifier",
-    "model_version": "v42",
-    "policy_version": "policy_v9",
-    "experiment_id": None,  # not in experiment during this decision
-
-    # Entity
-    "entity_type": "transaction",
-    "entity_id": "txn_789",
-    "user_id": "user_456",  # hashed or pseudonymized per policy
-
-    # Decision
-    "score": 0.973,
-    "threshold": 0.95,
-    "decision": "block",
-    "confidence": 0.97,
-
-    # Human review (if applicable)
-    "reviewed_by": None,
-    "review_decision": None,
-    "review_reason": None,
-    "override": False,
-
-    # Feature snapshot (approved references only, not raw sensitive data)
-    "feature_refs": {
-        "account_risk": "v12",
-        "device_velocity": "v7",
-        "transaction_history": "v3",
-    },
-
-    # Outcome (joined later)
-    "outcome": None,  # "chargeback" or "legitimate" — joined when label arrives
-    "outcome_timestamp": None,
-
-    # Appeal (if any)
-    "appeal_id": None,
-    "appeal_result": None,
-    "appeal_timestamp": None,
-}
-```
-
----
-
-## Incident Response
-
-ML incidents need a different playbook from service incidents. A model can be healthy (low latency, low errors) while causing harm.
-
-### ML Incident Severity
-
-| Severity | Definition | Example | Response |
-|---|---|---|---|
-| Sev1 | Irreversible harm or legal violation | Model blocks life-saving service | Kill switch + exec escalation + regulatory notification |
-| Sev2 | Significant financial or user harm | FPR spike blocks 10% of legitimate users | Rollback + incident review within 24h |
-| Sev3 | Quality degradation detectable | Slice quality drops 5% | Investigate + canary rollback |
-| Sev4 | Drift or anomaly detected | PSI exceeds threshold | Triage during business hours |
-
-### Incident Response Checklist
-
-```text
-ML Incident Response Checklist
-
-Detect:
-  [ ] Alert fired (automated or manual report)
-  [ ] Incident declared in incident management system
-  [ ] Severity assigned
-
-Contain:
-  [ ] Kill switch flipped if Sev1/Sev2 (config change, < 1 min)
-  [ ] Traffic routed to rollback target or fallback
-  [ ] Affected decisions logged and preserved for analysis
-
-Investigate:
-  [ ] Prediction logs from incident window preserved
-  [ ] Feature values at time of incident snapshotted
-  [ ] Upstream data sources checked for anomalies
-  [ ] Recent pipeline changes reviewed (code, data, features, thresholds)
-  [ ] Root cause identified: model, data, feature, threshold, or upstream?
-
-Resolve:
-  [ ] Root cause fixed or mitigated
-  [ ] Model retrained or thresholds adjusted if needed
-  [ ] Canary validated before re-enabling
-  [ ] Traffic restored gradually
-
-Learn:
-  [ ] Post-incident review within 24h (Sev1/2) or 5 days (Sev3)
-  [ ] Prevention: what gate or check would have caught this?
-  [ ] Detection: was time-to-detect acceptable? Improve monitoring if not.
-  [ ] Playbook updated with lessons learned
-```
-
----
-
-## Model Lifecycle and Retirement
-
-| State | Description | Actions allowed |
-|---|---|---|
-| Experimental | In development, not in production | Train, evaluate, register |
-| Shadow | Running on production traffic, no user impact | Logging, comparison |
-| Canary | Small live traffic | Limited rollout, guardrail monitoring |
-| Production | Full traffic | Monitoring, audit, support |
-| Deprecated | Still serving but replacement available | Serve existing traffic, no new deployments |
-| Retired | No longer serving | Audit logs retained, artifact archived |
-
-```python
-class ModelLifecycle:
-    VALID_TRANSITIONS = {
-        "experimental": ["shadow"],
-        "shadow": ["canary", "experimental"],
-        "canary": ["production", "shadow", "experimental"],
-        "production": ["deprecated"],
-        "deprecated": ["retired"],
-        "retired": [],  # terminal state
-    }
-
-    def transition(self, model, new_state):
-        if new_state not in self.VALID_TRANSITIONS.get(model.state, []):
-            raise InvalidTransitionError(
-                f"Cannot transition {model.name} from {model.state} to {new_state}"
-            )
-        model.state = new_state
-        registry.update_state(model)
-        audit_log.record_transition(model, new_state)
-
-# A model without a retirement path becomes operational debt.
-# Every production model should have a documented retirement plan
-# before it reaches full production traffic.
-```
-
----
-
-## Governance Failure Modes
-
-### Unowned Model
-
-The model runs in production but the original team moved on.
-
-Mitigation: owner metadata, stale model alerts, review cadence, and retirement plan.
-
-### Policy Hidden in Weights
-
-Business or safety policy is learned implicitly and cannot be reviewed.
-
-Mitigation: keep high-impact policy constraints explicit in re-ranking, thresholds, or rules.
-
-### Metric-Only Approval
-
-The model improves aggregate AUC but regresses a critical slice or violates a business guardrail.
-
-Mitigation: require slice checks and guardrail approval before promotion.
-
-### No Retirement Path
-
-Old models keep serving because nobody wants to own the migration risk.
-
-Mitigation: model registry lifecycle states: experimental, shadow, canary, production, deprecated, retired.
-
-### Rubber-Stamp Review
-
-Human reviewers approve 99% of model decisions because the queue is too deep and the SLA is too tight.
-
-Mitigation: monitor reviewer accuracy against expert adjudication, limit queue depth, and rotate reviewers. A review queue with 99% agreement is not a review queue — it's a latency tax.
-
----
-
-## Operational Metrics
-
-| Category | Metrics |
-|---|---|
-| Governance | Models by risk tier, overdue reviews, missing documentation |
-| Data | Sensitive feature usage, retention violations, feature owner coverage |
-| Decisions | Override rate, appeal rate, review queue latency |
-| Quality | Slice metrics, calibration, false positive/negative rate |
-| Incidents | Time to detect, time to disable model, affected decisions |
-| Lifecycle | Stale model age, retirement rate, rollback rate |
-| Human review | Queue depth, p95 review time, reviewer accuracy, overturn rate |
-
----
-
-## Architecture Review Checklist
-
-- What risk tier is this model?
-- Who owns the model and who is on call?
-- Is model documentation versioned with the artifact?
-- Are sensitive features and proxies reviewed?
-- Are high-impact actions reversible or reviewable?
-- Is there a human override and audit path?
-- Can the model be disabled without redeploying the service?
-- Are slice metrics reviewed before and after launch?
-- Is there a retirement plan?
-- Is there an incident response playbook that covers model-specific failures?
+A system that answers these with enforced controls is auditable, accountable, and reversible. A system that answers them with documents has governance theater, and the cost of that gap is paid by the people the model decides about — as Apple Card, Amazon, and the Dutch families learned.
 
 ---
 
 ## Key Takeaways
 
-1. Governance is a production control system, not a document folder.
-2. Higher-impact decisions need stronger controls outside the model.
-3. Lineage, audit logs, and ownership are reliability requirements.
-4. Explicit policy layers are easier to review than policy hidden in weights.
-5. A model without a retirement path becomes operational debt.
-6. Human review is a service with SLOs — monitor it like any other service.
-7. Incident response for ML must cover the case where the model is healthy but harmful.
-8. Model cards should be versioned artifacts, not wiki pages that drift from reality.
+1. Governance is the system of *enforced controls* that makes ML auditable, accountable, and reversible — a control not wired into the deployment path is theater.
+2. Risk tiering by impact (who is affected, reversibility, regulatory exposure) is the core decision framework; it parameterizes every other control.
+3. Lineage is the foundation: you cannot govern what you cannot reconstruct, so every production decision must trace to a model version, its data, and its inputs.
+4. Approval gates enforce separation of duties through the model registry — approval is a queryable state, not a memory.
+5. Explainability and contestability are *system* requirements: persist enough to explain and reverse a decision, and provide a real human-override path (GDPR Article 22, EU AI Act).
+6. Fairness is operational: declare the metric before deploy, measure it continuously across protected slices, and gate on it — never a one-time check.
+7. Rollback is a governance control; a system that detects harm but cannot stop it in under a minute is incomplete.
+8. Every regulated model needs a named owner and a retirement path, or it becomes an unaccountable, permanent liability.
+9. SR 11-7, GDPR, and the EU AI Act (phasing in through 2026–2027) all map onto the same enforced controls — build the controls and compliance largely follows.
+10. Ungoverned ML has a documented cost: Apple Card (2019), Amazon's scrapped recruiting tool (2018), and the Dutch childcare-benefits scandal were governance failures before they were model failures.
 
 ---
 
 ## References
 
-1. [Model Cards for Model Reporting](https://arxiv.org/abs/1810.03993)
-2. [Datasheets for Datasets](https://arxiv.org/abs/1803.09010)
-3. [NIST AI Risk Management Framework](https://www.nist.gov/itl/ai-risk-management-framework)
-4. [Hidden Technical Debt in Machine Learning Systems](https://proceedings.neurips.cc/paper_files/paper/2015/file/86df7dcfd896fcaf2674f757a2463eba-Paper.pdf)
-5. [EU AI Act: Risk Classification](https://artificialintelligenceact.eu/)
-6. [A Unified Approach to Interpreting Model Predictions (SHAP)](https://arxiv.org/abs/1705.07874)
+1. [SR 11-7: Guidance on Model Risk Management](https://www.federalreserve.gov/supervisionreg/srletters/sr1107.htm) — US Federal Reserve / OCC, 2011
+2. [EU AI Act — Official Text and Risk Classification](https://artificialintelligenceact.eu/) — adopted 2024, phased into 2026–2027
+3. [GDPR Article 22 — Automated Individual Decision-Making](https://gdpr-info.eu/art-22-gdpr/)
+4. [NIST AI Risk Management Framework](https://www.nist.gov/itl/ai-risk-management-framework)
+5. [Model Cards for Model Reporting](https://arxiv.org/abs/1810.03993) — Mitchell et al., 2019
+6. [Datasheets for Datasets](https://arxiv.org/abs/1803.09010) — Gebru et al., 2018
+7. [Hidden Technical Debt in Machine Learning Systems](https://proceedings.neurips.cc/paper_files/paper/2015/file/86df7dcfd896fcaf2674f757a2463eba-Paper.pdf) — Sculley et al., 2015
+8. [Amazon scraps secret AI recruiting tool that showed bias against women](https://www.reuters.com/article/us-amazon-com-jobs-automation-insight-idUSKCN1MK08G) — Reuters, 2018
+9. [Apple Card investigated after gender discrimination complaints](https://www.bloomberg.com/news/articles/2019-11-09/viral-tweet-about-apple-card-leads-to-probe-into-goldman-sachs) — Bloomberg, 2019
+10. [Dutch childcare benefits scandal / SyRI ruling](https://www.amnesty.org/en/latest/news/2021/10/xenophobic-machines-dutch-child-benefit-scandal/) — Amnesty International, 2021
