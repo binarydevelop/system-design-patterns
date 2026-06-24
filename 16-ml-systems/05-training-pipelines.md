@@ -2,11 +2,39 @@
 
 ## TL;DR
 
-Training pipelines turn raw data into reproducible model artifacts. A production pipeline must version inputs, validate data, build point-in-time datasets, train, evaluate, register artifacts, and gate promotion. Reproducibility is the central reliability requirement: a team should be able to explain what data, code, features, parameters, and environment produced a model.
+A training pipeline is the system that turns raw data into a model artifact you can trust enough to deploy. The notebook that produces a good model is not a training pipeline; the pipeline is everything that makes that result *reproducible, validated, governed, and re-runnable* months later by someone who has never met the original author. The central reliability property is reproducibility: a team must be able to explain exactly what data, code, features, parameters, and environment produced any model in production. Everything else — validation, lineage, promotion gates, scheduling — exists to protect that property as the world changes underneath the system.
 
 ---
 
-## Pipeline Shape
+## The Training Pipeline Is a System, Not a Script
+
+The defining mistake in production ML is treating training as a step rather than a system. A data scientist pulls a dataset, trains a model in a notebook, exports a file, and hands it to engineering. It works once. The trouble is that the model is now a *dependency* with no maintainer, no provenance, and no way to rebuild it.
+
+The reason this matters is that a model is the product of a long chain of decisions, most of them invisible in the artifact itself. The same model file can be produced by two different datasets, two different feature definitions, or two different library versions, and behave completely differently in production. Unlike a compiled binary — which is a deterministic function of its source — a model is a function of source *plus* data *plus* environment *plus* a dozen implicit choices. If any link in that chain is unrecorded, the model is unreproducible, and an unreproducible model is unrollbackable, unauditable, and undebuggable.
+
+This is the core insight from Sculley et al.'s *Hidden Technical Debt in Machine Learning Systems* (2015): the model code is a small box in the middle of a large diagram, and almost all the operational risk lives in the boxes around it — data collection, feature extraction, configuration, data verification, process management, serving infrastructure. The training pipeline is the discipline that turns those surrounding boxes from informal scripts into versioned, owned, monitored components.
+
+A useful test: if the person who built a model left the company tomorrow, could someone else rebuild the exact same model from what is recorded in the system? If the answer is no, you have a notebook, not a pipeline.
+
+---
+
+## Why Pipelines Decay
+
+Training pipelines rot in characteristic ways, and understanding the failure trajectory is more useful than any single best practice.
+
+The first decay is **silent input drift**. The pipeline keeps running and keeps producing models, but the upstream data changed meaning. A column that used to mean "gross revenue" now means "net revenue" after a finance team refactor. Nothing in the pipeline fails — the types still match, the job still succeeds — but every model trained after the change learns from subtly wrong data. This is why data validation must be part of the pipeline, not an afterthought: the pipeline cannot detect semantic change unless it is explicitly checking for it.
+
+The second decay is **lineage rot**. Early on, the team remembers which dataset and which commit produced the current model. After a few months and a few personnel changes, that memory is gone. The model in production becomes a black box that no one dares to touch, because no one knows how to reproduce it. Rollback becomes impossible because the "known good" previous version cannot be rebuilt either.
+
+The third decay is **ownership diffusion**. A training pipeline spans many teams — data platform owns ingestion, a domain team owns labels, a feature team owns transformations, the ML team owns training, a risk team owns approval. When any handoff is informal, the pipeline becomes nobody's responsibility at exactly the points where it is most fragile. The most common root cause of a decayed ML pipeline is not a technical flaw; it is an ambiguous ownership boundary that let a contract erode unnoticed.
+
+The discipline of a training pipeline is, in large part, the discipline of refusing to let these three decays happen: validate inputs, record lineage, and assign ownership to every stage.
+
+---
+
+## Anatomy of a Training Pipeline
+
+A production pipeline is a directed acyclic graph of idempotent steps, each consuming versioned inputs and producing versioned outputs. The shape is consistent across nearly every mature ML platform.
 
 ```mermaid
 flowchart LR
@@ -21,1483 +49,227 @@ flowchart LR
     PROMOTE -->|"fail"| STOP["Stop / investigate"]
 ```
 
-Each edge should carry metadata: dataset version, code version, feature definitions, parameters, artifact hash, and evaluation report.
+What makes this a *system* rather than a flowchart is that every edge carries metadata — dataset version, code version, feature definitions, parameters, artifact hash, evaluation report — and every node is owned, monitored, and re-runnable. A training pipeline is structurally a [batch data pipeline](../13-data-pipelines/01-batch-processing.md) with a model at the end; it inherits the same demands for [idempotent](../01-foundations/08-idempotency.md) steps, snapshot-based reproducibility, and [workflow orchestration](../18-workflow-job-systems/05-dag-orchestration.md) discipline that any derived-data system needs.
 
-A training pipeline is a [batch data pipeline](../13-data-pipelines/01-batch-processing.md) with a model at the end: it wants the same [workflow orchestration](../17-llm-systems/02-orchestration-patterns.md) discipline, [idempotent](../01-foundations/08-idempotency.md) re-runnable steps, and snapshot-based reproducibility that any derived-data system needs.
+### Stage Ownership
 
-### Pipeline DSLs: TFX vs Kubeflow vs Airflow
+Ambiguous ownership is the single most common reason pipelines decay, so the ownership table is not bureaucratic overhead — it is the contract that prevents silent erosion.
 
-Training pipelines are defined declaratively using a domain-specific language (DSL) that compiles to an orchestrator's execution graph. The DSL enforces pipeline structure, artifact lineage, and step caching — the orchestrator handles scheduling, retries, and resource allocation.
-
-```python
-# ── TFX DSL (TensorFlow Extended) ──────────────────────────
-# Each component is a reusable, type-checked pipeline stage.
-# Artifacts are typed and lineage is tracked automatically.
-from tfx import components
-from tfx.orchestration import pipeline
-from tfx.orchestration.kubeflow import kubeflow_dag_runner
-
-def create_pipeline(pipeline_name: str, pipeline_root: str, data_root: str,
-                    module_file: str, serving_model_dir: str) -> pipeline.Pipeline:
-    """Define a TFX pipeline declaratively."""
-
-    # ExampleGen: ingest and split data
-    example_gen = components.CsvExampleGen(input_base=data_root)
-
-    # StatisticsGen: compute summary statistics for validation
-    statistics_gen = components.StatisticsGen(examples=example_gen.outputs["examples"])
-
-    # SchemaGen: infer schema from statistics
-    schema_gen = components.SchemaGen(statistics=statistics_gen.outputs["statistics"])
-
-    # ExampleValidator: check for anomalies against schema
-    example_validator = components.ExampleValidator(
-        statistics=statistics_gen.outputs["statistics"],
-        schema=schema_gen.outputs["schema"],
-    )
-
-    # Transform: feature engineering (shared between training and serving)
-    transform = components.Transform(
-        examples=example_gen.outputs["examples"],
-        schema=schema_gen.outputs["schema"],
-        module_file=module_file,  # user-defined preprocessing_fn
-    )
-
-    # Trainer: train the model
-    trainer = components.Trainer(
-        module_file=module_file,  # user-defined run_fn
-        examples=transform.outputs["transformed_examples"],
-        transform_graph=transform.outputs["transform_graph"],
-        schema=schema_gen.outputs["schema"],
-        train_args=components.TrainArgs(num_steps=10000),
-        eval_args=components.EvalArgs(num_steps=5000),
-    )
-
-    # Evaluator: validate model quality and blessing
-    evaluator = components.Evaluator(
-        examples=example_gen.outputs["examples"],
-        model=trainer.outputs["model"],
-        baseline_model=None,  # or previous champion for regression check
-        eval_config=components.EvalConfig(
-            model_specs=[components.ModelSpec(label_key="label")],
-            metrics_specs=components.MetricsSpecs(
-                metrics=[
-                    components.MetricConfig(class_name="AUC"),
-                    components.MetricConfig(class_name="FalsePositiveRate"),
-                ],
-                thresholds={
-                    "AUC": components.MetricThreshold(
-                        value_threshold=components.GenericValueThreshold(
-                            lower_bound={"value": 0.75}
-                        )
-                    ),
-                },
-            ),
-        ),
-    )
-
-    # Pusher: if blessed, push to serving
-    pusher = components.Pusher(
-        model=trainer.outputs["model"],
-        model_blessing=evaluator.outputs["blessing"],
-        push_destination=components.PushDestination(
-            filesystem=components.FilesystemDestination(
-                base_directory=serving_model_dir
-            )
-        ),
-    )
-
-    return pipeline.Pipeline(
-        pipeline_name=pipeline_name,
-        pipeline_root=pipeline_root,
-        components=[
-            example_gen, statistics_gen, schema_gen, example_validator,
-            transform, trainer, evaluator, pusher,
-        ],
-    )
-```
-
-```python
-# ── Kubeflow Pipelines DSL (KFP v2) ────────────────────────
-# Decorator-based: mark Python functions as pipeline steps.
-# The KFP compiler turns the decorated graph into an Argo workflow.
-from kfp import dsl, compiler
-from kfp.dsl import Input, Output, Dataset, Model, Metrics, Artifact
-
-@dsl.component(
-    base_image="python:3.11",
-    packages_to_install=["pandas", "pyarrow", "scikit-learn"],
-)
-def validate_data(dataset: Input[Dataset], report: Output[Artifact]) -> bool:
-    """Validate schema, distributions, and freshness."""
-    import pandas as pd
-    df = pd.read_parquet(dataset.path)
-    # ... validation logic ...
-    report.metadata["rows_checked"] = len(df)
-    report.metadata["passed"] = True
-    return True
-
-@dsl.component(
-    base_image="python:3.11",
-    packages_to_install=["xgboost", "scikit-learn", "pandas"],
-)
-def train_model(
-    train_data: Input[Dataset],
-    model: Output[Model],
-    metrics: Output[Metrics],
-    max_depth: int = 6,
-    learning_rate: float = 0.05,
-    n_estimators: int = 500,
-):
-    """Train an XGBoost model and output metrics."""
-    import xgboost as xgb
-    import pandas as pd
-    from sklearn.metrics import roc_auc_score
-
-    df = pd.read_parquet(train_data.path)
-    X, y = df.drop("label", axis=1), df["label"]
-
-    clf = xgb.XGBClassifier(
-        max_depth=max_depth, learning_rate=learning_rate,
-        n_estimators=n_estimators, random_state=42,
-    )
-    clf.fit(X, y)
-
-    metrics.log_metric("auc", roc_auc_score(y, clf.predict_proba(X)[:, 1]))
-    metrics.log_metric("n_features", X.shape[1])
-
-    import joblib
-    joblib.dump(clf, model.path)
-
-@dsl.pipeline(
-    name="fraud-training-pipeline",
-    description="Daily fraud model training with validation and promotion gates",
-)
-def fraud_training_pipeline(
-    snapshot_date: str = "2026-06-10",
-    label_window_days: int = 30,
-    max_depth: int = 6,
-    learning_rate: float = 0.05,
-    n_estimators: int = 500,
-):
-    # Step 1: Ingest snapshot
-    ingest_op = dsl.importer(
-        artifact_uri=f"gs://ml-data/fraud/snapshots/{snapshot_date}/",
-        artifact_class=Dataset,
-    )
-
-    # Step 2: Validate
-    validation_op = validate_data(dataset=ingest_op.output)
-
-    # Step 3: Train (only if validation passes)
-    train_op = train_model(
-        train_data=ingest_op.output,
-        max_depth=max_depth,
-        learning_rate=learning_rate,
-        n_estimators=n_estimators,
-    )
-    train_op.after(validation_op)
-
-    # Step 4: Evaluate (slices, guardrails, regression vs baseline)
-    evaluate_op = evaluate_model(
-        test_data=ingest_op.output,
-        model=train_op.outputs["model"],
-        baseline_model_version="v41",
-    )
-
-    # Step 5: Promotion gate — automated, with optional manual approval
-    promote_op = promotion_gate(
-        evaluation=evaluate_op.outputs["report"],
-        guardrails={
-            "auc_roc_min": 0.90,
-            "false_positive_rate_max": 0.02,
-            "slice_regression_max": 0,  # no slice can degrade
-        },
-        risk_tier="high",  # fraud = requires human approval
-    )
-
-    # Step 6: Register (only if promotion gate passes)
-    register_op = register_model(
-        model=train_op.outputs["model"],
-        metrics=train_op.outputs["metrics"],
-        evaluation=evaluate_op.outputs["report"],
-    )
-    register_op.after(promote_op)
-
-
-# Compile to Argo workflow YAML for execution on Kubernetes
-compiler.Compiler().compile(fraud_training_pipeline, "fraud_training_pipeline.yaml")
-```
-
-```python
-# ── Airflow DAG ─────────────────────────────────────────────
-# More imperative, but widely adopted and well-integrated with
-# the rest of the data platform (Spark, dbt, Fivetran, etc.)
-
-from airflow import DAG
-from airflow.operators.python import PythonOperator
-from airflow.operators.empty import EmptyOperator
-from airflow.utils.dates import days_ago
-from datetime import timedelta
-
-default_args = {
-    "owner": "ml-fraud",
-    "retries": 1,
-    "retry_delay": timedelta(minutes=5),
-    "email_on_failure": True,
-}
-
-with DAG(
-    dag_id="fraud_model_training",
-    default_args=default_args,
-    schedule_interval="0 6 * * *",  # daily at 6am
-    start_date=days_ago(30),
-    catchup=False,
-    tags=["ml", "fraud", "critical"],
-) as dag:
-
-    start = EmptyOperator(task_id="start")
-
-    ingest = PythonOperator(
-        task_id="ingest_data",
-        python_callable=ingest_data,
-        op_kwargs={"snapshot_date": "{{ ds }}", "label_window_days": 30},
-    )
-
-    validate = PythonOperator(
-        task_id="validate_data",
-        python_callable=validate_dataset,
-        op_kwargs={"expectations_suite": "fraud_training"},
-    )
-
-    train = PythonOperator(
-        task_id="train_model",
-        python_callable=train_model,
-        op_kwargs={"model_type": "xgboost", "hyperparameters": {"max_depth": 6}},
-    )
-
-    evaluate = PythonOperator(
-        task_id="evaluate_model",
-        python_callable=evaluate_model,
-        op_kwargs={"baseline_version": "v41", "slices": ["geography", "device"]},
-    )
-
-    promote = PythonOperator(
-        task_id="promotion_gate",
-        python_callable=promotion_gate,
-        op_kwargs={"risk_tier": "high", "requires_approval": True},
-    )
-
-    register = PythonOperator(
-        task_id="register_artifact",
-        python_callable=register_model,
-    )
-
-    start >> ingest >> validate >> train >> evaluate >> promote >> register
-```
-
-### DSL Trade-offs
-
-| DSL | Strength | Weakness |
-|---|---|---|
-| TFX | Strong typing for ML artifacts; built-in data validation, schema inference, and evaluation gates; transform graph shared between training and serving | TensorFlow-centric (though extensible); steeper learning curve; heavier deployment |
-| Kubeflow Pipelines v2 | Kubernetes-native; decorator-based; any Python library; artifact passing and caching built in; good UI for DAG visualization and lineage | Requires K8s cluster; component I/O can be slow for large artifacts; version drift between SDK and platform |
-| Airflow | Mature ecosystem; integrates with the rest of the data stack (dbt, Spark, Fivetran); rich scheduling and retry semantics | DAGs are Python, not declarative ML; no built-in ML artifact typing or lineage; PythonOperator means you bring your own version of everything |
-| Metaflow (Netflix) | Designed for ML workflows; first-class step caching, artifact tracking, and resume; local-to-cloud portability | Less adoption outside Netflix; smaller community; opinionated data flow model |
-
-The common thread: all of them compile a DAG of idempotent steps, each producing versioned artifacts, with the orchestrator handling scheduling, retries, and dependency resolution. The choice between them is usually driven by infrastructure (are you on K8s already?), existing orchestration (does the data team use Airflow?), and ML framework coupling (are you in the TFX ecosystem?).
-
-### Execution Engine Architecture
-
-The DSL compiles to an execution graph, but the execution engine is what actually runs it. This is where the system design lives.
-
-```mermaid
-flowchart TD
-    subgraph Control Plane
-        SCHED["Scheduler"] --> EXEC["Execution engine"]
-        EXEC --> CACHE["Step cache"]
-        EXEC --> ART["Artifact store"]
-        EXEC --> LINEAGE["Lineage store"]
-    end
-
-    subgraph Data Plane
-        WORKERS["Worker pool"] --> READ["Read artifacts"]
-        READ --> COMPUTE["Compute step"]
-        COMPUTE --> WRITE["Write artifacts"]
-    end
-
-    EXEC --> WORKERS
-    WRITE --> ART
-    WRITE --> LINEAGE
-```
-
-| Component | Responsibility | Failure mode when weak |
-|---|---|---|
-| Scheduler | Decide when steps run, resolve dependencies | Starvation, deadlock, missed SLAs |
-| Execution engine | Dispatch steps to workers, collect results | Lost work, zombie steps, double execution |
-| Step cache | Skip recomputation when inputs unchanged | Cache invalidation bugs, stale results |
-| Artifact store | Persist step outputs with content addressing | Lost artifacts, corruption, no lineage |
-| Lineage store | Record which inputs produced which outputs | Untraceable models, no rollback path |
-| Worker pool | Run the actual compute | Noisy neighbors, resource exhaustion |
-
-### Step Caching and Content Addressing
-
-The single biggest efficiency lever in a training pipeline is skipping work that's already been done. A step's output is reusable only if its inputs are identical.
-
-```python
-import hashlib
-import json
-import os
-
-def step_cache_key(step_name, inputs, code_version, environment, parameters):
-    """
-    Content-addressed cache key for a pipeline step.
-    Same inputs + code + env + params → same key → cache hit.
-    """
-    # Hash inputs by content, not by path — paths can change
-    input_hashes = {}
-    for name, artifact in inputs.items():
-        input_hashes[name] = artifact.content_hash  # SHA256 of bytes
-
-    key_material = {
-        "step": step_name,
-        "inputs": input_hashes,
-        "code": code_version,        # git commit
-        "env": environment,           # container image digest
-        "params": parameters,
-    }
-    return hashlib.sha256(
-        json.dumps(key_material, sort_keys=True).encode()
-    ).hexdigest()
-
-def run_step_with_cache(step_fn, step_name, inputs, code_version,
-                         environment, parameters, cache_dir):
-    """Run a step, or return cached output if inputs are unchanged."""
-    key = step_cache_key(step_name, inputs, code_version, environment, parameters)
-    cache_path = os.path.join(cache_dir, f"{key}.tar")
-
-    if os.path.exists(cache_path):
-        print(f"CACHE HIT: {step_name} ({key[:8]})")
-        return load_artifact(cache_path)
-
-    print(f"CACHE MISS: {step_name} ({key[:8]}) — executing")
-    output = step_fn(**inputs, **parameters)
-    save_artifact(cache_path, output)
-    return output
-```
-
-Cache invalidation is the hard part. Common bugs:
-
-- **Path-based keys** instead of content-based: renaming a file invalidates nothing but breaks reproducibility.
-- **Missing code version**: a function change isn't picked up because the cache key didn't include the commit.
-- **Missing environment**: a numpy upgrade changes floating-point behavior, but the cache returns the old result.
-- **Non-deterministic steps**: a step that reads "latest" data or uses wall-clock time can never be cached.
-
-### Lineage Store Design
-
-The lineage store answers: "given this model artifact, what produced it?" It's a DAG of artifacts and steps, queryable backwards (provenance) and forwards (impact analysis).
-
-```python
-# Lineage record for a single step execution
-lineage_record = {
-    "execution_id": "exec_abc123",
-    "step_name": "train_model",
-    "started_at": "2026-06-10T06:15:00Z",
-    "finished_at": "2026-06-10T08:30:00Z",
-    "status": "succeeded",
-
-    # Inputs: artifacts consumed by this step
-    "inputs": [
-        {"artifact_id": "art_train_data_v7", "version": "sha256:abc..."},
-        {"artifact_id": "art_feature_defs_v12", "version": "sha256:def..."},
-    ],
-
-    # Outputs: artifacts produced by this step
-    "outputs": [
-        {"artifact_id": "art_model_v42", "version": "sha256:ghi..."},
-        {"artifact_id": "art_eval_report_v42", "version": "sha256:jkl..."},
-    ],
-
-    # Execution context
-    "code_version": "441c720",
-    "environment": "registry.example.com/ml-train:2026-06-01",
-    "parameters": {"max_depth": 6, "learning_rate": 0.05},
-    "worker": "worker-pool-3",
-}
-```
-
-```mermaid
-flowchart LR
-    DATA["train_data_v7"] --> TRAIN["train_step"]
-    FEATS["feature_defs_v12"] --> TRAIN
-    CODE["code@441c720"] --> TRAIN
-    ENV["image:2026-06-01"] --> TRAIN
-    TRAIN --> MODEL["model_v42"]
-    TRAIN --> EVAL["eval_report_v42"]
-    MODEL --> REG["registry: fraud_classifier v42"]
-    REG --> DEPLOY["deployment: canary 5%"]
-```
-
-Query patterns the lineage store must support:
-
-- **Provenance**: given `model_v42`, return all inputs and steps that produced it.
-- **Impact**: given `train_data_v7`, return all models that used it (for "this dataset had a bug, what models need retraining?").
-- **Diff**: given two model versions, return which inputs changed.
-- **Replay**: given a model version, return enough to re-execute the same step.
-
-Implementation choices:
-
-| Store | Fit | Trade-off |
-|---|---|---|
-| Relational DB (Postgres) | Simple queries, joins, indexes | Schema migrations as lineage model evolves |
-| Graph DB (Neo4j, Dgraph) | Natural fit for DAG traversal | Less familiar ops, harder to operate |
-| Document store (DynamoDB, Mongo) | Flexible schema for evolving records | Multi-hop queries are expensive |
-| Append-only log + index (Kafka + Elasticsearch) | Audit-grade, replayable | Eventually consistent; harder ad-hoc queries |
-
-Most platforms start with a relational DB and move to a graph backend only when impact analysis across thousands of models becomes slow.
-
----
-
-## Pipeline DAG Ownership
-
-| Stage | Owner | Contract |
+| Stage | Owner | Contract it guarantees |
 |---|---|---|
 | Source ingestion | Data/platform team | Fresh, deduplicated, schema-versioned data |
-| Label generation | Product/domain team | Label definition and delay window |
+| Label generation | Product/domain team | Stable label definition and known delay window |
 | Feature computation | Feature owner | Point-in-time correct feature values |
 | Training | ML team | Reproducible artifact and metrics |
-| Evaluation | ML + product + risk owners | Promotion decision and guardrails |
+| Evaluation | ML + product + risk | Promotion decision against guardrails |
 | Registry | Platform team | Artifact state, lineage, rollback target |
 | Deployment | Serving/platform team | Runtime compatibility and rollout controls |
 
-Ambiguous ownership is a common reason ML pipelines decay. Every stage should have an owner and a failure policy.
+The contract column matters more than the owner column. When a contract is violated — labels arrive later than the promised window, a feature silently changes meaning — the pipeline should fail loudly at the boundary, not absorb the violation and pass a corrupted dataset downstream.
 
 ---
 
-## Reproducibility Contract
+## The Reproducibility Problem
 
-A model version should answer:
+Reproducibility is the foundation property because every other reliability guarantee depends on it. You cannot roll back to a model you cannot rebuild. You cannot audit a decision whose inputs you cannot reconstruct. You cannot debug a regression whose training conditions you cannot recreate.
 
-- Which code commit trained it?
-- Which dataset snapshot and label window were used?
-- Which feature definitions and backfills were used?
-- Which hyperparameters were used?
-- Which container image or environment ran training?
-- Which metrics and slices passed evaluation?
-- Which human or automation approved promotion?
+A model is reproducible only if five distinct axes are pinned, and most reproducibility failures come from forgetting one of them.
 
-If the team cannot answer these, rollback and incident analysis become guesswork.
+**Code** is the most obvious axis and the one teams handle best, because Git already solves it. The model version must record the exact commit that trained it, including the pipeline definition, not just the model class.
 
-### Reproducibility Contract (Metadata Attached to Every Artifact)
+**Data** is the axis teams handle worst, because data is large, mutable, and lives outside version control. The pipeline must pin an immutable snapshot — a specific partition, a specific timestamp, a specific label window — such that the exact training set can be reconstructed. "I trained on last month's data" is not reproducible; "I trained on the snapshot at `2026-06-10T00:00:00Z` with a 30-day label window" is.
 
-```python
-# Every model artifact carries this metadata when registered
-reproducibility_contract = {
-    "model_version": "fraud_classifier_v42",
-    "code": {
-        "repository": "github.com/org/ml-models",
-        "commit": "441c720a3b9f1e2d6c8a5f7e0b3d9c1a2e4f5a6b",
-        "pipeline_definition": "pipelines/fraud/pipeline.py",
-    },
-    "data": {
-        "source_table": "warehouse.ml.fraud_training_examples",
-        "snapshot_time": "2026-06-10T00:00:00Z",
-        "label_window_days": 30,
-        "train_examples": 12_345_678,
-        "test_examples": 3_086_419,
-        "positive_rate": 0.023,
-        "split_method": "time_based",
-        "train_cutoff": "2026-05-25T00:00:00Z",
-    },
-    "features": {
-        "feature_views": [
-            {"name": "account_risk", "version": "v12"},
-            {"name": "device_velocity", "version": "v7"},
-        ],
-        "point_in_time_correct": True,
-        "feature_count": 342,
-    },
-    "training": {
-        "model_class": "XGBoostClassifier",
-        "hyperparameters": {
-            "max_depth": 6, "learning_rate": 0.05,
-            "n_estimators": 500, "subsample": 0.8,
-        },
-        "random_seed": 42,
-        "framework_version": "2.0.3",
-    },
-    "environment": {
-        "image": "registry.example.com/ml-train:2026-06-01",
-        "accelerator": "NVIDIA-A100-40GB",
-        "accelerator_count": 4,
-    },
-    "evaluation": {
-        "auc_roc": 0.942,
-        "precision_at_recall_80": 0.31,
-        "false_positive_rate_at_recall_80": 0.018,
-        "slices_passing": 12,
-        "slices_total": 13,
-        "calibration_error": 0.012,
-        "guardrails_passing": True,
-    },
-    "promotion": {
-        "approved_by": "fraud-model-review",
-        "approved_at": "2026-06-10T14:30:00Z",
-        "risk_tier": "high",
-        "rollback_target": "fraud_classifier_v41",
-    },
-}
-```
+**Features** are a subtle axis because feature definitions evolve independently of model code. A feature named `account_risk` might mean three different things across three versions. The model must pin the feature *view versions* it consumed, and the meaning of those versions must be immutable. (This is why feature stores treat a semantic change as a new feature name, not an in-place edit — see [Feature Stores](./02-feature-stores.md).)
 
-The registry is the source of truth, not a Slack thread or spreadsheet. Every artifact carries this record or a pointer to it. If you can't reconstruct why a model shipped, you can't safely roll it back.
+**Parameters** include hyperparameters and random seeds. Without the seed, a model trained twice on identical data can differ, which makes debugging variance from genuine regression impossible.
 
----
+**Environment** is the axis that produces the most baffling incidents, because it is invisible. A NumPy upgrade changes floating-point accumulation order. A CUDA version changes kernel behavior. The model trained yesterday cannot be reproduced today because the container image was rebuilt. The pipeline must pin the container image *by digest*, not by tag — `ml-train:latest` is the enemy of reproducibility.
 
-## Data Validation
-
-Validate before training, not after a bad model reaches production.
-
-| Check | Example |
-|---|---|
-| Schema | Required column missing |
-| Type | String appears where numeric feature is expected |
-| Range | Age is negative, probability above 1 |
-| Distribution | Mean transaction amount changed 5x |
-| Completeness | 40% of labels missing |
-| Uniqueness | Duplicate entity-event pairs |
-| Freshness | Latest partition is older than expected |
-
-### Validation with Great Expectations / TFDV
-
-```python
-# Data validation checks run before training — fail fast, fail loud
-import great_expectations as gx
-from datetime import datetime, timedelta
-
-def validate_dataset(df, expectations_suite="fraud_training_v2"):
-    """Validate a dataset against a versioned expectations suite."""
-    context = gx.get_context()
-    validator = context.sources.pandas_default.read_dataframe(df)
-
-    # Schema checks
-    validator.expect_column_to_exist("transaction_amount")
-    validator.expect_column_values_to_be_of_type("transaction_amount", "float64")
-    validator.expect_column_values_to_not_be_null("user_id")
-
-    # Range checks
-    validator.expect_column_values_to_be_between(
-        "transaction_amount", min_value=0, max_value=1_000_000
-    )
-    validator.expect_column_values_to_be_in_set(
-        "event_type", ["purchase", "refund", "transfer", "login"]
-    )
-
-    # Distribution drift check — compare to training baseline
-    validator.expect_column_kl_divergence_to_be_less_than(
-        "event_type",
-        partition_object=baseline_distribution["event_type"],
-        threshold=0.1,    # KL divergence over 0.1 triggers investigation
-    )
-
-    # Completeness: less than 0.5% null labels
-    validator.expect_column_values_to_not_be_null("label", mostly=0.995)
-
-    # Uniqueness: zero duplicate entity-event pairs
-    validator.expect_column_pair_values_to_be_equal("dedup_key", "dedup_key", or_equal=0)
-
-    # Freshness: latest event must be within the last 26 hours
-    validator.expect_column_max_to_be_between(
-        "event_timestamp",
-        min_value=datetime.now() - timedelta(hours=26),
-        max_value=datetime.now(),
-    )
-
-    validation_result = validator.validate()
-    if not validation_result.success:
-        # Log all failures, then fail the pipeline
-        for result in validation_result.results:
-            if not result.success:
-                print(f"FAIL: {result.expectation_config.expectation_type}")
-                print(f"  Column: {result.expectation_config.kwargs.get('column', 'N/A')}")
-                print(f"  Details: {result.result}")
-        raise DataValidationError(
-            f"Validation failed: {len(validation_result.results)} checks failed"
-        )
-    return validation_result
-```
-
-Validation rules should be versioned with the pipeline and reviewed when source semantics change. A change to the `event_type` enum of the upstream source is a breaking change for the pipeline — the validation suite should catch it before training wastes 4 GPU-hours.
-
----
-
-## Train/Test Split Strategy
-
-The split must match the production question.
-
-| Split | Use when | Failure mode |
-|---|---|---|
-| Random row split | IID examples and no entity leakage | Overestimates quality for users/items seen in train |
-| Time-based split | Future performance matters | Sensitive to seasonality and one-off events |
-| Entity split | Need generalize to new users/items/accounts | Harder task; may understate warm-start quality |
-| Group split | Households, teams, merchants, creators | Requires correct group identity |
-| Geographic/market split | Launching into new region | Confounds region differences with time |
-| Interleaved online test | Ranking system comparison | Needs exposure logging and traffic |
-
-If production predicts the future, random splits are usually too optimistic.
-
-### Split Implementation
-
-```python
-import pandas as pd
-from datetime import datetime, timedelta
-
-def time_based_split(df, timestamp_col, train_cutoff, test_start, test_end):
-    """
-    Time-based split: train on past, evaluate on future.
-    The most common and honest split for production ML.
-    """
-    train = df[df[timestamp_col] < train_cutoff]
-    test = df[(df[timestamp_col] >= test_start) & (df[timestamp_col] < test_end)]
-
-    # Sanity checks
-    assert len(train) > 0, "Train set is empty — cutoff may be too recent"
-    assert len(test) > 0, "Test set is empty — date range may be wrong"
-    assert train[timestamp_col].max() < test[timestamp_col].min(), \
-        "Leakage: train and test time ranges overlap"
-
-    # Check entity leakage
-    train_entities = set(train["user_id"])
-    test_entities = set(test["user_id"])
-    overlap = train_entities & test_entities
-    overlap_rate = len(overlap) / len(test_entities) if test_entities else 0
-    print(f"Entity overlap between train and test: {overlap_rate:.2%}")
-    # Overlap is expected for time-based splits — you're testing the same
-    # users in a future time window. If overlap is near 0%, something is wrong
-    # with the data pipeline (possibly different user ID spaces).
-
-    return train, test
-
-def entity_split(df, entity_col, test_frac=0.2, seed=42):
-    """
-    Entity split: ensure no entity appears in both train and test.
-    Use when you need to generalize to entirely new entities.
-    """
-    entities = df[entity_col].unique()
-    test_entities = set(
-        pd.Series(entities).sample(frac=test_frac, random_state=seed)
-    )
-    train = df[~df[entity_col].isin(test_entities)]
-    test = df[df[entity_col].isin(test_entities)]
-    return train, test
-```
-
-### Leakage Detection Checklist
-
-Before accepting a split as valid:
-
-1. **No time travel.** Any feature that uses data after the prediction timestamp is leakage.
-2. **No label leakage.** Labels must not be derived from features available at prediction time (e.g., `has_chargeback` computed from a column that includes future chargebacks).
-3. **No entity crossover in entity splits.** Train entities must be disjoint from test entities.
-4. **Point-in-time features.** Features must use `as_of` timestamps, not current values (covered in [Feature Stores](./02-feature-stores.md)).
-5. **Suspicious features.** If a single feature gives AUC > 0.99, it's probably leakage (e.g., `response_received` predicting `responded`).
-
----
-
-## Dataset Versioning
-
-Training data is usually too large to commit to Git, but the pipeline can version references:
+The practical encoding of all five axes is a *reproducibility contract*: a metadata record attached to every registered model that answers, programmatically, "what produced this?" The registry — not a Slack thread, not a wiki, not someone's memory — is the source of truth.
 
 ```yaml
-dataset:
-  source: warehouse.ml.fraud_training_examples
-  snapshot_date: 2026-06-10
-  entity_time_column: decision_at
-  label_window: 30d
-  feature_view_versions:
-    - account_risk:v12
-    - device_velocity:v7
-code:
-  commit: 441c720
-environment:
-  image: registry.example.com/ml-train:2026-06-01
+# The reproducibility contract: the minimum required to rebuild a model
+model_version: fraud_classifier_v42
+code:        { repo: org/ml-models, commit: 441c720, pipeline: pipelines/fraud/pipeline.py }
+data:        { snapshot: "2026-06-10T00:00:00Z", label_window_days: 30, split: time_based }
+features:    [ account_risk:v12, device_velocity:v7 ]
+parameters:  { max_depth: 6, learning_rate: 0.05, seed: 42 }
+environment: { image_digest: "sha256:9f86d08...", accelerator: A100-40GB }
 ```
 
-The goal is deterministic reconstruction, not storing everything in the model registry.
-
-### Training Data I/O Architecture
-
-Training pipelines are usually I/O-bound, not compute-bound. The way training data is stored, sharded, and read dominates end-to-end latency — especially for deep learning where the GPU starves if the data pipeline can't keep up.
-
-```mermaid
-flowchart LR
-    subgraph Storage
-        WH["Warehouse<br/>(BigQuery, Snowflake)"] --> EXPORT["Export job"]
-        EXPORT --> LAKE["Object storage<br/>(S3, GCS)"]
-        LAKE --> SHARD["Sharded files<br/>(Parquet, TFRecord)"]
-    end
-
-    subgraph Training
-        SHARD --> LOADER["Data loader"]
-        LOADER --> PREFETCH["Prefetch queue"]
-        PREFETCH --> GPU["GPU/accelerator"]
-    end
-
-    CACHE["Local SSD cache"] -.-> LOADER
-    LAKE -.-> CACHE
-```
-
-| Format | Strength | Weakness | Use when |
-|---|---|---|---|
-| Parquet | Columnar, compressed, schema evolution, ecosystem support | Row-group granularity; not ideal for streaming | Tabular data, feature joins, batch training |
-| TFRecord | Sequential read, protobuf schema, designed for TF data pipeline | TF-specific; opaque outside TF | Large-scale deep learning on TF |
-| WebDataset / shards | POSIX-friendly streaming, S3-native, resumable | Requires sharding discipline | Large-scale training on cloud object storage |
-| In-warehouse SQL | No export step; always fresh | Warehouse is the bottleneck; expensive compute | Small datasets, experimentation |
-| In-memory (Arrow) | Zero-copy reads, fast | Memory-bound; doesn't scale to TB | Small/medium datasets, interactive iteration |
-
-#### Sharding Strategy
-
-```python
-# Sharding for parallel training workers
-# Each worker reads a disjoint subset of shards
-
-def shard_for_worker(num_shards: int, world_size: int, rank: int) -> list[int]:
-    """Return shard indices for this worker. Disjoint across ranks."""
-    return list(range(rank, num_shards, world_size))
-
-# Example: 100 shards, 4 workers
-# worker 0 → [0, 4, 8, ..., 96]
-# worker 1 → [1, 5, 9, ..., 97]
-# worker 2 → [2, 6, 10, ..., 98]
-# worker 3 → [3, 7, 11, ..., 99]
-```
-
-Shard sizing rule of thumb: each shard should hold 100MB–1GB compressed. Too small → metadata overhead dominates. Too large → stragglers and poor load balancing across workers.
-
-#### Prefetch and Pipeline Parallelism
-
-```python
-# PyTorch data loader with prefetching — overlaps I/O with compute
-from torch.utils.data import DataLoader
-
-dataloader = DataLoader(
-    dataset,
-    batch_size=1024,
-    num_workers=8,        # parallel I/O workers
-    pin_memory=True,      # speed up host→GPU transfer
-    prefetch_factor=4,    # each worker prefetches 4 batches
-    persistent_workers=True,  # reuse workers across epochs
-)
-
-# Goal: GPU never waits for data. Measure with:
-#   - GPU utilization (should be > 80%)
-#   - Data loader queue depth (should rarely hit 0)
-#   - Time per batch vs time per step
-```
-
-If GPU utilization is below 70%, the bottleneck is almost always I/O — not the model. Fixes, in order of impact:
-
-1. Increase `num_workers` until CPU saturates.
-2. Cache shards on local SSD (NVMe) instead of reading from object storage every epoch.
-3. Increase `prefetch_factor` to hide I/O latency behind compute.
-4. Use a faster format (Parquet → TFRecord or WebDataset for sequential reads).
-5. Co-locate workers with storage (same AZ, or on-cluster cache like Alluxio).
+The rule that makes this work: **no artifact enters the registry without a complete contract.** A model without provenance is not a release candidate; it is a liability.
 
 ---
 
-## Snapshot and Backfill Architecture
+## The Validation Problem: Catching Bad Data Before It Becomes a Bad Model
 
-```mermaid
-flowchart LR
-    SRC["Raw sources"] --> SNAP["Immutable snapshots"]
-    SNAP --> FEAT["Feature computation"]
-    FEAT --> TRAIN["Training set"]
-    BUG["Bug fix / new feature"] --> BACK["Backfill job"]
-    BACK --> SNAP
-    TRAIN --> REG["Dataset registry"]
-```
+The most expensive way to discover a data problem is in production, weeks after a model trained on corrupted data started making decisions. The second most expensive is after a four-hour GPU training run completes. The cheapest is before training starts. Data validation exists to move detection as early as possible.
 
-Backfills are dangerous because they rewrite the apparent past. Keep the original production values when you need to debug historical decisions; use corrected backfills for future training only after validation.
+The categories of data failure are well understood. **Schema failures** — a column disappears, a type changes — are the easiest to catch and the most common after an upstream refactor. **Range failures** — a negative age, a probability above one, a transaction amount of ten billion dollars — catch corruption that schema checks miss. **Distribution failures** are subtler and more dangerous: the schema is intact, the values are in range, but the *shape* of the data shifted, because a new market launched, a logging bug halved the event volume, or an upstream join started dropping rows. **Completeness failures** — forty percent of labels suddenly missing — silently bias the model toward whatever subpopulation still has labels. **Uniqueness failures** — duplicated events — inflate the apparent frequency of whatever the duplicates represent.
 
-### Backfill Safety Rules
+The deeper principle is that *type compatibility does not imply semantic compatibility*. The `event_type` enum gaining a new value, or `total_spend` switching from gross to net, will pass every type check and every null check while quietly poisoning the model. This is why mature validation compares against a *baseline distribution* — the statistical fingerprint of the data the current production model was trained on — and flags divergence even when every value is individually valid. Google's TensorFlow Data Validation and tools like Great Expectations exist precisely to make these distributional contracts explicit, versioned, and enforced before training consumes a single GPU-hour.
 
-```python
-# Backfill safety: version everything, never mutate production data
-def safe_backfill(feature_view, new_version, backfill_start, backfill_end):
-    """
-    Backfill a feature view for a date range.
-    - Write to a new version, never overwrite the old.
-    - Validate before switching training to use the new version.
-    - Keep old version for incident reconstruction.
-    """
-    # 1. Compute features for the backfill range into a staging location
-    staging_table = f"features_staging.{feature_view}_v{new_version}"
-
-    # 2. Validate: compare a sample against the old version
-    old_version = new_version - 1
-    comparison = compare_feature_versions(
-        feature_view=feature_view,
-        version_a=old_version,
-        version_b=new_version,
-        sample_dates=[backfill_start, backfill_end],
-    )
-    if comparison.has_breaking_changes:
-        raise BackfillValidationError(comparison.summary())
-
-    # 3. Promote: update the feature view registry to point training at v{new_version}
-    #    The old version remains queryable for incident analysis
-    register_feature_view_version(feature_view, new_version, staging_table)
-
-    # 4. Retain: keep the old feature values for at least N months
-    #    for auditing and debugging past model decisions
-```
+The operational rule is *fail fast, fail loud*. A validation failure should stop the pipeline and page the data owner, not log a warning that scrolls past. A change to an upstream enum is a breaking change to every model downstream of it, and the validation suite is the only place that breaking change can be caught cheaply.
 
 ---
 
-## Evaluation Gates
+## The Leakage Problem: When Good Offline Metrics Lie
 
-```mermaid
-flowchart TD
-    CAND["Candidate model"] --> OFF["Offline metrics"]
-    OFF --> SLICE["Slice metrics"]
-    SLICE --> REG["Regression tests"]
-    REG --> SAFE["Safety / policy checks"]
-    SAFE --> GATE{"Promote?"}
-    GATE -->|"yes"| REGISTRY["Model registry"]
-    GATE -->|"no"| REPORT["Evaluation report"]
-```
+Data leakage is the most insidious failure in training pipelines because it makes a broken model look excellent. Leakage occurs when the training data contains information that would not be available at prediction time. The model learns to exploit that information, posts spectacular offline metrics, and then collapses in production where the leaked signal is absent.
 
-### Promotion Gate Implementation
+The reason leakage is so hard to eliminate is that it hides inside joins and timestamps that look perfectly reasonable. Consider a fraud model that joins each transaction to an `account_status` table. If `account_status` was updated to "closed_for_fraud" *after* the fraud was discovered, then training on the current value of that table tells the model the answer. The join looks innocent; the leak is in the *time dimension*, invisible unless you ask "was this value knowable at the moment of the decision?"
 
-```python
-@dataclass
-class PromotionGate:
-    """Automated gate that decides whether a model can be promoted."""
+This is why the central defense against leakage is *point-in-time correctness*: every feature value in the training set must reflect what was actually knowable at the prediction timestamp, not the value the table holds today. Building a point-in-time-correct dataset requires distinguishing three timestamps that are easy to conflate — when the event happened (event time), when the system recorded it (ingestion time), and when the value became available to serve (availability time). A feature materialized at 10:10 was not available for a decision made at 10:05, and a training join that uses it leaks the future.
 
-    primary_metric: str          # e.g., "auc_roc"
-    primary_min: float           # e.g., 0.90
-    guardrails: dict[str, tuple[float, float]]  # metric -> (min, max)
-    slice_metrics: list[str]     # metrics to check per slice
-    slice_min_relative: float    # minimum relative performance vs baseline per slice
-    baseline_version: str
-    risk_tier: str               # "low", "medium", "high", "critical"
+The split strategy is the second leakage defense, and it must mirror the production question. If the model predicts the future, a random row split is dishonest: it lets the model train on Tuesday and test on Monday, learning patterns that include foreknowledge. A time-based split — train on the past, evaluate on a held-out future window — is the only honest choice for any system that makes forward-looking predictions. When the goal is to generalize to *new* entities (users, merchants, items the model has never seen), an entity split is required, ensuring no entity appears in both train and test; otherwise the model's apparent skill is partly memorization.
 
-    def evaluate(self, candidate, baseline, slices) -> GateResult:
-        failures = []
+A pragmatic heuristic catches a large fraction of leaks: *any single feature that pushes AUC above 0.98 is guilty until proven innocent.* Real-world prediction is hard; a feature that makes it trivial is almost always a leak — a label encoded in disguise, a future value joined by mistake, an identifier that proxies the target. The leakage detection checklist is short but non-negotiable: no feature may use post-decision data, no label may be derivable from the features, entity splits must be disjoint, and every suspiciously powerful feature must be audited for time-travel.
 
-        # 1. Primary metric
-        if candidate.metrics[self.primary_metric] < self.primary_min:
-            failures.append(
-                f"Primary metric {self.primary_metric}: "
-                f"{candidate.metrics[self.primary_metric]:.3f} < {self.primary_min}"
-            )
-
-        # 2. Guardrails: must stay within bounds
-        for metric, (lo, hi) in self.guardrails.items():
-            val = candidate.metrics[metric]
-            if val < lo or val > hi:
-                failures.append(f"Guardrail {metric}: {val:.3f} not in [{lo}, {hi}]")
-
-        # 3. Slice regression: no slice can degrade below relative threshold
-        for slice_name, slice_eval in slices.items():
-            baseline_val = baseline.slice_metrics[slice_name][self.primary_metric]
-            candidate_val = slice_eval[self.primary_metric]
-            relative = candidate_val / baseline_val if baseline_val > 0 else 1.0
-            if relative < self.slice_min_relative:
-                failures.append(
-                    f"Slice {slice_name}: {candidate_val:.3f} / {baseline_val:.3f} "
-                    f"= {relative:.2%} < {self.slice_min_relative:.0%}"
-                )
-
-        # 4. Calibration check (for probability models)
-        if hasattr(candidate, "calibration_error"):
-            if candidate.calibration_error > 0.05:
-                failures.append(
-                    f"Calibration error {candidate.calibration_error:.3f} > 0.05"
-                )
-
-        # 5. Latency and size check
-        if hasattr(candidate, "inference_latency_p99_ms"):
-            if candidate.inference_latency_p99_ms > 50:
-                failures.append(
-                    f"Inference p99 {candidate.inference_latency_p99_ms}ms > 50ms"
-                )
-
-        passed = len(failures) == 0
-        requires_approval = self.risk_tier in ("high", "critical")
-
-        return GateResult(
-            passed=passed,
-            failures=failures,
-            requires_human_approval=requires_approval,
-            summary={
-                "candidate_version": candidate.version,
-                "baseline_version": self.baseline_version,
-                "primary_delta": (
-                    candidate.metrics[self.primary_metric]
-                    - baseline.metrics[self.primary_metric]
-                ),
-                "slices_checked": len(slices),
-                "slices_failing": len(failures),
-            },
-        )
-```
-
-A promotion gate should include:
-
-- Primary quality metric.
-- Guardrail metrics.
-- Slice-level checks.
-- Calibration checks when probabilities matter.
-- Latency/throughput checks for serving compatibility.
-- Feature compatibility checks.
-- Human approval for high-risk decisions.
+The cost of getting this wrong is not just a bad model; it is a bad model that *passed every gate*, because the gates were measuring a leaked metric. Leakage defeats the entire promotion process from the inside, which is why it deserves more scrutiny than any other data property.
 
 ---
 
-## Experiment Tracking
+## The Execution Engine: Where Pipeline System Design Lives
 
-Track experiments as immutable runs, not notebook names.
+The pipeline DSL — whether TFX, Kubeflow Pipelines, Airflow, or Metaflow — describes *what* should run. The execution engine decides *how* and *when* it actually runs, and this is where the genuinely interesting systems problems live: caching, lineage, scheduling, and fault recovery.
 
-| Artifact | Why it matters |
-|---|---|
-| Code commit | Rebuild the trainer |
-| Dataset snapshot | Rebuild the examples |
-| Feature versions | Explain score differences |
-| Hyperparameters | Compare runs honestly |
-| Metrics and slices | Decide promotion |
-| Random seeds | Debug variance |
-| Runtime image | Reproduce dependencies |
-| Cost and duration | Manage training economics |
+The architecture separates a control plane from a data plane. The control plane — scheduler, step cache, artifact store, lineage store — decides what to run and records what happened. The data plane — worker pools reading inputs, computing, and writing outputs — does the heavy lifting. The separation matters because the two planes have completely different reliability requirements: the control plane must be durable and consistent (losing lineage is catastrophic), while the data plane must be elastic and cheap (workers are disposable).
 
-### MLflow Tracking Example
+### Caching as the Primary Efficiency Lever
 
-```python
-import mlflow
-import mlflow.xgboost
+The single largest efficiency gain in a mature pipeline comes from *not recomputing work that has already been done*. If the inputs to a feature-computation step are unchanged, there is no reason to recompute the features. But "unchanged" is a deceptively hard predicate.
 
-mlflow.set_experiment("fraud-detection")
+The correct foundation is *content addressing*: a step's cache key is a hash of its inputs' *content* (not their paths), plus the code version, plus the environment digest, plus the parameters. Two runs with identical content-keys are guaranteed to produce identical outputs, so the second can reuse the first's result. The failures here are instructive because they all stem from an incomplete key. Keying on file *paths* means a renamed-but-identical file invalidates nothing yet breaks reproducibility tracking. Omitting the *code version* means a changed transformation function silently returns the old cached result. Omitting the *environment* means a NumPy upgrade that changes numerical behavior is masked by a stale cache. And a step that reads "latest" data or consults the wall clock is *fundamentally uncacheable*, because its output is not a pure function of its declared inputs — non-determinism and caching are mutually exclusive.
 
-with mlflow.start_run(run_name=f"xgb_v42_{datetime.now():%Y%m%d_%H%M}") as run:
-    # Log parameters
-    mlflow.log_params({
-        "max_depth": 6,
-        "learning_rate": 0.05,
-        "n_estimators": 500,
-        "subsample": 0.8,
-        "colsample_bytree": 0.8,
-        "random_seed": 42,
-    })
+### Lineage as the Foundation of Trust
 
-    # Log dataset metadata (pointer, not the data itself)
-    mlflow.log_dict({
-        "source": "warehouse.ml.fraud_training_examples",
-        "snapshot_date": "2026-06-10",
-        "label_window_days": 30,
-        "train_examples": 12_345_678,
-        "test_examples": 3_086_419,
-    }, "dataset_metadata.json")
+The lineage store answers two questions that every other reliability property depends on. *Provenance*: given this model, what produced it? *Impact*: given this dataset had a bug, which models must be retrained? It is a queryable DAG of artifacts and step executions, where each execution records its inputs (by content hash), its outputs, and its full execution context.
 
-    # Log code snapshot
-    mlflow.log_artifact("pipelines/fraud/train.py")
+The impact query is the one teams underinvest in until they desperately need it. When a data engineer discovers that a source table double-counted events for a week, the only question that matters is "which production models trained on that window?" Without forward lineage, the answer is "we don't know, retrain everything," which is both expensive and an admission that the system is not auditable. Google's ML Metadata and the lineage subsystems of every serious ML platform exist to make this query a lookup rather than an investigation.
 
-    # Train
-    model = xgb.XGBClassifier(max_depth=6, learning_rate=0.05, n_estimators=500)
-    model.fit(X_train, y_train)
-
-    # Log metrics
-    y_pred = model.predict_proba(X_test)[:, 1]
-    mlflow.log_metrics({
-        "auc_roc": roc_auc_score(y_test, y_pred),
-        "log_loss": log_loss(y_test, y_pred),
-        "training_duration_seconds": training_duration,
-    })
-
-    # Log the model artifact
-    mlflow.xgboost.log_model(model, "model")
-
-    # Register the model (if promotion gate passes)
-    mlflow.register_model(f"runs:/{run.info.run_id}/model", "fraud_classifier")
-```
-
-The model registry should point to the winning run, but the run record should remain queryable after the model is retired.
+The storage choice follows the query pattern. A relational database handles provenance and impact well at modest scale and is where most platforms start. A graph database becomes worthwhile only when impact analysis must traverse many hops across thousands of models. An append-only log gives audit-grade immutability at the cost of harder ad-hoc querying. The right answer is almost always "start relational, migrate only when traversal latency hurts."
 
 ---
 
-## Distributed Training
+## Training Data I/O: The Bottleneck Is Usually Not Compute
 
-Distributed training adds coordination, storage, and hardware scheduling complexity.
+A counterintuitive truth dominates the economics of deep-learning pipelines: the GPU is rarely the bottleneck. Data delivery is. An A100 can consume training examples faster than most storage systems can supply them, so the accelerator sits idle waiting for the next batch — paying premium hourly rates to do nothing. When GPU utilization sits below seventy percent, the cause is almost always I/O, not the model.
 
-### Distributed Training Topologies
+This reframes a large part of pipeline design as a *data delivery* problem. The storage format matters: columnar formats like Parquet excel at feature joins and selective reads; sequential formats like TFRecord and WebDataset excel at the streaming, full-scan reads that training demands; reading directly from the warehouse keeps data fresh but makes the warehouse the bottleneck and the bill. The sharding matters: data must be split into chunks that parallel workers can read disjointly, and the shard size is a genuine tuning parameter — shards too small drown in metadata overhead, shards too large create stragglers that idle every other worker while one finishes.
 
-```mermaid
-flowchart TD
-    subgraph Data Parallel
-        DP1["GPU 0: shard 0"] --> SYNC1["All-reduce gradients"]
-        DP2["GPU 1: shard 1"] --> SYNC1
-        DP3["GPU N: shard N"] --> SYNC1
-        SYNC1 --> UPDATE["Update weights"]
-    end
-
-    subgraph Model Parallel
-        L1["GPU 0: layers 0-3"] --> L2["GPU 1: layers 4-7"]
-        L2 --> L3["GPU 2: layers 8-11"]
-    end
-
-    subgraph Hybrid "Hybrid (FSDP / ZeRO)"
-        FSDP["Shard parameters + data parallel<br/>Each GPU holds 1/N of parameters<br/>All-gathers weights when needed"]
-    end
-```
-
-| Strategy | Use when | Pitfall |
-|---|---|---|
-| Data parallel | Model fits on one GPU; dataset doesn't | Gradient sync overhead grows with GPU count |
-| Model parallel | Model is too large for one GPU | Pipeline bubbles, idle time between stages |
-| FSDP / ZeRO | Large model, want efficient memory usage | Communication overhead; harder to debug |
-| Parameter server | Asynchronous updates acceptable | Stale gradients, harder convergence tuning |
-
-### Checkpoint and Resume
-
-Distributed training jobs run for hours or days on spot/preemptible instances. Checkpointing is mandatory:
-
-```python
-import os
-import torch
-
-def save_checkpoint(model, optimizer, epoch, step, loss, checkpoint_dir, rank):
-    """Save a distributed training checkpoint. Only rank 0 writes metadata."""
-    # Each rank saves its own shard
-    rank_ckpt = {
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "epoch": epoch,
-        "step": step,
-        "loss": loss,
-    }
-    path = os.path.join(checkpoint_dir, f"checkpoint_rank{rank}_step{step}.pt")
-    torch.save(rank_ckpt, path)
-
-    # Rank 0 writes the checkpoint manifest
-    if rank == 0:
-        manifest = {
-            "step": step,
-            "epoch": epoch,
-            "world_size": torch.distributed.get_world_size(),
-            "files": [
-                f"checkpoint_rank{r}_step{step}.pt"
-                for r in range(torch.distributed.get_world_size())
-            ],
-        }
-        torch.save(manifest, os.path.join(checkpoint_dir, "latest_manifest.pt"))
-
-def load_checkpoint(model, optimizer, checkpoint_dir, rank):
-    """Resume from the latest checkpoint."""
-    manifest = torch.load(os.path.join(checkpoint_dir, "latest_manifest.pt"))
-    ckpt = torch.load(
-        os.path.join(checkpoint_dir, f"checkpoint_rank{rank}_step{manifest['step']}.pt")
-    )
-    model.load_state_dict(ckpt["model_state_dict"])
-    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    return ckpt["epoch"], ckpt["step"], ckpt["loss"]
-```
-
-### Spot Instance Resilience
-
-```text
-Training cost optimization pattern:
-
-1. On-demand instances: 100% of training duration
-2. Spot instances: 60-90% discount, but can be reclaimed with 2-min notice
-
-Strategy:
-- Primary workers: spot instances (cheap, replaceable)
-- Checkpoint writer: on-demand instance (reliable)
-- Checkpoint every N steps (e.g., every 1000 steps)
-- On preemption signal (SIGTERM), save checkpoint and exit gracefully
-- Orchestrator relaunches with same checkpoint_dir, training resumes
-
-Expected savings: 50-70% with < 5% training time overhead from preemptions
-```
-
-Use distributed training when:
-
-- Single-machine training exceeds acceptable duration.
-- Model size or dataset size requires multiple accelerators.
-- Iteration speed is blocking model quality work.
-
-Avoid it when:
-
-- Data pipeline is the bottleneck (faster I/O helps more than more GPUs).
-- Hyperparameter search is more valuable than one huge run.
-- Reproducibility and debugging are already weak (adds non-determinism).
-
-### Resource Management and Multi-Tenancy
-
-A training platform serves multiple teams with different priorities, budgets, and hardware needs. Without resource isolation, one team's runaway job starves everyone else.
-
-```mermaid
-flowchart TD
-    subgraph Scheduler
-        QUEUE["Priority queues"] --> FAIR["Fair share scheduler"]
-        FAIR --> QUOTA["Team quotas"]
-        QUOTA --> POOL["GPU pool"]
-    end
-
-    subgraph Teams
-        T1["Team A: fraud<br/>priority: high"] --> QUEUE
-        T2["Team B: recsys<br/>priority: medium"] --> QUEUE
-        T3["Team C: experimentation<br/>priority: low"] --> QUEUE
-    end
-
-    POOL --> ISOLATION["Workload isolation"]
-    ISOLATION --> W1["Production jobs"]
-    ISOLATION --> W2["Experiment jobs"]
-```
-
-| Concern | Mechanism | Failure mode when missing |
-|---|---|---|
-| Fair share | Per-team scheduler weights | One team monopolizes the cluster |
-| Quotas | Hard limits on GPU-hours, memory, concurrent jobs | Budget overruns, no backpressure |
-| Preemption | Low-priority jobs evicted for high-priority | Production blocked by experiments |
-| Isolation | Separate pools or cgroups for prod vs experiment | Noisy neighbor degrades prod training |
-| Bin packing | Pack small jobs onto shared GPUs (MIG, time-slicing) | Wasted idle capacity |
-| Gang scheduling | All workers of a distributed job start together | Deadlock when only some workers get resources |
-
-#### Gang Scheduling
-
-Distributed training jobs need all workers to start together. If only 3 of 4 workers get scheduled, the job hangs waiting for the 4th — while holding 3 GPUs hostage.
-
-```text
-Gang scheduling: schedule all-or-nothing.
-
-Without gang scheduling:
-  - Job A requests 4 GPUs, gets 3 → hangs holding 3 GPUs
-  - Job B requests 2 GPUs, can't get them (A holds 3)
-  - Job C requests 4 GPUs, gets 1 → also hangs
-  - Cluster is 100% allocated but 0% useful
-
-With gang scheduling:
-  - Job A requests 4 GPUs, gets 3 → waits, releases the 3
-  - Job B requests 2 GPUs, gets 2 → runs
-  - Job A retries when 4 are available together
-
-K8s implementation: PodGroups (Volcano) or kube-scheduler plugins.
-```
-
-#### Priority and Preemption
-
-```python
-# Priority classes for training jobs
-priority_classes = {
-    "prod-critical": {
-        "priority": 1_000_000,
-        "preemption_policy": "Never",  # never preempted
-        "quota": {"gpu_hours_per_day": 200},
-    },
-    "prod-standard": {
-        "priority": 100_000,
-        "preemption_policy": "LowerPriority",  # can preempt experiment jobs
-        "quota": {"gpu_hours_per_day": 100},
-    },
-    "experiment": {
-        "priority": 10_000,
-        "preemption_policy": "Never",  # can be preempted by prod
-        "quota": {"gpu_hours_per_day": 50},
-        "max_duration_hours": 4,  # experiments can't hold GPUs forever
-    },
-}
-
-# When a prod-standard job needs GPUs and the pool is full:
-# 1. Scheduler finds the lowest-priority running jobs (experiment)
-# 2. Sends SIGTERM to experiment jobs
-# 3. Experiment jobs checkpoint and exit
-# 4. Prod job starts on the freed GPUs
-# 5. Experiment jobs re-queue and resume from checkpoint
-```
+The decisive technique is *overlapping I/O with compute through prefetching*. While the GPU processes batch N, the data loader should already be fetching batches N+1 through N+4 on separate worker threads, so the accelerator never waits. When prefetching is insufficient, the fix ladder runs from cheap to expensive: add I/O workers until the CPU saturates, cache shards on local NVMe so each epoch does not re-read object storage, increase the prefetch depth, switch to a sequential format, and finally co-locate compute with storage to cut network latency. The principle underneath all of these is the same one that governs any pipeline — *the slowest stage sets the throughput*, and in training that stage is usually the one moving bytes, not the one doing matrix multiplication.
 
 ---
 
-## Retraining Patterns
+## Distributed Training: A Cost and Coordination Problem
 
-| Pattern | Use when | Risk |
-|---|---|---|
-| Manual retraining | Low-change model or high-risk domain | Slow response to drift |
-| Scheduled retraining | Predictable data arrival | Retrains when not needed |
-| Triggered retraining | Drift or quality metric crosses threshold | Noisy triggers |
-| Continuous training | Fast-changing domain with strong automation | Bad data can quickly propagate |
+Distributed training is best understood not as a machine-learning technique but as a distributed-systems problem with machine-learning constraints. The moment training spans more than one accelerator, the pipeline inherits coordination, fault tolerance, and communication-overhead concerns that single-machine training never faced.
 
-### Retraining Automation Ladder
+The topologies map to distinct constraints. *Data parallelism* — every worker holds a full copy of the model and processes a different data shard, synchronizing gradients each step — is the default when the model fits on one device but the dataset does not. Its limit is communication: as worker count grows, the gradient all-reduce after every step becomes the bottleneck, and beyond some scale adding GPUs *slows* training. *Model parallelism* — splitting the model itself across devices — is the answer when the model is too large for any single device, at the cost of "pipeline bubbles" where devices idle waiting for the previous stage. *Sharded approaches* like FSDP and ZeRO partition the model parameters, gradients, and optimizer state across workers, gathering what each needs on demand; this is how trillion-parameter models train at all, and the trade-off is more communication and harder debugging.
 
-```text
-Level 0: Manual. Data scientist runs notebook, exports model, files ticket to deploy.
-Level 1: Scheduled. Daily/weekly cron triggers pipeline. Human reviews before promotion.
-Level 2: Triggered. Drift monitor fires retraining when PSI > 0.2. Human approves promotion.
-Level 3: Auto-promotion (low-risk). Model passes all gates → auto-deploy canary. Human reviews dashboard.
-Level 4: Continuous (high-risk domains only). Model trains and deploys continuously. Requires:
-  - Real-time monitoring with < 5 min detection
-  - Automatic rollback with < 1 min MTTR
-  - Human-in-the-loop for anomalies
-  - Full lineage and reproducibility for every deployed artifact
-```
-
-Most teams should start at Level 1 or 2, then automate only after validation, monitoring, and rollback paths are mature.
+The reason this belongs in a discussion of pipelines, rather than of model architecture, is that distributed training reshapes the *operational* requirements. Long multi-device jobs run for hours or days, which makes them statistically certain to encounter hardware failures and spot-instance preemptions. A six-hour job that cannot resume from an interruption will, in expectation, never finish on cheap preemptible hardware. This makes *checkpointing* not an optimization but a correctness requirement: the job must periodically persist enough state — model weights, optimizer state, step counter — that a relaunched job resumes from the last checkpoint rather than from zero. The economic payoff is large: running primary workers on spot instances with disciplined checkpointing typically cuts training cost by half to two-thirds, at the price of a few percent overhead from occasional preemption recovery. Distributed training, in other words, is mostly a story about making expensive hardware fail gracefully and cheaply.
 
 ---
 
-## Cost Estimation
+## Resource Management: The Multi-Tenant Cluster
 
-Training cost should be estimated before the pipeline runs, not discovered on the cloud bill after.
+A training platform is a shared resource, and shared resources fail in the ways all shared resources fail: one tenant's greed starves the others. A GPU cluster serving a fraud team, a recommendations team, and a swarm of experimenters is a scheduling problem before it is an ML problem.
 
-```text
-Training cost estimator:
+The mechanisms are the classic ones from cluster management, adapted to the peculiarities of GPU workloads. *Fair-share scheduling* with per-team weights prevents any single team from monopolizing the cluster. *Quotas* on GPU-hours impose backpressure and keep budgets bounded. *Preemption* lets a high-priority production retraining job evict low-priority experiments — which is safe precisely because the experiments checkpoint and resume. *Isolation* between production and experimental pools keeps a researcher's runaway job from degrading a production training run.
 
-Single-GPU training:
-  cost = (training_hours) × (GPU_cost_per_hour + CPU/memory_cost_per_hour)
-
-  Example: XGBoost on 1× A100 (40 GB)
-    - 100M rows, 350 features
-    - Training time: ~2 hours
-    - GPU cost: $3.06/hr × 2 = $6.12
-    - Total: ~$10 (with attached compute/storage)
-
-Distributed training:
-  cost = (training_hours) × (num_gpus) × (GPU_cost_per_hour)
-
-  Example: Two-tower model on 4× A100
-    - 500M rows, 256-dim embeddings
-    - Training time: ~6 hours
-    - GPU cost: $3.06/hr × 4 × 6 = $73.44
-    - Total: ~$100 (with compute, networking, storage)
-
-Hyperparameter search:
-  cost = (base_training_cost) × (num_trials) × (trial_reduction_factor)
-
-  Example: 50 trials with early stopping (avg 40% of full training)
-    - Base cost: $100 × 50 × 0.4 = $2,000
-    - Add 20% overhead for orchestration: ~$2,400
-
-Pipeline costs per year:
-  - Daily retrain (scheduled): 365 × $10 = $3,650
-  - Weekly retrain + monthly hyperparameter search: 52 × $10 + 12 × $2,400 = $29,320
-```
-
-Cost should be a logged metric on every run. A sudden cost increase is an early signal that data volume grew, hyperparameter space expanded, or a configuration drifted.
+The subtlest requirement is *gang scheduling*, and it is unique to distributed jobs. A four-worker training job needs all four workers to start together; if the scheduler grants three GPUs and makes the job wait for the fourth, the job hangs while holding three GPUs hostage. Stack a few such jobs and the cluster reaches one hundred percent allocation with zero percent useful work — every job waiting for one more worker that no one will release. Gang scheduling solves this by making allocation all-or-nothing: a distributed job either gets all its workers at once or none of them, releasing what it holds so another job can proceed. This is the same insight that drives Google's Borg and Kubernetes batch schedulers like Volcano — that partial allocation of an indivisible job is worse than no allocation at all.
 
 ---
 
-## Pipeline Reliability: Retries, Idempotency, and Partial Progress
+## Pipeline Reliability: Surviving Partial Failure
 
-Training pipelines fail partway through. A 6-hour distributed job that dies at hour 5 must not restart from zero. The orchestration layer must make steps retriable, idempotent, and resumable.
+Training pipelines fail partway through. A job dies at hour five of six; a worker is preempted; a transient network blip kills a step. The pipeline's job is to make these partial failures recoverable rather than catastrophic, and the discipline is the same idempotency-and-atomicity discipline that governs any [durable workflow system](../18-workflow-job-systems/06-retry-idempotency-compensation.md).
 
-```mermaid
-flowchart TD
-    STEP["Step execution"] --> CHECK{"Already complete?"}
-    CHECK -->|"yes"| SKIP["Skip — cached"]
-    CHECK -->|"no"| RUN["Run step"]
-    RUN --> RESULT{"Success?"}
-    RESULT -->|"yes"| COMMIT["Commit output atomically"]
-    RESULT -->|"no"| RETRY{"Retriable?"}
-    RETRY -->|"yes"| BACKOFF["Exponential backoff"]
-    BACKOFF --> RUN
-    RETRY -->|"no"| FAIL["Fail pipeline"]
-    COMMIT --> NEXT["Next step"]
-```
+The foundational invariant is that *a step's output is either fully present or fully absent — never partial*. A step that writes directly to its output location and crashes midway leaves a corrupt half-file, and the next run either fails confusingly or, worse, mistakes the partial output for a completed one and skips the step. The fix is *atomic commit*: the step writes to a temporary location and atomically renames to the final location only on success. A relaunched pipeline then sees a clean binary state at every step — done or not done — and can safely skip completed work and resume incomplete work.
 
-### Step Idempotency
+Not every failure should be retried, and conflating retriable and non-retriable failures is its own bug. A transient infrastructure failure — a network timeout, an evicted pod — should retry with exponential backoff. A spot-instance preemption should resume from checkpoint. But a *deterministic* failure — a schema mismatch, an exception in the training logic — must fail fast and page a human, because retrying it three times only wastes time and obscures the real defect. The retry policy is a classification problem, and getting the classification wrong turns a clear bug into an intermittent mystery.
 
-A step is idempotent if running it twice with the same inputs produces the same output and has no side effects beyond its declared outputs.
+For steps long enough to span failures — training itself, large feature computations — checkpoint-as-you-go extends the same logic inside the step. By persisting progress every N steps, a failed job resumes from the last checkpoint and loses at most N steps of work rather than the entire run. The checkpoint is the commit point; everything between checkpoints is work the system is willing to redo.
 
-```python
-import os
-import tempfile
-import shutil
+---
 
-def idempotent_step(step_fn, output_path, *args, **kwargs):
-    """
-    Run a step idempotently. If output_path exists and is valid, skip.
-    Otherwise, run in a temp dir and atomically rename on success.
-    """
-    # Fast path: output already exists and is valid
-    if os.path.exists(output_path) and is_valid_artifact(output_path):
-        print(f"SKIP: {output_path} already exists")
-        return load_artifact(output_path)
+## Retraining: How Often, and How Automatically
 
-    # Slow path: run step in a temp directory, then atomic rename
-    tmp_dir = tempfile.mkdtemp(dir=os.path.dirname(output_path))
-    try:
-        tmp_output = os.path.join(tmp_dir, os.path.basename(output_path))
-        result = step_fn(tmp_output, *args, **kwargs)
+Deciding when to retrain is a risk-management question disguised as a scheduling question. Retrain too rarely and the model drifts away from a changing world; retrain too eagerly and you spend money relearning a world that has not changed, while exposing yourself to the risk that bad data quietly becomes a bad model.
 
-        # Atomic commit: rename is atomic on POSIX within same filesystem
-        os.rename(tmp_output, output_path)
-        return result
-    except Exception:
-        shutil.rmtree(tmp_dir)  # clean up partial output
-        raise
-    finally:
-        if os.path.exists(tmp_dir):
-            shutil.rmtree(tmp_dir)
+The strategies form a clear progression of automation and risk. *Manual retraining* suits low-change or high-stakes models where a human should be in the loop for every release. *Scheduled retraining* — daily or weekly — fits domains with predictable data arrival, accepting that some runs retrain on data that has not meaningfully changed. *Triggered retraining* fires when a drift or quality metric crosses a threshold, responding to change rather than the calendar, at the cost of noisy triggers. *Continuous training* retrains and redeploys on a tight loop and belongs only to fast-moving domains with mature automation around it.
 
-# Why atomic commit matters:
-# If a step writes directly to output_path and crashes midway,
-# the next run sees a partial file and either:
-#   - fails confusingly (corrupt data)
-#   - skips the step (thinks it's done)
-# Atomic rename ensures the output is either complete or absent.
-```
+The critical discipline is that automation must *follow* trust, not precede it. The progression from manual to continuous retraining is not a ladder to climb as fast as possible; each rung adds a way for bad data to reach production faster. Continuous training is only safe atop real-time monitoring that detects degradation within minutes, automatic rollback that recovers within minutes, and complete lineage for every deployed artifact. A team that automates retraining before it has validation, monitoring, and rollback has not built a self-improving system; it has built a machine for amplifying its next data bug into a production incident at full speed. Most teams should sit at scheduled or triggered retraining with human-approved promotion, and earn each further step of automation by demonstrating the safety nets that justify it.
 
-### Retry Classification
+---
 
-Not all failures should be retried. Retrying a schema validation failure 3 times wastes time and hides a real bug.
+## The Economics: Estimate Before You Spend
 
-| Failure type | Example | Retry? | Action |
-|---|---|---|---|
-| Transient infrastructure | Network timeout, 503, pod evicted | Yes, with backoff | Exponential backoff, max 3 attempts |
-| Transient data | Source table temporarily unavailable | Yes, with longer backoff | Wait for source SLO, then retry |
-| Deterministic data | Schema mismatch, validation failure | No | Fail fast, alert |
-| Deterministic code | Exception in training logic | No | Fail fast, alert |
-| Resource exhaustion | OOM, GPU error | Maybe | Retry once with more resources |
-| Preemption | Spot instance reclaimed | Yes, resume from checkpoint | Reload checkpoint, continue |
+Training cost should be a number the team predicts before a run, not a surprise on the monthly cloud bill. The estimate is not complicated, but making it explicit changes behavior.
 
-### Checkpoint-as-You-Go for Long Steps
+For a single-accelerator job, cost is simply training hours times the hourly accelerator rate plus attached compute and storage. A gradient-boosted model on a hundred million rows might train in two hours on one A100 for roughly ten dollars all-in. A distributed job multiplies by device count: a two-tower retrieval model on four A100s for six hours is closer to a hundred dollars. The expense that surprises teams is *hyperparameter search*, because it multiplies the base cost by the number of trials. Fifty trials, even with early stopping that cuts each to forty percent of a full run, turns a hundred-dollar training into a multi-thousand-dollar search. Annualized, a daily scheduled retrain is a few thousand dollars; add a monthly hyperparameter search and the number jumps an order of magnitude.
 
-For steps that take hours (training, large feature computation), checkpoint intermediate progress so retries resume instead of restart.
-
-```python
-def train_with_checkpoints(train_fn, checkpoint_dir, total_steps, checkpoint_every=1000):
-    """
-    Training step that checkpoints every N steps.
-    On retry, resumes from the latest checkpoint.
-    """
-    # Find latest checkpoint
-    latest_step = find_latest_checkpoint(checkpoint_dir)
-    start_step = latest_step + checkpoint_every if latest_step else 0
-
-    if start_step > 0:
-        print(f"RESUMING from step {start_step}")
-        model, optimizer = load_checkpoint(checkpoint_dir, latest_step)
-    else:
-        print("STARTING from scratch")
-        model, optimizer = init_model_and_optimizer()
-
-    for step in range(start_step, total_steps):
-        loss = train_step(model, optimizer, step)
-
-        if step % checkpoint_every == 0:
-            save_checkpoint(model, optimizer, step, loss, checkpoint_dir)
-            # Checkpoint is the commit point. If the job dies after this,
-            # it resumes from here. If it dies before, it resumes from the
-            # previous checkpoint — losing at most checkpoint_every steps.
-
-    return model
-```
-
-### Pipeline-Level Recovery
-
-```python
-# Pipeline orchestrator recovery logic
-def recover_pipeline(pipeline_run_id, execution_store):
-    """
-    After a pipeline crash, determine which steps completed
-    and resume from the first incomplete step.
-    """
-    steps = execution_store.get_steps(pipeline_run_id)
-    for step in steps:
-        if step.status == "succeeded":
-            continue  # skip, output is cached
-        elif step.status == "running":
-            # Worker may have died. Mark as failed and retry.
-            execution_store.mark_failed(step.id, reason="worker_lost")
-            retry_step(step)
-        elif step.status == "failed":
-            if step.retry_count < step.max_retries:
-                retry_step(step)
-            else:
-                raise PipelineFailedError(f"Step {step.name} exhausted retries")
-        elif step.status == "pending":
-            run_step(step)
-```
-
-The key invariant: **a step's output is either fully present or fully absent.** Partial outputs corrupt the cache and cause silent bugs on retry. Atomic commits (write to temp, rename on success) enforce this invariant.
+The operational payoff of estimating cost is not just budgeting; it is *anomaly detection*. When cost is a logged metric on every run, a sudden increase becomes an early warning — data volume grew unexpectedly, the search space expanded, a configuration drifted, a job stopped using spot instances. Cost is a proxy for "something about this pipeline changed," and a pipeline that does not watch its own cost is blind to a whole class of regressions.
 
 ---
 
 ## Failure Modes
 
-### Non-Reproducible Model
+The characteristic failures of training pipelines recur across organizations, and naming them is half of preventing them.
 
-A model performs well, but nobody can rebuild it. The code commit was lost, the dataset snapshot expired, the feature definition changed, or the training image was garbage-collected.
+**The non-reproducible model** performs well but cannot be rebuilt — the commit was lost, the snapshot expired, the image was garbage-collected. It is the failure that makes every other failure worse, because it removes the ability to roll back or audit. The defense is mandatory lineage before promotion: no contract, no registry entry.
 
-Mitigation: make lineage metadata mandatory before registry promotion. Don't accept artifacts without a reproducibility contract.
+**The bad backfill** rewrites the apparent past. A correction to historical feature values silently changes future training sets, and the model "improves" — but the improvement is an artifact of corrected data, not a better model. The defense is to version feature definitions, record backfill ranges, compare old and new values on a sample, and never overwrite production data in place.
 
-### Bad Backfill
+**Evaluation leakage** is the bad model that passed every gate, because the gates measured a metric corrupted by leakage. It is the most dangerous failure because the entire promotion process certified it. The defense is honest splits, point-in-time features, and ruthless suspicion of any too-good metric.
 
-A backfill changes historical feature values and silently alters future training datasets. The model "improves" in evaluation but the improvement is an artifact of corrected data, not a better model.
+**Automation amplifying bad data** is the failure mode of premature continuous training: a single corrupted partition becomes a bad model becomes a bad deployment, all without a human in the loop. The defense is validation gates, canary rollout, and human approval for severe distribution shifts.
 
-Mitigation: version feature definitions, record backfill ranges, compare old and new feature values on a sample, and rerun validation after every backfill.
-
-### Evaluation Leakage
-
-Training and evaluation sets are not properly separated by time, user, or entity. The model memorizes user-specific patterns and looks great in evaluation but fails on real future traffic.
-
-Mitigation: split based on the real prediction setting. For time-series problems, always use time-based splits. Review any feature with AUC > 0.98 for leakage.
-
-### Automation Amplifies Bad Data
-
-Continuous retraining quickly promotes a model trained on broken or adversarial data. A single bad data partition becomes a bad model, which becomes a bad deployment, all without human review.
-
-Mitigation: validation gates, canary rollout, human approval for severe distribution shifts, and automatic rollback when guardrails break.
-
-### Pipeline Drift
-
-The pipeline works but produces subtly different artifacts over time. A dependency upgrades, a feature's default value changes, a data source adds a new partition format. The pipeline doesn't fail — it just drifts.
-
-Mitigation: pin all dependencies (container image, library versions, feature view versions). Run a weekly "reproducibility audit": pick a random past artifact and rebuild it from the lineage metadata. If the bits don't match, investigate.
+**Pipeline drift** is the quietest failure: the pipeline keeps working but produces subtly different artifacts over time as dependencies upgrade and defaults change. Nothing breaks; the system simply stops being the system it was. The defense is pinning everything and running periodic reproducibility audits — rebuild a random past artifact from its lineage and check that the bits match.
 
 ---
 
-## Operational Metrics
+## Decision Framework
 
-| Layer | Metrics |
-|---|---|
-| Pipeline | Success rate, duration, queue time, retry count, cache hit rate |
-| Data | Freshness, validation failures, rejected rows, snapshot size, I/O throughput |
-| Training | Cost, GPU utilization, convergence, reproducibility check pass rate |
-| Evaluation | Metric deltas, slice regressions, calibration, guardrail pass rate |
-| Registry | Promotion rate, rollback rate, stale model age, artifact count |
-| Delivery | Time from data availability to deployable model |
-| Cost | Training cost per run, per month, per model family |
-| Resources | GPU utilization, queue depth, preemption rate, fair-share variance |
-| Lineage | Lineage completeness, impact analysis query latency |
+When designing or reviewing a training pipeline, a small set of questions separates a system from a script:
+
+Can every model in production be rebuilt from recorded metadata alone? If not, the pipeline has no rollback and no audit, and that is the first thing to fix.
+
+Does validation run *before* training, comparing against a baseline distribution rather than just checking types? If not, the pipeline cannot detect the semantic drift that causes silent degradation.
+
+Is the train/test split honest about the production question — time-based for forward prediction, entity-based for new-entity generalization? If not, the offline metrics are optimistic fiction.
+
+Is every stage owned, with a contract that fails loudly when violated? If not, the pipeline will decay at its handoff boundaries.
+
+Is automation matched to the maturity of the safety nets — validation, monitoring, rollback — that make it safe? If not, the pipeline is a fast path from data bug to production incident.
+
+A pipeline that answers these well is reproducible, validated, owned, and recoverable. A pipeline that does not is a model-shaped liability waiting for the data to change.
 
 ---
 
 ## Key Takeaways
 
-1. Training pipelines are production systems, not notebooks with schedulers.
-2. Reproducibility is the foundation of ML reliability — pin everything.
-3. Data validation prevents bad models before training consumes expensive GPU time.
-4. Promotion gates should combine quality, safety, latency, and compatibility checks.
-5. Automate retraining only after validation, monitoring, and rollback paths are mature.
-6. Pipeline DSLs (TFX, Kubeflow, Airflow) turn pipeline logic into versioned, replayable artifacts.
-7. Distributed training is a cost optimization problem with reproducibility trade-offs.
-8. If you can't answer "what produced this model?", you can't safely change it.
-9. The execution engine — caching, lineage, scheduling — is where pipeline system design lives.
-10. Training pipelines are I/O-bound before they're compute-bound; shard, prefetch, and cache.
-11. Multi-tenant GPU clusters need fair share, quotas, preemption, and gang scheduling.
-12. Step outputs must be atomic: either fully present or fully absent, or retries corrupt the cache.
+1. The training pipeline is the system that makes a model reproducible, validated, owned, and re-runnable — the notebook that produces the model is not the pipeline.
+2. Reproducibility is the foundation property: pin code, data, features, parameters, and environment, because every rollback and audit depends on it.
+3. Validate inputs against a baseline distribution before training, because type-compatible data can still be semantically corrupt.
+4. Leakage is the failure that makes bad models look excellent and defeats every promotion gate from the inside; point-in-time correctness and honest splits are the only defense.
+5. The execution engine — caching, lineage, scheduling — is where the genuine systems design of a pipeline lives.
+6. Training is usually I/O-bound before it is compute-bound; the data-delivery path, not the model, sets throughput.
+7. Distributed training is a cost-and-coordination problem; checkpointing makes cheap, failure-prone hardware economically usable.
+8. Multi-tenant clusters need fair share, quotas, preemption, and gang scheduling, or one tenant starves the rest.
+9. Step outputs must be atomic — fully present or fully absent — or retries corrupt the system.
+10. Automate retraining only as fast as your validation, monitoring, and rollback can keep it safe.
 
 ---
 
 ## References
 
-1. [TFX: A TensorFlow-Based Production-Scale Machine Learning Platform](https://dl.acm.org/doi/10.1145/3097983.3098021)
-2. [Data Validation for Machine Learning](https://mlsys.org/Conferences/2019/doc/2019/167.pdf)
-3. [MLflow Tracking](https://mlflow.org/docs/latest/ml/tracking/)
-4. [Hidden Technical Debt in Machine Learning Systems](https://proceedings.neurips.cc/paper_files/paper/2015/file/86df7dcfd896fcaf2674f757a2463eba-Paper.pdf)
-5. [Kubeflow Pipelines v2 Documentation](https://www.kubeflow.org/docs/components/pipelines/v2/)
-6. [ZeRO: Memory Optimizations Toward Training Trillion Parameter Models](https://arxiv.org/abs/1910.02054)
-7. [Metaflow: A Human-Centric Framework for Data Science](https://netflixtechblog.com/open-sourcing-metaflow-a-human-centric-framework-for-data-science-fa72e04a5d9)
-8. [Borg: Large-scale cluster management at Google](https://research.google/pubs/pub43438/)
-9. [Volcano: Kubernetes Native Batch Scheduler](https://volcano.sh/en/docs/)
-10. [WebDataset: Efficient Dataset Storage and Streaming](https://github.com/webdataset/webdataset)
-11. [ML Metadata: A Standard for ML Artifact Lineage](https://www.tensorflow.org/tfx/guide/mlmd)
+1. [Hidden Technical Debt in Machine Learning Systems](https://proceedings.neurips.cc/paper_files/paper/2015/file/86df7dcfd896fcaf2674f757a2463eba-Paper.pdf) — Sculley et al., 2015
+2. [TFX: A TensorFlow-Based Production-Scale Machine Learning Platform](https://dl.acm.org/doi/10.1145/3097983.3098021) — Baylor et al., 2017
+3. [Data Validation for Machine Learning](https://mlsys.org/Conferences/2019/doc/2019/167.pdf) — Breck et al., 2019
+4. [Rules of Machine Learning: Best Practices for ML Engineering](https://developers.google.com/machine-learning/guides/rules-of-ml) — Zinkevich
+5. [ZeRO: Memory Optimizations Toward Training Trillion Parameter Models](https://arxiv.org/abs/1910.02054) — Rajbhandari et al., 2019
+6. [Large-scale cluster management at Google with Borg](https://research.google/pubs/pub43438/) — Verma et al., 2015
+7. [Metaflow: A Human-Centric Framework for Data Science](https://netflixtechblog.com/open-sourcing-metaflow-a-human-centric-framework-for-data-science-fa72e04a5d9) — Netflix, 2019
+8. [ML Metadata: A Standard for ML Artifact Lineage](https://www.tensorflow.org/tfx/guide/mlmd)
+9. [Kubeflow Pipelines v2 Documentation](https://www.kubeflow.org/docs/components/pipelines/v2/)
