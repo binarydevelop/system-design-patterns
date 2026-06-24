@@ -171,15 +171,15 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Migration Strategies](15-deployment/06-migration-strategies.md)
 
 ### Part 16: ML Systems
-- [ML System Fundamentals](16-ml-systems/01-ml-system-fundamentals.md)
-- [Feature Stores](16-ml-systems/02-feature-stores.md)
-- [Model Serving](16-ml-systems/03-model-serving.md)
-- [Model Monitoring](16-ml-systems/04-model-monitoring.md)
-- [Training Pipelines](16-ml-systems/05-training-pipelines.md)
-- [Model Deployment and Rollouts](16-ml-systems/06-model-deployment-rollouts.md)
-- [Recommendation Systems](16-ml-systems/07-recommendation-systems.md)
-- [Online Experiments](16-ml-systems/08-online-experiments.md)
-- [ML Risk and Governance](16-ml-systems/09-ml-risk-governance.md)
+- [ML System Fundamentals](16-ml-systems/01-ml-system-fundamentals.md) — control planes, training/serving parity, maturity model
+- [Feature Stores](16-ml-systems/02-feature-stores.md) — point-in-time correctness, offline/online parity, freshness SLOs
+- [Model Serving](16-ml-systems/03-model-serving.md) — latency budgets, batching, routing, degradation ladders
+- [Model Monitoring](16-ml-systems/04-model-monitoring.md) — drift detection, label delay, slice guardrails, triage flow
+- [Training Pipelines](16-ml-systems/05-training-pipelines.md) — TFX/Kubeflow/Airflow DSLs, reproducibility, promotion gates, distributed training
+- [Model Deployment and Rollouts](16-ml-systems/06-model-deployment-rollouts.md) — canary sizing, shadow isolation, kill switches, threshold migration, rollback playbooks
+- [Recommendation Systems](16-ml-systems/07-recommendation-systems.md) — two-tower retrieval, Wide & Deep, ANN indexing, DPP diversity, exploration, cold start
+- [Online Experiments](16-ml-systems/08-online-experiments.md) — power analysis, SRM checks, CUPED, sequential testing, interleaving
+- [ML Risk and Governance](16-ml-systems/09-ml-risk-governance.md) — risk tiers, model cards, proxy detection, audit logs, incident response, lifecycle
 
 ### Part 17: LLM Systems
 - [Agent Fundamentals](17-llm-systems/01-agent-fundamentals.md)
@@ -374,6 +374,21 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Scaling Distributed Machine Learning with the Parameter Server](https://www.cs.cmu.edu/~muli/file/parameter_server_osdi14.pdf) - Li et al., 2014
 - [TensorFlow: A System for Large-Scale Machine Learning](https://www.usenix.org/system/files/conference/osdi16/osdi16-abadi.pdf) - Abadi et al., 2016
 - [Hidden Technical Debt in Machine Learning Systems](https://papers.nips.cc/paper/2015/file/86df7dcfd896fcaf2674f757a2463eba-Paper.pdf) - Sculley et al., 2015
+- [TFX: A TensorFlow-Based Production-Scale Machine Learning Platform](https://dl.acm.org/doi/10.1145/3097983.3098021) - Baylor et al., 2017
+- [Data Validation for Machine Learning](https://mlsys.org/Conferences/2019/doc/2019/167.pdf) - Breck et al., 2019
+- [TensorFlow Serving: Flexible, High-Performance ML Serving](https://arxiv.org/abs/1712.06139) - Olston et al., 2017
+- [Deep Neural Networks for YouTube Recommendations](https://static.googleusercontent.com/media/research.google.com/en//pubs/archive/45530.pdf) - Covington et al., 2016
+- [Wide & Deep Learning for Recommender Systems](https://arxiv.org/abs/1606.07792) - Cheng et al., 2016
+- [Sampling-Bias-Corrected Neural Modeling for Large Corpus Item Recommendations](https://research.google/pubs/sampling-bias-corrected-neural-modeling-for-large-corpus-item-recommendations/) - Yi et al., 2019
+- [Diversity-Promoting Recommendation with Determinantal Point Processes](https://arxiv.org/abs/1603.07645) - Chen et al., 2018
+- [ZeRO: Memory Optimizations Toward Training Trillion Parameter Models](https://arxiv.org/abs/1910.02054) - Rajbhandari et al., 2019
+- [Trustworthy Online Controlled Experiments](https://www.cambridge.org/core/books/trustworthy-online-controlled-experiments/6A3B263E7114E81B95669A95B219C1D8) - Kohavi et al., 2020
+- [Improving the Sensitivity of Online Controlled Experiments by Utilizing Pre-Experiment Data (CUPED)](https://www.exp-platform.com/Documents/2013-02-CUPED-ImprovingSensitivityOfControlledExperiments.pdf) - Deng et al., 2013
+- [Overlapping Experiment Infrastructure: More, Better, Faster Experimentation](https://research.google/pubs/overlapping-experiment-infrastructure-more-better-faster-experimentation/) - Tang et al., 2010
+- [Model Cards for Model Reporting](https://arxiv.org/abs/1810.03993) - Mitchell et al., 2019
+- [Datasheets for Datasets](https://arxiv.org/abs/1803.09010) - Gebru et al., 2018
+- [A Unified Approach to Interpreting Model Predictions (SHAP)](https://arxiv.org/abs/1705.07874) - Lundberg & Lee, 2017
+- [NIST AI Risk Management Framework](https://www.nist.gov/itl/ai-risk-management-framework) - NIST, 2023
 
 #### Container & Orchestration
 - [Borg, Omega, and Kubernetes](https://queue.acm.org/detail.cfm?id=2898444) - Burns et al., 2016
