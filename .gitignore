@@ -1,12 +1,10 @@
 # Dependencies
 node_modules/
 
-# VitePress build output (generated in CI)
-.vitepress/
-/index.md
-public/
-
-# VitePress cache
+# VitePress build output and local cache
+.vitepress/dist/
+.vitepress/cache/
+.vitepress/.temp/
 *.local
 
 # Build artifacts
@@ -35,8 +33,6 @@ mkdocs.yml
 website/
 .next/
 
-# Package manager
-package.json
-package-lock.json
+# Alternate package managers
 yarn.lock
 pnpm-lock.yaml
