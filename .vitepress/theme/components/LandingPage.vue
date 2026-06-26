@@ -74,7 +74,7 @@ const content = {
     edition: {
       badge: 'Exclusive deluxe documentation',
       title: 'Claude Fable edition',
-      body: 'First forged with Claude Fable — a now-prohibited model — then curated into a production-grade architecture fieldbook.',
+      body: 'Forged with a now-prohibited Claude Fable model. Curated into a production-grade architecture fieldbook.'
     },
     heroPills: ['Invariants', 'Failure modes', 'Capacity math', 'Rollout mechanics'],
     primaryCta: { label: 'Start with foundations →', href: '/01-foundations/01-acid-transactions' },
@@ -126,7 +126,7 @@ const content = {
     edition: {
       badge: 'Exclusive deluxe documentation',
       title: 'Claude Fable edition',
-      body: '現在はprohibitedとなったClaude Fableで最初に鍛え、プロダクション級のアーキテクチャ・フィールドブックとして磨き込んだドキュメント。',
+      body: '現在はprohibitedとなったClaude Fableで鍛え、プロダクション級のアーキテクチャ・フィールドブックとして磨き込んだドキュメント。'
     },
     heroPills: ['不変条件', '障害モード', '容量見積もり', 'ロールアウト'],
     primaryCta: { label: '基礎から始める →', href: '/ja/01-foundations/01-acid-transactions' },
@@ -438,7 +438,7 @@ function linkTarget(card: { external?: boolean }) {
   grid-template-columns: 46px minmax(0, 1fr);
   gap: 14px;
   align-items: center;
-  width: min(780px, 100%);
+  width: min(680px, 100%);
   margin-bottom: 26px;
   border: 1px solid rgba(167, 139, 250, 0.36);
   border-radius: 28px;
@@ -1083,6 +1083,7 @@ function linkTarget(card: { external?: boolean }) {
     width: auto;
     border-radius: 22px;
     padding: 11px;
+    margin-bottom: 20px;
   }
   .sdp-edition-mark {
     width: 42px;
