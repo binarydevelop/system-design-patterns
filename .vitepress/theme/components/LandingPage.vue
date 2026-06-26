@@ -194,9 +194,12 @@ function linkTarget(card: { external?: boolean }) {
     <section class="sdp-hero" aria-labelledby="sdp-title">
       <div class="sdp-shell">
         <aside class="sdp-edition-banner" aria-label="Exclusive edition note">
-          <span>{{ page.edition.badge }}</span>
-          <strong>{{ page.edition.title }}</strong>
-          <small>{{ page.edition.body }}</small>
+          <span class="sdp-edition-mark">CF</span>
+          <div class="sdp-edition-copy">
+            <span>{{ page.edition.badge }}</span>
+            <strong>{{ page.edition.title }}</strong>
+            <small>{{ page.edition.body }}</small>
+          </div>
         </aside>
         <p class="sdp-eyebrow">
           <span>{{ page.eyebrow[0] }}</span>
@@ -432,55 +435,77 @@ function linkTarget(card: { external?: boolean }) {
 .sdp-edition-banner {
   position: relative;
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: 46px minmax(0, 1fr);
+  gap: 14px;
   align-items: center;
-  width: fit-content;
-  max-width: 100%;
-  margin-bottom: 24px;
-  border: 1px solid rgba(167, 139, 250, 0.34);
-  border-radius: 999px;
-  padding: 8px 14px 8px 10px;
+  width: min(780px, 100%);
+  margin-bottom: 26px;
+  border: 1px solid rgba(167, 139, 250, 0.36);
+  border-radius: 28px;
+  padding: 12px 16px 12px 12px;
   color: #e2e8f0;
   background:
-    linear-gradient(90deg, rgba(15, 23, 42, 0.86), rgba(30, 41, 59, 0.54)),
-    radial-gradient(circle at 12% 50%, rgba(167, 139, 250, 0.24), transparent 42%);
-  box-shadow: 0 16px 52px rgba(2, 6, 23, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    linear-gradient(100deg, rgba(15, 23, 42, 0.9), rgba(30, 41, 59, 0.62)),
+    radial-gradient(circle at 10% 20%, rgba(167, 139, 250, 0.24), transparent 42%);
+  box-shadow: 0 18px 58px rgba(2, 6, 23, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(18px);
 }
-.sdp-edition-banner::before {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--sdp-violet), var(--sdp-cyan));
-  box-shadow: 0 0 22px rgba(167, 139, 250, 0.78);
+.sdp-edition-banner::after {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
   content: "";
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(52, 211, 153, 0.22), transparent 34%, rgba(167, 139, 250, 0.18));
+  opacity: 0.75;
 }
-.sdp-edition-banner span {
+.sdp-edition-mark {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  border: 1px solid rgba(226, 232, 240, 0.2);
+  border-radius: 16px;
+  color: #06111f;
+  background: linear-gradient(135deg, var(--sdp-green), var(--sdp-cyan) 54%, var(--sdp-violet));
+  box-shadow: 0 0 28px rgba(34, 211, 238, 0.24);
+  font-size: 0.82rem;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+.sdp-edition-copy {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.sdp-edition-copy span {
+  width: fit-content;
   border: 1px solid rgba(226, 232, 240, 0.16);
   border-radius: 999px;
-  padding: 4px 8px;
-  color: #06111f;
-  background: linear-gradient(135deg, var(--sdp-green), var(--sdp-cyan));
-  font-size: 0.64rem;
+  padding: 3px 8px;
+  color: #a7f3d0;
+  background: rgba(2, 6, 23, 0.36);
+  font-size: 0.62rem;
   font-weight: 860;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  white-space: nowrap;
 }
-.sdp-edition-banner strong {
+.sdp-edition-copy strong {
   color: #f8fafc;
-  font-size: 0.82rem;
-  font-weight: 820;
+  font-size: clamp(0.94rem, 1.6vw, 1.12rem);
+  font-weight: 860;
   letter-spacing: 0.02em;
   text-transform: uppercase;
-  white-space: nowrap;
 }
-.sdp-edition-banner small {
-  min-width: 0;
+.sdp-edition-copy small {
+  max-width: 62ch;
   color: #cbd5e1;
-  font-size: 0.82rem;
-  line-height: 1.35;
+  font-size: 0.86rem;
+  line-height: 1.45;
 }
 .sdp-eyebrow {
   display: flex;
@@ -1054,18 +1079,18 @@ function linkTarget(card: { external?: boolean }) {
     padding: 36px 0 34px;
   }
   .sdp-edition-banner {
-    grid-template-columns: auto 1fr;
+    grid-template-columns: 42px minmax(0, 1fr);
     width: auto;
-    border-radius: 24px;
-    padding: 12px;
+    border-radius: 22px;
+    padding: 11px;
   }
-  .sdp-edition-banner::before {
-    grid-row: span 2;
+  .sdp-edition-mark {
+    width: 42px;
+    height: 42px;
+    border-radius: 14px;
   }
-  .sdp-edition-banner span,
-  .sdp-edition-banner strong,
-  .sdp-edition-banner small {
-    white-space: normal;
+  .sdp-edition-copy span {
+    width: auto;
   }
   .sdp-eyebrow {
     margin-bottom: 22px !important;
