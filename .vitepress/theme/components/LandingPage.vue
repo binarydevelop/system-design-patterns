@@ -74,7 +74,7 @@ const content = {
     edition: {
       badge: 'Exclusive deluxe documentation',
       title: 'Claude Fable edition',
-      body: 'Forged with a now-prohibited Claude Fable model. Curated into a production-grade architecture fieldbook.',
+      body: 'Forged with a rare Claude Fable build. Curated into a production-grade architecture fieldbook.',
       stamp: 'Rare build'
     },
     heroPills: ['Invariants', 'Failure modes', 'Capacity math', 'Rollout mechanics'],
@@ -127,7 +127,7 @@ const content = {
     edition: {
       badge: 'Exclusive deluxe documentation',
       title: 'Claude Fable edition',
-      body: '現在はprohibitedとなったClaude Fableで鍛え、プロダクション級のアーキテクチャ・フィールドブックとして磨き込んだドキュメント。',
+      body: '希少なClaude Fableビルドで鍛え、プロダクション級のアーキテクチャ・フィールドブックとして磨き込んだドキュメント。',
       stamp: 'Rare build'
     },
     heroPills: ['不変条件', '障害モード', '容量見積もり', 'ロールアウト'],
