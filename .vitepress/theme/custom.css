@@ -137,64 +137,6 @@
   vertical-align: middle;
 }
 
-/* Google Translate Widget Styling */
-.translate-wrapper {
-  display: flex;
-  align-items: center;
-  margin-right: 8px;
-}
-
-#google_translate_element {
-  display: inline-block;
-}
-
-#google_translate_element select {
-  background: var(--vp-c-bg);
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 6px;
-  padding: 4px 8px;
-  font-size: 12px;
-  color: var(--vp-c-text-1);
-  cursor: pointer;
-  outline: none;
-}
-
-#google_translate_element select:hover {
-  border-color: var(--vp-c-brand-1);
-}
-
-/* Hide Google Translate branding */
-.goog-logo-link,
-.goog-te-gadget > span,
-.goog-te-banner-frame,
-#goog-gt-tt,
-.goog-te-balloon-frame {
-  display: none !important;
-}
-
-.goog-te-gadget {
-  color: transparent !important;
-  font-size: 0 !important;
-}
-
-.goog-te-gadget .goog-te-combo {
-  color: var(--vp-c-text-1) !important;
-  font-size: 12px !important;
-}
-
-body {
-  top: 0 !important;
-}
-
-.skiptranslate {
-  display: none !important;
-}
-
-/* Prevent layout shift from translate bar */
-.goog-te-banner-frame.skiptranslate {
-  display: none !important;
-}
-
 /* Nav accent border */
 .VPNav {
   border-bottom: 1px solid var(--vp-c-divider) !important;
