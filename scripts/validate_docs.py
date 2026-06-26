@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 from urllib.parse import unquote
 
-
 ROOT = Path(__file__).resolve().parents[1]
 IGNORED_DIRS = {
     ".git",
@@ -25,18 +24,26 @@ SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 ARTICLE_COUNT_RE = re.compile(r"(\d+)\s+articles|(\d+)記事")
 STAT_COUNT_RE = re.compile(
     r'<span class="(?:home-)?stat-(?:num|number)">(\d+)</span>\s*'
-    r'<span class="(?:home-)?stat-label">(Articles|記事)</span>',
+    + r'<span class="(?:home-)?stat-label">(Articles|記事)</span>',
     re.DOTALL,
 )
 BOOK_CHAPTER_RE = re.compile(r"""["']((?:ja/)?\d{2}-[^"']+\.md)["']""")
 VITEPRESS_LINK_RE = re.compile(r"""link:\s*["']([^"']+)["']""")
-VITEPRESS_ASSET_RE = re.compile(r"""src:\s*["']?(/(?:icons/[^"'\s]+|logo)\.svg)["']?""")
+VITEPRESS_HREF_RE = re.compile(r"""href:\s*["']([^"']+)["']""")
+VITEPRESS_ASSET_RE = re.compile(r"""["'](/(?:icons/[^"'\s]+|logo)\.svg)["']""")
 VITEPRESS_BASE_RE = re.compile(r"""base:\s*["']([^"']+)["']""")
-GENERATED_ASSET_RE = re.compile(r"""cat > public/([^"'\s]+\.svg)""")
 HTML_ROOT_HREF_RE = re.compile(r"""\shref=["'](/[^"'#?]*)["']""")
+LANDING_STAT_RE = re.compile(
+    r"""\[\s*["'](\d+)["']\s*,\s*["'](Articles|記事)["']\s*\]"""
+)
+VITEPRESS_SOURCE_FILES = [
+    Path(".vitepress/config.mts"),
+    Path(".vitepress/theme/components/LandingPage.vue"),
+]
 HOMEPAGE_SOURCES = [
-    Path(".github/workflows/build-docs.yml"),
+    Path("index.md"),
     Path("ja/index.md"),
+    Path(".vitepress/theme/components/LandingPage.vue"),
 ]
 
 
@@ -99,7 +106,9 @@ def local_candidates(source: Path, target: str) -> list[Path]:
     if not target:
         return []
 
-    base = ROOT / target.lstrip("/") if target.startswith("/") else source.parent / target
+    base = (
+        ROOT / target.lstrip("/") if target.startswith("/") else source.parent / target
+    )
     candidates = [base]
 
     if base.suffix == "":
@@ -119,8 +128,12 @@ def validate_markdown_links(errors: list[str]) -> None:
                     continue
 
                 candidates = local_candidates(path, target)
-                if candidates and not any(candidate.exists() for candidate in candidates):
-                    errors.append(f"{rel(path)}:{lineno}: missing local link target: {target}")
+                if candidates and not any(
+                    candidate.exists() for candidate in candidates
+                ):
+                    errors.append(
+                        f"{rel(path)}:{lineno}: missing local link target: {target}"
+                    )
 
 
 def article_paths(prefix: str = "") -> set[Path]:
@@ -149,10 +162,7 @@ def validate_article_parity(errors: list[str]) -> int:
 
 
 def validate_advertised_counts(errors: list[str], expected: int) -> None:
-    files = [
-        ROOT / "ja/index.md",
-        ROOT / ".github/workflows/build-docs.yml",
-    ]
+    files = [ROOT / path for path in HOMEPAGE_SOURCES]
 
     for path in files:
         if not path.exists():
@@ -165,6 +175,12 @@ def validate_advertised_counts(errors: list[str], expected: int) -> None:
                     f"{rel(path)}: advertised article count is {value}, expected {expected}"
                 )
         for match in STAT_COUNT_RE.finditer(text):
+            value = int(match.group(1))
+            if value != expected:
+                errors.append(
+                    f"{rel(path)}: stats article count is {value}, expected {expected}"
+                )
+        for match in LANDING_STAT_RE.finditer(text):
             value = int(match.group(1))
             if value != expected:
                 errors.append(
@@ -186,60 +202,74 @@ def validate_book_workflow_paths(errors: list[str]) -> None:
     if not path.exists():
         return
 
-    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for lineno, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         for match in BOOK_CHAPTER_RE.finditer(line):
             target = ROOT / match.group(1)
             if not target.exists():
-                errors.append(f"{rel(path)}:{lineno}: missing chapter path: {match.group(1)}")
+                errors.append(
+                    f"{rel(path)}:{lineno}: missing chapter path: {match.group(1)}"
+                )
 
 
 def validate_vitepress_workflow_links(errors: list[str]) -> None:
-    path = ROOT / ".github/workflows/build-docs.yml"
-    if not path.exists():
-        return
+    for relative in VITEPRESS_SOURCE_FILES:
+        path = ROOT / relative
+        if not path.exists():
+            continue
 
-    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        for match in VITEPRESS_LINK_RE.finditer(line):
-            link = match.group(1)
-            if link.startswith(("http://", "https://")):
-                continue
-            if not link.startswith("/"):
-                continue
-            if link == "/":
-                continue
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            for regex in (VITEPRESS_LINK_RE, VITEPRESS_HREF_RE):
+                for match in regex.finditer(line):
+                    link = match.group(1)
+                    if link.startswith(("http://", "https://")):
+                        continue
+                    if not link.startswith("/"):
+                        continue
+                    if link == "/" or link.endswith(".svg"):
+                        continue
 
-            target = link.strip("/")
-            candidates = [ROOT / f"{target}.md", ROOT / target / "index.md"]
-            if not any(candidate.exists() for candidate in candidates):
-                errors.append(f"{rel(path)}:{lineno}: missing VitePress link target: {link}")
+                    target = link.strip("/")
+                    candidates = [ROOT / f"{target}.md", ROOT / target / "index.md"]
+                    if not any(candidate.exists() for candidate in candidates):
+                        errors.append(
+                            f"{rel(path)}:{lineno}: missing VitePress link target: {link}"
+                        )
 
 
 def validate_generated_assets(errors: list[str]) -> None:
-    workflow = ROOT / ".github/workflows/build-docs.yml"
-    if not workflow.exists():
-        return
-
-    generated = set(GENERATED_ASSET_RE.findall(workflow.read_text(encoding="utf-8")))
-    files = [workflow, ROOT / "ja/index.md"]
+    files = [
+        ROOT / ".vitepress/config.mts",
+        ROOT / ".vitepress/theme/custom.css",
+        ROOT / ".vitepress/theme/components/LandingPage.vue",
+        ROOT / "404.md",
+        ROOT / "index.md",
+        ROOT / "ja/index.md",
+    ]
 
     for path in files:
         if not path.exists():
             continue
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
             for match in VITEPRESS_ASSET_RE.finditer(line):
                 target = match.group(1).lstrip("/")
-                if target not in generated:
-                    errors.append(f"{rel(path)}:{lineno}: missing generated asset: /{target}")
+                if not (ROOT / "public" / target).exists():
+                    errors.append(f"{rel(path)}:{lineno}: missing asset: /{target}")
 
 
 def validate_homepage_html_links(errors: list[str]) -> None:
-    workflow = ROOT / ".github/workflows/build-docs.yml"
-    if not workflow.exists():
+    config = ROOT / ".vitepress/config.mts"
+    if not config.exists():
         return
 
-    base_match = VITEPRESS_BASE_RE.search(workflow.read_text(encoding="utf-8"))
+    base_match = VITEPRESS_BASE_RE.search(config.read_text(encoding="utf-8"))
     if not base_match:
-        errors.append(f"{rel(workflow)}: missing VitePress base setting")
+        errors.append(f"{rel(config)}: missing VitePress base setting")
         return
     site_base = base_match.group(1)
 
@@ -248,13 +278,15 @@ def validate_homepage_html_links(errors: list[str]) -> None:
         if not path.exists():
             continue
 
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
             for match in HTML_ROOT_HREF_RE.finditer(line):
                 link = match.group(1)
                 if not link.startswith(site_base):
                     errors.append(
                         f"{rel(path)}:{lineno}: raw HTML link must include site base "
-                        f"{site_base}: {link}"
+                        + f"{site_base}: {link}"
                     )
                     continue
 
@@ -262,8 +294,12 @@ def validate_homepage_html_links(errors: list[str]) -> None:
                 if target == "/":
                     continue
                 candidates = local_candidates(path, target)
-                if candidates and not any(candidate.exists() for candidate in candidates):
-                    errors.append(f"{rel(path)}:{lineno}: missing homepage link target: {link}")
+                if candidates and not any(
+                    candidate.exists() for candidate in candidates
+                ):
+                    errors.append(
+                        f"{rel(path)}:{lineno}: missing homepage link target: {link}"
+                    )
 
 
 def main() -> int:

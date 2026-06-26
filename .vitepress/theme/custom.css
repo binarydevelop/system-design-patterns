@@ -1,0 +1,274 @@
+/* Documentation interface theme */
+:root {
+  --vp-font-family-base: 'Inter', sans-serif;
+  --vp-font-family-mono: 'JetBrains Mono', monospace;
+  --vp-c-brand-1: #2563EB;
+  --vp-c-brand-2: #0F766E;
+  --vp-c-brand-3: #D97706;
+  --vp-c-brand-soft: rgba(37, 99, 235, 0.12);
+  --sdp-c-ink: #111827;
+  --sdp-c-data: #2563EB;
+  --sdp-c-stream: #0F766E;
+  --sdp-c-decision: #D97706;
+
+  --vp-button-brand-border: #2563EB;
+  --vp-button-brand-text: #fff;
+  --vp-button-brand-bg: #2563EB;
+  --vp-button-brand-hover-border: #0F766E;
+  --vp-button-brand-hover-text: #fff;
+  --vp-button-brand-hover-bg: #0F766E;
+  --vp-button-brand-active-border: #1D4ED8;
+  --vp-button-brand-active-text: #fff;
+  --vp-button-brand-active-bg: #1D4ED8;
+}
+
+.dark {
+  --vp-c-brand-1: #60A5FA;
+  --vp-c-brand-2: #2DD4BF;
+  --vp-c-brand-3: #FBBF24;
+  --vp-c-brand-soft: rgba(96, 165, 250, 0.16);
+  --sdp-c-ink: #F8FAFC;
+  --sdp-c-data: #60A5FA;
+  --sdp-c-stream: #2DD4BF;
+  --sdp-c-decision: #FBBF24;
+
+  --vp-button-brand-border: #60A5FA;
+  --vp-button-brand-text: #fff;
+  --vp-button-brand-bg: #2563EB;
+  --vp-button-brand-hover-border: #0F766E;
+  --vp-button-brand-hover-text: #fff;
+  --vp-button-brand-hover-bg: #0F766E;
+}
+
+.VPButton {
+  border-radius: 8px !important;
+}
+
+.VPButton.brand {
+  box-shadow: none;
+}
+
+/* Custom styled tip/warning/info containers */
+.vp-doc .custom-block.tip {
+  border-color: var(--vp-c-brand-1);
+  background-color: var(--vp-c-brand-soft);
+}
+
+.vp-doc .custom-block.tip .custom-block-title {
+  color: var(--vp-c-brand-1);
+}
+
+.vp-doc .custom-block.warning {
+  border-color: var(--vp-c-brand-2);
+  background-color: var(--vp-c-brand-soft);
+}
+
+.vp-doc .custom-block.warning .custom-block-title {
+  color: var(--vp-c-brand-2);
+}
+
+.vp-doc .custom-block.info {
+  border-color: var(--vp-c-brand-3);
+  background-color: var(--vp-c-brand-soft);
+}
+
+.vp-doc .custom-block.info .custom-block-title {
+  color: var(--vp-c-brand-3);
+}
+
+/* Sidebar group icons styling */
+.VPSidebarItem .icon {
+  margin-right: 0.5rem;
+  width: 18px;
+  height: 18px;
+}
+
+/* Code blocks with a restrained accent */
+.vp-doc div[class*='language-'] {
+  border-left: 2px solid var(--vp-c-brand-1);
+}
+
+/* Table header styling */
+.vp-doc table th {
+  background-color: var(--vp-c-bg-soft);
+  border-bottom: 2px solid var(--vp-c-divider);
+}
+
+/* Link styling */
+.vp-doc a {
+  color: var(--vp-c-brand-1);
+}
+
+.vp-doc a:hover {
+  color: var(--vp-c-brand-2);
+}
+
+/* Scrollbar styling (webkit) */
+::-webkit-scrollbar-thumb {
+  background: var(--vp-c-brand-1);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--vp-c-brand-2);
+}
+
+/* TL;DR section styling */
+.vp-doc h2#tl-dr,
+.vp-doc h2#tldr {
+  color: var(--vp-c-brand-1);
+  border-bottom: 2px solid var(--vp-c-divider);
+  padding-bottom: 0.5rem;
+}
+
+/* Footer branding */
+.VPFooter .container {
+  position: relative;
+}
+
+.VPFooter .message::before {
+  content: '';
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background: url('/logo.svg') no-repeat center;
+  background-size: contain;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+
+/* Google Translate Widget Styling */
+.translate-wrapper {
+  display: flex;
+  align-items: center;
+  margin-right: 8px;
+}
+
+#google_translate_element {
+  display: inline-block;
+}
+
+#google_translate_element select {
+  background: var(--vp-c-bg);
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--vp-c-text-1);
+  cursor: pointer;
+  outline: none;
+}
+
+#google_translate_element select:hover {
+  border-color: var(--vp-c-brand-1);
+}
+
+/* Hide Google Translate branding */
+.goog-logo-link,
+.goog-te-gadget > span,
+.goog-te-banner-frame,
+#goog-gt-tt,
+.goog-te-balloon-frame {
+  display: none !important;
+}
+
+.goog-te-gadget {
+  color: transparent !important;
+  font-size: 0 !important;
+}
+
+.goog-te-gadget .goog-te-combo {
+  color: var(--vp-c-text-1) !important;
+  font-size: 12px !important;
+}
+
+body {
+  top: 0 !important;
+}
+
+.skiptranslate {
+  display: none !important;
+}
+
+/* Prevent layout shift from translate bar */
+.goog-te-banner-frame.skiptranslate {
+  display: none !important;
+}
+
+/* Nav accent border */
+.VPNav {
+  border-bottom: 1px solid var(--vp-c-divider) !important;
+}
+
+/* 404 page */
+.not-found {
+  text-align: center;
+  padding: 4rem 2rem;
+}
+.not-found-logo {
+  width: 80px;
+  margin-bottom: 2rem;
+}
+.not-found h1 {
+  font-size: 6rem;
+  font-weight: 700;
+  color: var(--vp-c-brand-1);
+  margin: 0;
+  line-height: 1;
+}
+.not-found p {
+  font-size: 1.25rem;
+  color: var(--vp-c-text-2);
+  margin: 1rem 0 2rem;
+}
+.not-found-btn {
+  display: inline-flex;
+  padding: 0.75rem 2rem;
+  background: var(--vp-c-brand-1);
+  color: white;
+  border-radius: 8px;
+  text-decoration: none;
+  font-weight: 600;
+  transition: background 0.2s;
+}
+.not-found-btn:hover {
+  background: var(--vp-c-brand-2);
+  color: white;
+}
+
+/* Mermaid diagram container */
+.mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 1.5rem 0;
+  padding: 1.5rem;
+  background: var(--vp-c-bg-soft);
+  border-radius: 8px;
+  border: 1px solid var(--vp-c-divider);
+  overflow-x: auto;
+}
+
+@media (max-width: 640px) {
+  html,
+  body {
+    overflow-x: hidden;
+  }
+
+  .VPNavBarTitle {
+    min-width: 0;
+  }
+
+  .VPNavBarTitle .title {
+    max-width: 190px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 0.875rem;
+    white-space: nowrap;
+  }
+
+  .VPButton {
+    width: min(100%, 260px);
+    min-width: 0;
+    white-space: normal;
+  }
+}
