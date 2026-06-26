@@ -71,6 +71,11 @@ const content = {
     titleHtml: 'Design systems that keep their <em>promises.</em>',
     eyebrow: ['Architecture Fieldbook', 'Distributed · Data · ML · AI Systems'],
     deck: 'A deeply technical field guide for engineers who need more than interview diagrams: invariants, trade-offs, failure modes, capacity math, rollout mechanics, and production case studies.',
+    edition: {
+      badge: 'Exclusive deluxe documentation',
+      title: 'Claude Fable edition',
+      body: 'First forged with Claude Fable — a now-prohibited model — then curated into a production-grade architecture fieldbook.',
+    },
     heroPills: ['Invariants', 'Failure modes', 'Capacity math', 'Rollout mechanics'],
     primaryCta: { label: 'Start with foundations →', href: '/01-foundations/01-acid-transactions' },
     secondaryCta: { label: 'Explore ML systems', href: '/16-ml-systems/01-ml-system-fundamentals' },
@@ -118,6 +123,11 @@ const content = {
     titleHtml: '約束を守るシステムを<em>設計する。</em>',
     eyebrow: ['Architecture Fieldbook', '分散 · データ · ML · AI システム'],
     deck: '面接用の図ではなく、設計レビューと本番判断のための技術フィールドブック。整合性、障害、容量、ロールアウト、監視、ML/AIシステムまで、実装上のトレードオフを深掘りする。',
+    edition: {
+      badge: 'Exclusive deluxe documentation',
+      title: 'Claude Fable edition',
+      body: '現在はprohibitedとなったClaude Fableで最初に鍛え、プロダクション級のアーキテクチャ・フィールドブックとして磨き込んだドキュメント。',
+    },
     heroPills: ['不変条件', '障害モード', '容量見積もり', 'ロールアウト'],
     primaryCta: { label: '基礎から始める →', href: '/ja/01-foundations/01-acid-transactions' },
     secondaryCta: { label: 'MLシステムを見る', href: '/ja/16-ml-systems/01-ml-system-fundamentals' },
@@ -183,6 +193,11 @@ function linkTarget(card: { external?: boolean }) {
   <main class="sdp-home" :lang="locale">
     <section class="sdp-hero" aria-labelledby="sdp-title">
       <div class="sdp-shell">
+        <aside class="sdp-edition-banner" aria-label="Exclusive edition note">
+          <span>{{ page.edition.badge }}</span>
+          <strong>{{ page.edition.title }}</strong>
+          <small>{{ page.edition.body }}</small>
+        </aside>
         <p class="sdp-eyebrow">
           <span>{{ page.eyebrow[0] }}</span>
           <span>{{ page.eyebrow[1] }}</span>
@@ -413,6 +428,59 @@ function linkTarget(card: { external?: boolean }) {
 .sdp-hero .sdp-shell {
   position: relative;
   z-index: 1;
+}
+.sdp-edition-banner {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  margin-bottom: 24px;
+  border: 1px solid rgba(167, 139, 250, 0.34);
+  border-radius: 999px;
+  padding: 8px 14px 8px 10px;
+  color: #e2e8f0;
+  background:
+    linear-gradient(90deg, rgba(15, 23, 42, 0.86), rgba(30, 41, 59, 0.54)),
+    radial-gradient(circle at 12% 50%, rgba(167, 139, 250, 0.24), transparent 42%);
+  box-shadow: 0 16px 52px rgba(2, 6, 23, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px);
+}
+.sdp-edition-banner::before {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--sdp-violet), var(--sdp-cyan));
+  box-shadow: 0 0 22px rgba(167, 139, 250, 0.78);
+  content: "";
+}
+.sdp-edition-banner span {
+  border: 1px solid rgba(226, 232, 240, 0.16);
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #06111f;
+  background: linear-gradient(135deg, var(--sdp-green), var(--sdp-cyan));
+  font-size: 0.64rem;
+  font-weight: 860;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.sdp-edition-banner strong {
+  color: #f8fafc;
+  font-size: 0.82rem;
+  font-weight: 820;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.sdp-edition-banner small {
+  min-width: 0;
+  color: #cbd5e1;
+  font-size: 0.82rem;
+  line-height: 1.35;
 }
 .sdp-eyebrow {
   display: flex;
@@ -984,6 +1052,20 @@ function linkTarget(card: { external?: boolean }) {
   }
   .sdp-hero {
     padding: 36px 0 34px;
+  }
+  .sdp-edition-banner {
+    grid-template-columns: auto 1fr;
+    width: auto;
+    border-radius: 24px;
+    padding: 12px;
+  }
+  .sdp-edition-banner::before {
+    grid-row: span 2;
+  }
+  .sdp-edition-banner span,
+  .sdp-edition-banner strong,
+  .sdp-edition-banner small {
+    white-space: normal;
   }
   .sdp-eyebrow {
     margin-bottom: 22px !important;
