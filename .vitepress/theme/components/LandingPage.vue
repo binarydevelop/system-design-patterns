@@ -71,6 +71,7 @@ const content = {
     titleHtml: 'Design systems that keep their <em>promises.</em>',
     eyebrow: ['Architecture Fieldbook', 'Distributed · Data · ML · AI Systems'],
     deck: 'A deeply technical field guide for engineers who need more than interview diagrams: invariants, trade-offs, failure modes, capacity math, rollout mechanics, and production case studies.',
+    heroPills: ['Invariants', 'Failure modes', 'Capacity math', 'Rollout mechanics'],
     primaryCta: { label: 'Start with foundations →', href: '/01-foundations/01-acid-transactions' },
     secondaryCta: { label: 'Explore ML systems', href: '/16-ml-systems/01-ml-system-fundamentals' },
     downloadCta: { label: 'Download PDF / EPUB', href: 'https://github.com/babushkai/system-design-patterns/releases/latest', external: true },
@@ -117,6 +118,7 @@ const content = {
     titleHtml: '約束を守るシステムを<em>設計する。</em>',
     eyebrow: ['Architecture Fieldbook', '分散 · データ · ML · AI システム'],
     deck: '面接用の図ではなく、設計レビューと本番判断のための技術フィールドブック。整合性、障害、容量、ロールアウト、監視、ML/AIシステムまで、実装上のトレードオフを深掘りする。',
+    heroPills: ['不変条件', '障害モード', '容量見積もり', 'ロールアウト'],
     primaryCta: { label: '基礎から始める →', href: '/ja/01-foundations/01-acid-transactions' },
     secondaryCta: { label: 'MLシステムを見る', href: '/ja/16-ml-systems/01-ml-system-fundamentals' },
     downloadCta: { label: 'PDF / EPUB', href: 'https://github.com/babushkai/system-design-patterns/releases/latest', external: true },
@@ -189,6 +191,9 @@ function linkTarget(card: { external?: boolean }) {
           <header class="sdp-hero-copy">
             <h1 id="sdp-title" v-html="page.titleHtml" />
             <p class="sdp-deck">{{ page.deck }}</p>
+            <ul class="sdp-hero-pills" aria-label="Content strengths">
+              <li v-for="pill in page.heroPills" :key="pill">{{ pill }}</li>
+            </ul>
             <nav class="sdp-actions" aria-label="Primary paths">
               <a class="sdp-button sdp-button-primary" :href="hrefFor(page.primaryCta)">{{ page.primaryCta.label }}</a>
               <a class="sdp-button" :href="hrefFor(page.secondaryCta)">{{ page.secondaryCta.label }}</a>
@@ -200,24 +205,40 @@ function linkTarget(card: { external?: boolean }) {
               >{{ page.downloadCta.label }}</a>
             </nav>
           </header>
-          <aside class="sdp-console" :aria-label="page.consoleLabel">
-            <div class="sdp-console-top">
-              <span>{{ page.consoleTop[0] }}</span>
-              <span>{{ page.consoleTop[1] }}</span>
+          <div class="sdp-hero-visual">
+            <aside class="sdp-console" :aria-label="page.consoleLabel">
+              <div class="sdp-console-top">
+                <span>{{ page.consoleTop[0] }}</span>
+                <span>{{ page.consoleTop[1] }}</span>
+              </div>
+              <ol class="sdp-checks">
+                <li v-for="check in page.checks" :key="check[0]">
+                  <div>
+                    <strong>{{ check[0] }}</strong>
+                    <span>{{ check[1] }}</span>
+                  </div>
+                </li>
+              </ol>
+              <div class="sdp-console-foot">
+                <span>{{ page.consoleFoot[0] }}</span>
+                <span>{{ page.consoleFoot[1] }}</span>
+              </div>
+            </aside>
+            <div class="sdp-system-card" aria-hidden="true">
+              <div class="sdp-orbit">
+                <span class="sdp-orbit-core">invariant</span>
+                <span class="sdp-orbit-node sdp-node-data">data</span>
+                <span class="sdp-orbit-node sdp-node-flow">flow</span>
+                <span class="sdp-orbit-node sdp-node-ml">ml</span>
+                <span class="sdp-orbit-node sdp-node-risk">risk</span>
+              </div>
+              <div class="sdp-signal-row">
+                <span>p99 bounded</span>
+                <span>rollback ready</span>
+                <span>evidence logged</span>
+              </div>
             </div>
-            <ol class="sdp-checks">
-              <li v-for="check in page.checks" :key="check[0]">
-                <div>
-                  <strong>{{ check[0] }}</strong>
-                  <span>{{ check[1] }}</span>
-                </div>
-              </li>
-            </ol>
-            <div class="sdp-console-foot">
-              <span>{{ page.consoleFoot[0] }}</span>
-              <span>{{ page.consoleFoot[1] }}</span>
-            </div>
-          </aside>
+          </div>
         </div>
         <div class="sdp-stats" :aria-label="page.statsLabel">
           <p v-for="stat in page.stats" :key="stat[1]" class="sdp-stat">
@@ -334,9 +355,12 @@ function linkTarget(card: { external?: boolean }) {
   --sdp-blue: #60a5fa;
   --sdp-cyan: #22d3ee;
   --sdp-green: #34d399;
+  --sdp-violet: #a78bfa;
   --sdp-amber: #fbbf24;
   --sdp-red: #fb7185;
-  --sdp-radius: 28px;
+  --sdp-halo: rgba(34, 211, 238, 0.2);
+  --sdp-shadow: 0 28px 90px rgba(2, 6, 23, 0.24);
+  --sdp-radius: 30px;
   width: 100%;
   margin: -32px 0 0;
   color: var(--sdp-ink);
@@ -348,30 +372,43 @@ function linkTarget(card: { external?: boolean }) {
   text-decoration: none;
 }
 .sdp-shell {
-  width: min(1180px, calc(100% - 40px));
+  width: min(1240px, calc(100% - 48px));
   margin: 0 auto;
 }
 .sdp-hero {
   position: relative;
+  isolation: isolate;
   overflow: hidden;
-  padding: clamp(54px, 8vw, 98px) 0 54px;
+  padding: clamp(64px, 9vw, 118px) 0 58px;
   border-bottom: 1px solid var(--sdp-line);
   background:
-    radial-gradient(circle at 18% 18%, rgba(96, 165, 250, 0.23), transparent 28%),
-    radial-gradient(circle at 82% 8%, rgba(34, 211, 238, 0.15), transparent 28%),
-    linear-gradient(135deg, #070b12 0%, #0b1020 52%, #101827 100%);
+    radial-gradient(780px circle at 12% 8%, rgba(96, 165, 250, 0.24), transparent 58%),
+    radial-gradient(620px circle at 82% 18%, rgba(34, 211, 238, 0.18), transparent 62%),
+    radial-gradient(520px circle at 68% 82%, rgba(167, 139, 250, 0.16), transparent 66%),
+    linear-gradient(135deg, #050814 0%, #090e1c 45%, #101827 100%);
 }
 .sdp-hero::before {
   position: absolute;
   inset: 0;
+  z-index: -2;
   content: "";
   pointer-events: none;
-  opacity: 0.45;
+  opacity: 0.42;
   background-image:
-    linear-gradient(rgba(148, 163, 184, 0.12) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(148, 163, 184, 0.12) 1px, transparent 1px);
-  background-size: 44px 44px;
-  mask-image: linear-gradient(to bottom, black, transparent 85%);
+    linear-gradient(rgba(148, 163, 184, 0.11) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.11) 1px, transparent 1px);
+  background-size: 46px 46px;
+  mask-image: linear-gradient(to bottom, black, transparent 86%);
+}
+.sdp-hero::after {
+  position: absolute;
+  inset: auto -15% -42% -15%;
+  z-index: -1;
+  height: 58%;
+  content: "";
+  pointer-events: none;
+  background: radial-gradient(closest-side, rgba(34, 211, 238, 0.18), transparent 72%);
+  filter: blur(32px);
 }
 .sdp-hero .sdp-shell {
   position: relative;
@@ -404,28 +441,52 @@ function linkTarget(card: { external?: boolean }) {
 }
 .sdp-hero-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.75fr);
-  gap: clamp(34px, 6vw, 72px);
+  grid-template-columns: minmax(0, 1.05fr) minmax(390px, 0.86fr);
+  gap: clamp(42px, 7vw, 96px);
   align-items: center;
 }
 .sdp-hero-copy h1 {
-  max-width: 780px;
+  max-width: 850px;
   color: var(--sdp-ink);
-  font-size: clamp(3.25rem, 8vw, 7.8rem);
-  font-weight: 820;
-  line-height: 0.9;
-  letter-spacing: -0.075em;
+  font-size: clamp(3.55rem, 8.6vw, 8.8rem);
+  font-weight: 850;
+  line-height: 0.88;
+  letter-spacing: -0.085em;
+  text-wrap: balance;
 }
 .sdp-hero-copy h1 :deep(em) {
-  color: var(--sdp-cyan);
+  color: transparent;
+  background: linear-gradient(100deg, var(--sdp-green), var(--sdp-cyan) 42%, var(--sdp-violet));
+  background-clip: text;
   font-style: normal;
 }
 .sdp-deck {
-  max-width: 690px;
-  margin-top: 28px !important;
+  max-width: 710px;
+  margin-top: 30px !important;
   color: #cbd5e1;
-  font-size: clamp(1.05rem, 2vw, 1.28rem);
-  line-height: 1.65;
+  font-size: clamp(1.06rem, 2vw, 1.3rem);
+  line-height: 1.7;
+  text-wrap: pretty;
+}
+.sdp-hero-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 28px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.sdp-hero-pills li {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 999px;
+  padding: 7px 11px;
+  color: #dbeafe;
+  background: rgba(15, 23, 42, 0.42);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  font-size: 0.76rem;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 .sdp-actions {
   display: flex;
@@ -435,22 +496,24 @@ function linkTarget(card: { external?: boolean }) {
 }
 .sdp-button {
   display: inline-flex;
-  min-height: 46px;
+  min-height: 48px;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--sdp-line);
   border-radius: 999px;
-  padding: 0 18px;
+  padding: 0 20px;
   color: #dbeafe;
-  background: rgba(15, 23, 42, 0.56);
+  background: rgba(15, 23, 42, 0.58);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
   font-size: 0.95rem;
-  font-weight: 700;
-  transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+  font-weight: 740;
+  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
 }
 .sdp-button:hover {
   border-color: rgba(96, 165, 250, 0.72);
   background: rgba(30, 41, 59, 0.92);
-  transform: translateY(-1px);
+  box-shadow: 0 12px 34px rgba(15, 23, 42, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transform: translateY(-2px);
 }
 .sdp-button-primary {
   border-color: transparent;
@@ -461,20 +524,52 @@ function linkTarget(card: { external?: boolean }) {
   color: #06111f;
   background: linear-gradient(135deg, #6ee7b7, #67e8f9);
 }
+.sdp-hero-visual {
+  position: relative;
+  display: grid;
+  gap: 16px;
+}
+.sdp-hero-visual::before {
+  position: absolute;
+  inset: -24px -22px 24px 18%;
+  z-index: -1;
+  border-radius: 42px;
+  content: "";
+  background:
+    linear-gradient(135deg, rgba(96, 165, 250, 0.18), transparent 38%),
+    radial-gradient(circle at 78% 24%, rgba(52, 211, 153, 0.18), transparent 44%);
+  filter: blur(2px);
+}
 .sdp-console {
   position: relative;
-  border: 1px solid rgba(148, 163, 184, 0.26);
+  border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: var(--sdp-radius);
   overflow: hidden;
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.94), rgba(15, 23, 42, 0.58));
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.95), rgba(15, 23, 42, 0.64)),
+    radial-gradient(circle at 70% 20%, rgba(34, 211, 238, 0.16), transparent 42%);
+  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(18px);
 }
 .sdp-console::before {
   position: absolute;
   inset: 0;
   content: "";
   pointer-events: none;
-  background: radial-gradient(circle at 82% 12%, rgba(34, 211, 238, 0.18), transparent 28%);
+  background:
+    linear-gradient(90deg, rgba(52, 211, 153, 0.38), transparent 22%, transparent 78%, rgba(34, 211, 238, 0.24)),
+    radial-gradient(circle at 82% 12%, rgba(34, 211, 238, 0.2), transparent 28%);
+  opacity: 0.42;
+}
+.sdp-console::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 100% 12px;
+  mix-blend-mode: screen;
+  opacity: 0.28;
 }
 .sdp-console-top,
 .sdp-console-foot {
@@ -492,6 +587,99 @@ function linkTarget(card: { external?: boolean }) {
 .sdp-console-foot {
   border-top: 1px solid var(--sdp-line);
   border-bottom: 0;
+}
+.sdp-system-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 165px 1fr;
+  gap: 18px;
+  align-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 26px;
+  padding: 16px;
+  background: rgba(2, 6, 23, 0.44);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(16px);
+}
+.sdp-orbit {
+  position: relative;
+  width: 150px;
+  aspect-ratio: 1;
+  border: 1px solid rgba(96, 165, 250, 0.28);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, rgba(34, 211, 238, 0.18), transparent 34%),
+    conic-gradient(from 140deg, rgba(52, 211, 153, 0.36), rgba(96, 165, 250, 0.08), rgba(167, 139, 250, 0.32), rgba(52, 211, 153, 0.36));
+}
+.sdp-orbit::before,
+.sdp-orbit::after {
+  position: absolute;
+  inset: 22px;
+  border: 1px dashed rgba(226, 232, 240, 0.22);
+  border-radius: 50%;
+  content: "";
+}
+.sdp-orbit::after {
+  inset: 48px;
+  border-style: solid;
+  border-color: rgba(52, 211, 153, 0.26);
+}
+.sdp-orbit-core {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: 68px;
+  height: 68px;
+  place-items: center;
+  border-radius: 50%;
+  color: #06111f;
+  background: linear-gradient(135deg, var(--sdp-green), var(--sdp-cyan));
+  box-shadow: 0 0 34px rgba(34, 211, 238, 0.28);
+  font-size: 0.68rem;
+  font-weight: 850;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transform: translate(-50%, -50%);
+}
+.sdp-orbit-node {
+  position: absolute;
+  display: grid;
+  min-width: 46px;
+  min-height: 24px;
+  place-items: center;
+  border: 1px solid rgba(226, 232, 240, 0.22);
+  border-radius: 999px;
+  color: #dbeafe;
+  background: rgba(15, 23, 42, 0.82);
+  font-size: 0.62rem;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+.sdp-node-data { top: 8px; left: 50%; transform: translateX(-50%); }
+.sdp-node-flow { top: 50%; right: -12px; transform: translateY(-50%); }
+.sdp-node-ml { bottom: 8px; left: 50%; transform: translateX(-50%); }
+.sdp-node-risk { top: 50%; left: -12px; transform: translateY(-50%); }
+.sdp-signal-row {
+  display: grid;
+  gap: 8px;
+  color: #cbd5e1;
+  font-family: var(--vp-font-family-mono, ui-monospace, monospace);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+}
+.sdp-signal-row span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sdp-signal-row span::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sdp-green);
+  box-shadow: 0 0 16px rgba(52, 211, 153, 0.7);
+  content: "";
 }
 .sdp-checks {
   position: relative;
@@ -542,19 +730,21 @@ function linkTarget(card: { external?: boolean }) {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1px;
-  margin-top: 48px;
+  margin-top: 56px;
   border: 1px solid var(--sdp-line);
-  border-radius: 24px;
+  border-radius: 28px;
   overflow: hidden;
   background: var(--sdp-line);
+  box-shadow: 0 18px 70px rgba(2, 6, 23, 0.22);
 }
 .sdp-stat {
   display: grid;
   gap: 4px;
-  min-height: 104px;
+  min-height: 106px;
   align-content: center;
-  padding: 22px;
-  background: rgba(15, 23, 42, 0.7);
+  padding: 24px;
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.82), rgba(15, 23, 42, 0.62));
 }
 .home-stat-number {
   color: var(--sdp-ink);
@@ -570,15 +760,22 @@ function linkTarget(card: { external?: boolean }) {
   text-transform: uppercase;
 }
 .sdp-section {
-  padding: clamp(58px, 8vw, 96px) 0;
-  background: var(--sdp-paper);
+  position: relative;
+  padding: clamp(68px, 9vw, 112px) 0;
+  background:
+    radial-gradient(circle at 10% 0%, rgba(96, 165, 250, 0.08), transparent 38%),
+    var(--sdp-paper);
   color: var(--sdp-ink-dark);
 }
 .sdp-section-muted {
-  background: var(--sdp-paper-soft);
+  background:
+    linear-gradient(180deg, #eef2f7, #f7f9fc 48%, #eef2f7);
 }
 .sdp-section-dark {
-  background: #0b1020;
+  background:
+    radial-gradient(circle at 18% 16%, rgba(52, 211, 153, 0.12), transparent 36%),
+    radial-gradient(circle at 86% 34%, rgba(96, 165, 250, 0.14), transparent 40%),
+    #0b1020;
   color: var(--sdp-ink);
 }
 .sdp-section-head {
@@ -617,18 +814,40 @@ function linkTarget(card: { external?: boolean }) {
 .sdp-route,
 .sdp-domain,
 .sdp-evidence-card {
+  position: relative;
   border: 1px solid var(--sdp-line-dark);
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.72);
-  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+  border-radius: 26px;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.72));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+.sdp-principle::before,
+.sdp-route::before,
+.sdp-domain::before,
+.sdp-evidence-card::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  content: "";
+  background: linear-gradient(90deg, var(--sdp-green), var(--sdp-cyan), var(--sdp-violet));
+  opacity: 0;
+  transition: opacity 0.18s ease;
 }
 .sdp-principle:hover,
 .sdp-route:hover,
 .sdp-domain:hover,
 .sdp-evidence-card:hover {
   border-color: #9bb4d4;
-  box-shadow: 0 18px 46px rgba(15, 23, 42, 0.08);
-  transform: translateY(-2px);
+  box-shadow: 0 22px 58px rgba(15, 23, 42, 0.11);
+  transform: translateY(-3px);
+}
+.sdp-principle:hover::before,
+.sdp-route:hover::before,
+.sdp-domain:hover::before,
+.sdp-evidence-card:hover::before {
+  opacity: 1;
 }
 .sdp-principle {
   padding: 24px;
@@ -686,11 +905,11 @@ function linkTarget(card: { external?: boolean }) {
 .sdp-domain-map {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 .sdp-domain {
-  min-height: 126px;
-  padding: 18px;
+  min-height: 132px;
+  padding: 19px;
 }
 .sdp-domain span {
   color: #64748b;
@@ -722,9 +941,12 @@ function linkTarget(card: { external?: boolean }) {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 18px;
-  padding: 22px;
+  padding: 24px;
   border-color: rgba(148, 163, 184, 0.22);
-  background: rgba(15, 23, 42, 0.72);
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.84), rgba(15, 23, 42, 0.58));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(14px);
 }
 .sdp-evidence-card strong {
   color: var(--sdp-ink);
@@ -741,6 +963,9 @@ function linkTarget(card: { external?: boolean }) {
   .sdp-section-head,
   .sdp-evidence {
     grid-template-columns: 1fr;
+  }
+  .sdp-hero-visual {
+    max-width: 640px;
   }
   .sdp-console {
     max-width: 620px;
@@ -780,6 +1005,13 @@ function linkTarget(card: { external?: boolean }) {
   .sdp-console {
     border-radius: 22px;
   }
+  .sdp-system-card {
+    grid-template-columns: 1fr;
+  }
+  .sdp-orbit {
+    width: min(150px, 62vw);
+    margin: 0 auto;
+  }
   .sdp-checks {
     padding: 14px;
   }
@@ -811,7 +1043,11 @@ function linkTarget(card: { external?: boolean }) {
   .sdp-principle,
   .sdp-route,
   .sdp-domain,
-  .sdp-evidence-card {
+  .sdp-evidence-card,
+  .sdp-principle::before,
+  .sdp-route::before,
+  .sdp-domain::before,
+  .sdp-evidence-card::before {
     transition: none;
   }
   .sdp-button:hover,
