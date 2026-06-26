@@ -74,7 +74,8 @@ const content = {
     edition: {
       badge: 'Exclusive deluxe documentation',
       title: 'Claude Fable edition',
-      body: 'Forged with a now-prohibited Claude Fable model. Curated into a production-grade architecture fieldbook.'
+      body: 'Forged with a now-prohibited Claude Fable model. Curated into a production-grade architecture fieldbook.',
+      stamp: 'Rare build'
     },
     heroPills: ['Invariants', 'Failure modes', 'Capacity math', 'Rollout mechanics'],
     primaryCta: { label: 'Start with foundations →', href: '/01-foundations/01-acid-transactions' },
@@ -126,7 +127,8 @@ const content = {
     edition: {
       badge: 'Exclusive deluxe documentation',
       title: 'Claude Fable edition',
-      body: '現在はprohibitedとなったClaude Fableで鍛え、プロダクション級のアーキテクチャ・フィールドブックとして磨き込んだドキュメント。'
+      body: '現在はprohibitedとなったClaude Fableで鍛え、プロダクション級のアーキテクチャ・フィールドブックとして磨き込んだドキュメント。',
+      stamp: 'Rare build'
     },
     heroPills: ['不変条件', '障害モード', '容量見積もり', 'ロールアウト'],
     primaryCta: { label: '基礎から始める →', href: '/ja/01-foundations/01-acid-transactions' },
@@ -194,12 +196,13 @@ function linkTarget(card: { external?: boolean }) {
     <section class="sdp-hero" aria-labelledby="sdp-title">
       <div class="sdp-shell">
         <aside class="sdp-edition-banner" aria-label="Exclusive edition note">
-          <span class="sdp-edition-mark">CF</span>
+          <span class="sdp-edition-mark" aria-hidden="true"><span>CF</span></span>
           <div class="sdp-edition-copy">
             <span>{{ page.edition.badge }}</span>
             <strong>{{ page.edition.title }}</strong>
             <small>{{ page.edition.body }}</small>
           </div>
+          <span class="sdp-edition-stamp">{{ page.edition.stamp }}</span>
         </aside>
         <p class="sdp-eyebrow">
           <span>{{ page.eyebrow[0] }}</span>
@@ -435,77 +438,165 @@ function linkTarget(card: { external?: boolean }) {
 .sdp-edition-banner {
   position: relative;
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr);
-  gap: 14px;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
+  gap: 16px;
   align-items: center;
-  width: min(680px, 100%);
-  margin-bottom: 26px;
-  border: 1px solid rgba(167, 139, 250, 0.36);
-  border-radius: 28px;
-  padding: 12px 16px 12px 12px;
+  width: min(760px, 100%);
+  min-height: 94px;
+  margin-bottom: 30px;
+  border: 1px solid transparent;
+  border-radius: 30px;
+  padding: 16px 18px 16px 14px;
+  overflow: hidden;
   color: #e2e8f0;
   background:
-    linear-gradient(100deg, rgba(15, 23, 42, 0.9), rgba(30, 41, 59, 0.62)),
-    radial-gradient(circle at 10% 20%, rgba(167, 139, 250, 0.24), transparent 42%);
-  box-shadow: 0 18px 58px rgba(2, 6, 23, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(18px);
+    linear-gradient(112deg, rgba(2, 6, 23, 0.94), rgba(15, 23, 42, 0.86) 52%, rgba(30, 41, 59, 0.74)) padding-box,
+    linear-gradient(118deg, rgba(251, 191, 36, 0.9), rgba(52, 211, 153, 0.72) 30%, rgba(34, 211, 238, 0.85) 55%, rgba(167, 139, 250, 0.92)) border-box;
+  box-shadow:
+    0 26px 80px rgba(2, 6, 23, 0.45),
+    0 0 54px rgba(34, 211, 238, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(20px);
 }
+.sdp-edition-banner::before,
 .sdp-edition-banner::after {
   position: absolute;
-  inset: 0;
-  border-radius: inherit;
   content: "";
   pointer-events: none;
-  background: linear-gradient(90deg, rgba(52, 211, 153, 0.22), transparent 34%, rgba(167, 139, 250, 0.18));
-  opacity: 0.75;
+}
+.sdp-edition-banner::before {
+  inset: -65% auto -65% -18%;
+  z-index: 0;
+  width: 54%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.18), transparent);
+  filter: blur(1px);
+  opacity: 0.78;
+  transform: rotate(12deg);
+  animation: sdp-edition-sheen 7s ease-in-out infinite;
+}
+.sdp-edition-banner::after {
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background:
+    radial-gradient(circle at 8% 18%, rgba(52, 211, 153, 0.34), transparent 33%),
+    radial-gradient(circle at 86% 10%, rgba(167, 139, 250, 0.3), transparent 34%),
+    radial-gradient(circle at 101% 86%, rgba(251, 191, 36, 0.17), transparent 35%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.07), transparent 30%, rgba(251, 191, 36, 0.08));
+  opacity: 0.96;
 }
 .sdp-edition-mark {
   position: relative;
   z-index: 1;
   display: grid;
-  width: 46px;
-  height: 46px;
+  width: 58px;
+  height: 58px;
   place-items: center;
-  border: 1px solid rgba(226, 232, 240, 0.2);
-  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 21px;
   color: #06111f;
-  background: linear-gradient(135deg, var(--sdp-green), var(--sdp-cyan) 54%, var(--sdp-violet));
-  box-shadow: 0 0 28px rgba(34, 211, 238, 0.24);
-  font-size: 0.82rem;
-  font-weight: 900;
-  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, #fde68a 0%, var(--sdp-green) 34%, var(--sdp-cyan) 66%, var(--sdp-violet) 100%);
+  box-shadow: 0 0 36px rgba(34, 211, 238, 0.3), 0 13px 24px rgba(2, 6, 23, 0.34);
+  font-size: 0.96rem;
+  font-weight: 950;
+  letter-spacing: -0.03em;
+}
+.sdp-edition-mark::before {
+  position: absolute;
+  inset: -8px;
+  z-index: -1;
+  border-radius: 26px;
+  content: "";
+  background: conic-gradient(from 145deg, rgba(251, 191, 36, 0.42), rgba(34, 211, 238, 0.42), rgba(167, 139, 250, 0.5), rgba(251, 191, 36, 0.42));
+  filter: blur(12px);
+  opacity: 0.72;
+}
+.sdp-edition-mark::after {
+  position: absolute;
+  top: -9px;
+  right: -8px;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid rgba(254, 243, 199, 0.55);
+  border-radius: 999px;
+  content: "✦";
+  color: #fef3c7;
+  background: rgba(15, 23, 42, 0.82);
+  box-shadow: 0 0 18px rgba(251, 191, 36, 0.44);
+  font-size: 0.7rem;
+}
+.sdp-edition-mark span {
+  position: relative;
+  z-index: 1;
 }
 .sdp-edition-copy {
   position: relative;
   z-index: 1;
   display: grid;
-  gap: 3px;
+  gap: 4px;
   min-width: 0;
 }
 .sdp-edition-copy span {
   width: fit-content;
-  border: 1px solid rgba(226, 232, 240, 0.16);
+  border: 1px solid rgba(251, 191, 36, 0.34);
   border-radius: 999px;
-  padding: 3px 8px;
-  color: #a7f3d0;
-  background: rgba(2, 6, 23, 0.36);
+  padding: 4px 9px;
+  color: #fde68a;
+  background: rgba(251, 191, 36, 0.1);
+  box-shadow: 0 0 18px rgba(251, 191, 36, 0.12);
   font-size: 0.62rem;
-  font-weight: 860;
-  letter-spacing: 0.08em;
+  font-weight: 900;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 .sdp-edition-copy strong {
-  color: #f8fafc;
-  font-size: clamp(0.94rem, 1.6vw, 1.12rem);
-  font-weight: 860;
-  letter-spacing: 0.02em;
+  width: fit-content;
+  color: transparent;
+  background: linear-gradient(100deg, #fef3c7, var(--sdp-green) 30%, var(--sdp-cyan) 58%, #c4b5fd);
+  -webkit-background-clip: text;
+  background-clip: text;
+  font-size: clamp(1.04rem, 1.85vw, 1.32rem);
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-shadow: 0 0 22px rgba(34, 211, 238, 0.16);
   text-transform: uppercase;
 }
 .sdp-edition-copy small {
-  max-width: 62ch;
-  color: #cbd5e1;
-  font-size: 0.86rem;
-  line-height: 1.45;
+  max-width: 66ch;
+  color: #dbeafe;
+  font-size: 0.9rem;
+  line-height: 1.48;
+}
+.sdp-edition-stamp {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  min-width: 98px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 18px;
+  padding: 0 12px;
+  color: #fde68a;
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.16), rgba(251, 191, 36, 0.05));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 24px rgba(251, 191, 36, 0.08);
+  font-size: 0.66rem;
+  font-weight: 950;
+  letter-spacing: 0.12em;
+  text-align: center;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+@keyframes sdp-edition-sheen {
+  0%, 45% {
+    transform: translateX(-20%) rotate(12deg);
+  }
+  72%, 100% {
+    transform: translateX(260%) rotate(12deg);
+  }
 }
 .sdp-eyebrow {
   display: flex;
@@ -1079,19 +1170,45 @@ function linkTarget(card: { external?: boolean }) {
     padding: 36px 0 34px;
   }
   .sdp-edition-banner {
-    grid-template-columns: 42px minmax(0, 1fr);
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 12px;
     width: auto;
-    border-radius: 22px;
-    padding: 11px;
-    margin-bottom: 20px;
+    min-height: 0;
+    border-radius: 24px;
+    padding: 13px;
+    margin-bottom: 22px;
   }
   .sdp-edition-mark {
-    width: 42px;
-    height: 42px;
-    border-radius: 14px;
+    width: 44px;
+    height: 44px;
+    border-radius: 15px;
+    font-size: 0.78rem;
+  }
+  .sdp-edition-mark::after {
+    top: -7px;
+    right: -7px;
+    width: 18px;
+    height: 18px;
+    font-size: 0.58rem;
   }
   .sdp-edition-copy span {
     width: auto;
+    font-size: 0.56rem;
+  }
+  .sdp-edition-copy strong {
+    font-size: 1rem;
+  }
+  .sdp-edition-copy small {
+    font-size: 0.82rem;
+  }
+  .sdp-edition-stamp {
+    grid-column: 2;
+    justify-self: start;
+    min-width: 0;
+    min-height: 28px;
+    border-radius: 999px;
+    padding: 0 10px;
+    font-size: 0.56rem;
   }
   .sdp-eyebrow {
     margin-bottom: 22px !important;
@@ -1147,6 +1264,9 @@ function linkTarget(card: { external?: boolean }) {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .sdp-edition-banner::before {
+    animation: none;
+  }
   .sdp-button,
   .sdp-principle,
   .sdp-route,
