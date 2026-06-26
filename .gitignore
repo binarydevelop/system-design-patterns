@@ -4,6 +4,7 @@ node_modules/
 # VitePress build output and local cache
 .vitepress/dist/
 .vitepress/cache/
+.vitepress/.temp/
 *.local
 
 # Build artifacts
