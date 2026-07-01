@@ -61,6 +61,29 @@ Progressive delivery for models is a ladder of rungs, each trading a different a
 
 **Shadow (dark launch)** runs the new model on real production traffic but discards its outputs — users still see the live model's decisions. The candidate scores the same requests, and the platform compares the two streams. Shadow is the only rung with *zero user risk*, which makes it the right first step for any model whose failure could hurt users or revenue. It catches the operational failures that offline testing cannot: the artifact that won't load under the production runtime, the feature that is missing online, latency that blows the budget, gross score divergence from the incumbent. Its blind spot is fundamental — because the candidate's decisions never reach a user, shadow can never measure *business impact*. A model can shadow flawlessly and still be a worse model; you simply cannot know yet. Shadow also has a cost: it doubles inference and feature-fetch load, so it must be sampled and resource-isolated, or it becomes its own incident (see Failure Modes).
 
+What shadow actually produces is a *paired diff*: two scores per request, which is far more sensitive than comparing two aggregate distributions. The comparison job is small enough to show whole:
+
+```python
+# Shadow diff report, run hourly over the paired prediction log.
+paired = spark.sql("""
+    SELECT c.request_id, c.score AS champ, s.score AS shadow,
+           c.latency_ms AS champ_ms, s.latency_ms AS shadow_ms
+    FROM predictions c JOIN predictions s USING (request_id)
+    WHERE c.model_version = 'v41' AND s.model_version = 'v42-shadow'
+      AND c.predicted_at > now() - INTERVAL 1 HOUR
+""").toPandas()
+
+report = {
+    "coverage":        len(paired) / champion_request_count,   # shadow errors show up here
+    "score_corr":      paired[["champ", "shadow"]].corr().iloc[0, 1],
+    "decision_flips":  ((paired.champ >= 0.95) != (paired.shadow >= 0.89)).mean(),
+    "flip_examples":   paired[flips].nlargest(50, "shadow"),   # send to review queue
+    "latency_p99_ms":  paired.shadow_ms.quantile(0.99),
+}
+```
+
+The `decision_flips` number is the one worth staring at. Two models can have nearly identical aggregate metrics and still disagree on 5% of decisions — and those flipped decisions are precisely where the new model's risk is concentrated. Routing a sample of high-severity flips (transactions the challenger would block that the champion allowed, and vice versa) through human review turns shadow from a load test into a genuine preview of the model's behavioral change.
+
 **Canary** is the workhorse. It serves the candidate to a small slice of real traffic — often 1 to 5 percent — watches guardrail metrics, and ramps the slice up in steps only while the guardrails hold. Canary is the first rung where the candidate's decisions actually affect users, so it is the first that can detect end-to-end problems in the live decision path. Its central limitation in ML is *delayed labels*: for a fraud model whose ground truth (a chargeback) arrives 7 to 30 days later, a canary running for two hours validates operational safety — latency, errors, score distribution, fallback rate — but says almost nothing about decision quality. Canary answers "is this safe enough to keep ramping?" It does not answer "is this better?"
 
 **A/B / online experiment** is the rung that measures *causal business impact* by holding a fraction of users on the incumbent as a control and comparing outcomes with statistical rigor. This is the only rung that answers "is the new model actually better for the product?" — and it is slower and statistically heavier than a canary precisely because it is measuring a real causal effect rather than an operational sanity check. The mechanics of assignment, sample-ratio integrity, and significance belong to [online experiments](./08-online-experiments.md); the deployment system's job is to hand off cleanly to it once a candidate has survived the safety rungs.
@@ -117,6 +140,23 @@ owner: fraud-ml-oncall
 
 The rule mirrors the registry rule for training: **no artifact is promotable unless it can explain, programmatically, what it depends on and what it falls back to.** The most overlooked field is `threshold_policy`. Many production models emit a score, not an action; a policy layer maps that score to block/review/allow. If a new model is better calibrated but has a different score distribution, reusing the old thresholds silently changes the decision *rate* — a model that is genuinely better can cause an incident simply because the old `0.95` cutoff now corresponds to a different fraction of traffic. Thresholds must be versioned and rolled out *with* the model, and migrated by matching decision rates rather than raw score values.
 
+Decision-rate matching is a quantile computation, cheap enough to run inside the promotion gate:
+
+```python
+# Old policy: threshold 0.95 blocked 1.8% of traffic under the champion.
+# Find the challenger threshold that blocks the same fraction of the SAME requests.
+import numpy as np
+
+block_rate = (champion_scores >= 0.95).mean()            # 0.018, from shadow logs
+new_threshold = np.quantile(challenger_scores, 1 - block_rate)   # e.g. 0.89
+
+# Gate check: decision-rate migration must stay within declared bounds.
+migrated_rate = (challenger_scores >= new_threshold).mean()
+assert abs(migrated_rate - block_rate) / block_rate < 0.05
+```
+
+Note what makes this computable at all: the shadow phase scored *the same requests* with both models, so the quantile mapping is apples-to-apples. This is one of shadow mode's quiet payoffs — it produces the paired score distributions that threshold migration, calibration comparison, and divergence analysis all require. A team that skips shadow has to guess the new threshold from offline data and discover the real decision rate on live users.
+
 ---
 
 ## Automated Rollback Triggers Wired to Monitoring
@@ -145,6 +185,25 @@ Sizing the canary is where the delayed-label problem bites hardest. Detecting a 
 ## Champion-Challenger and Traffic-Splitting Mechanics
 
 Serving more than one model at once is the substrate that makes every rung of the ladder possible. The **champion** is the model currently serving production; one or more **challengers** are candidates being evaluated against it. A traffic router sits in front and decides, per request, which model scores it — sending a small slice to a challenger for a canary, or a deterministic hash-bucketed fraction for an A/B test. Uber's Michelangelo and most mature ML platforms make champion/challenger a first-class serving primitive precisely because it lets the same fleet shadow, canary, and experiment without redeploying anything.
+
+In Kubernetes-native platforms, the router is declarative. KServe expresses the entire canary decision as two fields on an `InferenceService`, and the ramp is a sequence of `canaryTrafficPercent` edits — each one a reviewable, revertible change to cluster state rather than a deploy:
+
+```yaml
+# KServe 0.13 — champion v41 serving, challenger v42 on a 10% canary
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: fraud-classifier
+spec:
+  predictor:
+    canaryTrafficPercent: 10          # ramp: 1 → 5 → 10 → 50 → 100; rollback: set to 0
+    model:
+      modelFormat: { name: sklearn }
+      storageUri: s3://models/fraud_classifier/v42/
+      # previous revision (v41) keeps serving the remaining 90%, warm
+```
+
+Setting `canaryTrafficPercent: 0` is the one-second rollback the chapter keeps referring to: the v41 revision never stopped running, so the revert is pure routing. Seldon Core expresses the same idea with an explicit traffic-split graph, and a [service-mesh](../12-service-mesh/03-sidecar-pattern.md) deployment does it with Istio `VirtualService` weights; the common property is that the split lives in the control plane as declarative state.
 
 The mechanics that matter are stable assignment and clean isolation. Assignment must be **deterministic per entity** — the same user must consistently hit the same model — or an A/B comparison is corrupted by users flipping between variants, and a sample-ratio mismatch quietly invalidates the result. Shadow traffic must run on an **isolated resource pool**: a shadow model still fetches features and runs inference, so a 50 percent shadow on a 4-GPU champion conjures two extra GPUs of load, and sharing the feature-store connection pool lets shadow latency leak into the champion's path. The router, not the model code, owns traffic percentages, segment routing, version pinning, and the revert switch — keeping these controls in the control plane is what makes rollback a metadata operation instead of a code change.
 

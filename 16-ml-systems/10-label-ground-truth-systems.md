@@ -181,6 +181,25 @@ The key design choice is the **aggregation policy**. For low-risk tasks, one rev
 
 Gold-standard tasks — examples with known labels — are the calibration mechanism. They detect reviewers who misunderstand policy, bots or low-quality vendors, and policy drift over time. Inter-annotator agreement metrics such as Cohen's kappa or Krippendorff's alpha are not academic decoration; they tell you whether the target is learnable from the labeling process. If trained humans cannot agree, expecting a model to learn a stable boundary is wishful thinking.
 
+Kappa is worth computing by hand once, because the naive alternative — raw percent agreement — systematically flatters the labeling process. Two reviewers label 200 items for "policy violation," where violations are rare:
+
+```text
+                    Reviewer B: yes   Reviewer B: no
+Reviewer A: yes            12                8
+Reviewer A: no              6              174
+
+Raw agreement:      p_o = (12 + 174) / 200 = 0.93     ← looks excellent
+
+Chance agreement:   A says yes 10% of the time, B says yes 9%.
+                    p_e = (0.10 × 0.09) + (0.90 × 0.91) = 0.828
+
+Cohen's kappa:      κ = (p_o − p_e) / (1 − p_e) = (0.93 − 0.828) / 0.172 ≈ 0.59
+```
+
+Ninety-three percent agreement collapses to κ ≈ 0.59 — "moderate" agreement — because with a 90% negative base rate, two reviewers who mostly say "no" agree constantly by chance. On the minority class, where the model's decisions actually matter, these reviewers agree barely more than half the time beyond chance. This is the number that predicts whether the boundary is learnable, and it is routinely 30 points below the raw agreement a vendor reports. The working thresholds: κ above 0.8 supports automated training targets; 0.6–0.8 supports training with adjudication of disagreements; below 0.6 means the *policy* is the problem, and spending labeling budget before rewriting the policy document buys noise.
+
+When more than two reviewers vote, majority vote weights a careless reviewer equally with a careful one. The standard upgrade is Dawid-Skene-style aggregation, which jointly estimates each reviewer's confusion matrix and each item's true label with EM — reviewers who agree with the consensus on gold tasks earn more weight, and the label store records the posterior (`confidence_weight`) rather than a bare vote count. Open implementations exist (e.g., `crowd-kit`); the systems requirement is only that the label event schema carries per-reviewer votes rather than pre-collapsed majorities, so the aggregation policy can improve without re-labeling anything.
+
 ---
 
 ## Active Learning: Spend Labeling Budget Where It Buys Information

@@ -199,6 +199,36 @@ A concrete calibration report bins predictions and compares predicted risk to ob
 
 This table is more actionable than a single Brier score. It shows where the probability contract breaks and whether the break occurs near the thresholds that drive decisions. For regulated or financial decisions, calibration should also be reported by pre-declared slices; global calibration can hide a group-specific overestimate or underestimate.
 
+The scalar summary of that table is expected calibration error — the traffic-weighted average of the per-bin gaps — and computing it makes clear how little machinery is involved:
+
+```python
+def ece(y_true, y_score, n_bins=10):
+    bins = np.minimum((y_score * n_bins).astype(int), n_bins - 1)
+    err = 0.0
+    for b in range(n_bins):
+        mask = bins == b
+        if mask.sum() == 0:
+            continue
+        gap = abs(y_score[mask].mean() - y_true[mask].mean())
+        err += (mask.sum() / len(y_true)) * gap
+    return err
+# The table above → ECE ≈ 0.8M/1M×0.01 + 0.16×0.02 + 0.035×0.12 + 0.005×0.26 ≈ 0.017
+```
+
+Note the trap visible in the arithmetic: the huge low-score bin dominates the weighted average, so the headline ECE is 0.017 — "well calibrated" — while the high-score bins that actually drive blocking decisions are off by 12 and 26 points. For decision systems, report ECE *and* the per-bin table restricted to the score region where the policy acts.
+
+When calibration is broken but ranking is fine, the fix is a post-hoc recalibrator — a small monotone function fitted on a held-out calibration split (never on training data), shipped as part of the model bundle:
+
+```python
+from sklearn.isotonic import IsotonicRegression
+
+calibrator = IsotonicRegression(out_of_bounds="clip")
+calibrator.fit(scores_calib, labels_calib)     # held-out split, not train
+p_calibrated = calibrator.predict(scores_prod)
+```
+
+Isotonic regression is the default at large sample sizes (it fits any monotone distortion); Platt scaling — a logistic fit on the scores — is safer below a few thousand calibration examples because isotonic will overfit. Either way the calibrator is a versioned artifact with the same lifecycle as a threshold policy: retrained when base rates move, evaluated by slice, and rolled back with the model. A recalibrated model whose calibrator was fitted on last year's 1% fraud prevalence quietly reverts to miscalibration when prevalence hits 3% — which is why the prediction-distribution and delayed-label monitors in [model monitoring](./04-model-monitoring.md) are also the calibrator's health checks.
+
 ---
 
 ## Ranking Evaluation: Positions, Candidates, and Missing Counterfactuals
@@ -216,6 +246,19 @@ For recommenders and search systems, a serious offline report should state:
 5. coverage and diversity metrics, not only relevance.
 
 A ranking metric without candidate-set context is incomplete. If the candidate generator changed, ranking evaluation over the old candidate set answers the wrong question.
+
+NDCG, the workhorse, rewards placing high-relevance items early, with a logarithmic position discount — computing one small example removes the mystique:
+
+```text
+Query with graded relevances; model ranks items in order [3, 2, 0, 1]  (rel of each shown item)
+
+DCG@4  = 3/log2(2) + 2/log2(3) + 0/log2(4) + 1/log2(5) = 3.00 + 1.26 + 0 + 0.43 = 4.69
+Ideal ranking [3, 2, 1, 0]:
+IDCG@4 = 3.00 + 1.26 + 0.50 + 0 = 4.76
+NDCG@4 = 4.69 / 4.76 ≈ 0.985
+```
+
+Two computation conventions silently change results across teams and libraries: whether gains are linear (`rel`) or exponential (`2^rel − 1`), and whether queries with no relevant items are skipped or scored zero. An "NDCG improvement" between two runs that changed convention is a bug, not a result — the evaluation harness should pin both choices in the metric's definition the same way a label definition is versioned.
 
 ---
 

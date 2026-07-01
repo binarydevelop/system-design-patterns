@@ -51,6 +51,29 @@ Every ML system has two halves that must agree but rarely share an implementatio
 
 The defining hazard of this divide is **training-serving skew**: the two paths compute the *same feature name* to mean *different things*. A feature like `avg_purchase_7d` is computed in offline batch from a warehouse table during training, and recomputed online from a streaming store during serving. If the windowing logic, the timezone handling, the null-filling, or the data freshness differs even slightly between the two implementations, the model is served inputs that do not match what it learned from. Offline evaluation looks excellent — it was computed with the training-side logic — and production quality silently drops, because the model is now answering a subtly different question than the one it was trained to answer.
 
+The failure is easiest to believe when you see how innocent the two implementations look side by side:
+
+```sql
+-- Training side (warehouse SQL): event-time window, includes late-arriving events
+SELECT user_id,
+       AVG(amount) AS avg_purchase_7d
+FROM purchases
+WHERE event_time >= label_time - INTERVAL '7 days'
+  AND event_time <  label_time
+GROUP BY user_id;
+```
+
+```python
+# Serving side (application code): arrival-time window via Redis sorted set + TTL
+def avg_purchase_7d(user_id):
+    now = time.time()
+    redis.zremrangebyscore(f"purch:{user_id}", 0, now - 7*86400)
+    amounts = redis.zrange(f"purch:{user_id}", 0, -1, withscores=False)
+    return sum(map(float, amounts)) / max(len(amounts), 1)   # ← and this line
+```
+
+Both are reasonable code. They disagree in at least four ways: event time versus arrival time (a purchase synced from an offline device lands in one window but not the other), the SQL `AVG` over zero rows returns `NULL` while the Python returns `0.0`, the SQL window is anchored to the label's timestamp while Redis is anchored to *now*, and a Redis eviction silently shrinks the online window. Each discrepancy is a fraction of a percent of traffic; together they mean the model is systematically served a slightly different feature than the one it learned — and the gap concentrates in exactly the unusual users the model most needs to get right.
+
 Skew is insidious because it produces no error and no alert. The feature has the right name, the right type, and a plausible value; it is simply the *wrong* value. The structural defenses are architectural rather than ad hoc: define each feature once and compute it from a single shared definition for both paths (the core promise of a [feature store](./02-feature-stores.md)), log the exact feature values served in production so they can be replayed and compared against an offline recomputation, and treat any divergence between served and recomputed values as a sev-worthy incident rather than a rounding curiosity. The training/serving boundary is the most important reliability boundary in an ML system, and most production quality mysteries trace back to it.
 
 ---
@@ -171,6 +194,29 @@ The easiest way to review an ML architecture is to ask which invariants it enfor
 
 If an invariant is documented but not enforced, it is not an invariant; it is an aspiration. A distinguished-engineer review should identify which of these are guaranteed by infrastructure and which depend on humans remembering a process under deadline pressure.
 
+The single most load-bearing row in that table is the prediction log, because four other systems (monitoring, labels, experiments, audit) are built on top of it. It deserves a concrete schema rather than a bullet point:
+
+```sql
+CREATE TABLE prediction_log (
+    prediction_id     UUID PRIMARY KEY,        -- the join anchor for labels, forever
+    request_id        UUID NOT NULL,
+    entity_id         TEXT NOT NULL,
+    surface           TEXT NOT NULL,           -- which product decision consumed this
+    predicted_at      TIMESTAMPTZ NOT NULL,
+    model_name        TEXT NOT NULL,
+    model_version     TEXT NOT NULL,           -- silent-wrong-model detection depends on this
+    feature_versions  JSONB NOT NULL,          -- {"user_stats": "v4", "txn_velocity": "v7"}
+    features_hash     TEXT NOT NULL,           -- or full values, if storage allows replay
+    score             DOUBLE PRECISION NOT NULL,
+    threshold_policy  TEXT NOT NULL,           -- score→action mapping is versioned policy
+    action_taken      TEXT NOT NULL,           -- what actually happened, post-guardrails
+    experiment_bucket TEXT,
+    explored          BOOLEAN DEFAULT FALSE    -- exploration traffic must be identifiable
+) PARTITION BY RANGE (predicted_at);
+```
+
+Every column earns its place in a later chapter: `model_version` powers [monitoring](./04-model-monitoring.md) and rollback attribution, `prediction_id` is the label join key ([label systems](./10-label-ground-truth-systems.md)), `experiment_bucket` and `explored` power [experiments](./08-online-experiments.md) and counterfactual training data, and `feature_versions` plus `features_hash` make skew audits and decision reconstruction possible. Teams that log only `(entity, score)` discover each missing column during a different incident.
+
 ---
 
 ## Maturity Model
@@ -232,6 +278,20 @@ Because behavior lives in data, because failure is silent, and because everythin
 **Monitoring** in ML is not uptime and latency — those are necessary but blind to the failure that matters. ML monitoring watches the *data and the predictions*: input distribution drift, prediction distribution shift, feature freshness, and, where labels eventually arrive, realized quality against a baseline. It exists because silent degradation produces no error to alert on, so the only way to detect it is to measure the statistical behavior of the system continuously and compare it to what "healthy" looked like (see [Model Monitoring](./04-model-monitoring.md)). The realized-quality layer depends on trustworthy labels, which are themselves a production system with delay, bias, and correction semantics (see [Label and Ground-Truth Systems](./10-label-ground-truth-systems.md)).
 
 These three are not separate hygiene tasks. They are the minimum machinery required to operate a system whose behavior is defined by changing data — reproducibility to recover, lineage to trace, monitoring to detect. A team that ships a model without them has shipped something it cannot roll back, cannot trace, and cannot tell is broken.
+
+---
+
+## How the Real Platforms Are Built
+
+The reference architecture above is not speculative; it is the shape that several independently-built platforms converged on, and the convergence is the evidence.
+
+**Uber's Michelangelo** (2017) is the most completely described end-to-end platform: a shared feature store (Palette) with dual offline/online paths, managed training over Spark/MLlib and deep-learning backends, a model registry holding lineage and evaluation reports, and one-click deployment to containers with traffic splitting. Michelangelo's stated origin story is the pre-platform pathology this chapter describes — every team hand-rolling its own pipelines, nothing reproducible, months from prototype to production — and its core bet was that the *lifecycle* (not the models) was the reusable asset.
+
+**Google's TFX** (2017 paper; open-sourced components) decomposes the lifecycle into typed components — ExampleGen, StatisticsGen, SchemaGen, ExampleValidator, Transform, Trainer, Evaluator, Pusher — connected by a metadata store (MLMD) that records every artifact and execution. Two TFX design choices became industry defaults: *data validation as a pipeline stage with a schema* (the Breck et al. work in the references), and *Transform's guarantee* that the exact preprocessing graph used in training is exported inside the serving artifact — skew eliminated by construction for the preprocessing layer.
+
+**Meta's FBLearner Flow** (2016) emphasized workflow reuse and scale (thousands of experiments daily); **Netflix's Metaflow** (open-sourced 2019) took the opposite tack — a human-centric library where the versioning, snapshotting, and resume machinery hides behind ordinary Python; **Spotify, LinkedIn, and Airbnb** each published variations on the same skeleton. Read together, the convergent lesson is that every mature platform independently invented the same five organs: a feature system, a metadata/lineage store, a managed training pipeline, a registry with promotion gates, and monitored serving. When five organizations that could build anything all build the same shape, the shape is the requirement, not the fashion.
+
+The companion artifact worth knowing is Google's **ML Test Score** rubric (Breck et al., 2017): 28 concrete, testable claims across data, model development, infrastructure, and monitoring — "features are validated against a schema," "the model can be rolled back," "training is reproducible," "canary serving exists." Scoring a system against it takes an afternoon and reliably locates the gap between "we have ML in production" and "we operate ML in production."
 
 ---
 
