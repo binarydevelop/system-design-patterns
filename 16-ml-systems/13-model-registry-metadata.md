@@ -402,6 +402,30 @@ If the first call succeeds and the client times out, the retry should return the
 
 ---
 
+## How the Real Registries Map to This Design
+
+No off-the-shelf registry implements everything above, and knowing where each one stops tells you what you must build around it.
+
+**MLflow (2.x)** is the most common starting point. Its Model Registry stores versioned artifacts with lineage back to a tracking run (parameters, metrics, code commit), and since 2.9 replaces the old `Staging/Production` stages with **aliases** — named pointers like `@champion` that a serving system resolves at load time:
+
+```python
+import mlflow
+client = mlflow.MlflowClient()
+
+mv = client.create_model_version("fraud_classifier",
+                                 source="runs:/train_run_01J2/model",
+                                 run_id="train_run_01J2")
+client.set_registered_model_alias("fraud_classifier", "champion", mv.version)
+
+# Serving resolves the pointer: models:/fraud_classifier@champion
+```
+
+The alias *is* the active-model pointer from the consistency section — but note what MLflow does not give you: the flip is not a guarded compare-and-swap, there are no enforced promotion gates (any writer can move the alias), no serving-contract validation, and approvals are a webhook you implement. MLflow is the metadata graph's storage layer; the control plane's *enforcement* is left to you.
+
+**SageMaker Model Registry** adds an approval field (`PendingManualApproval → Approved/Rejected`) that can gate CI/CD pipelines, and model packages carry inference-container and schema metadata — closer to a serving contract. **Vertex AI Model Registry** versions models with aliases and wires into Vertex's deployment and monitoring. **Weights & Biases** treats the registry as a lineage-rich artifact graph with webhook-driven promotion. In every case the pattern holds: the products supply artifact identity, lineage edges, and a pointer mechanism; the *gates* — contract validation, guardrail slices, rollback-target load tests, separation of duties — are policy you enforce in the deployment pipeline that reads the registry. Buying a registry buys the nouns; the verbs that make invalid transitions unrepresentable remain an engineering project, which is why this chapter spends most of its pages on them.
+
+---
+
 ## Failure Modes
 
 **Artifact folder masquerading as registry** stores model files but not lineage, state, approvals, contracts, or deployments. Defense: metadata graph with enforced lifecycle transitions.

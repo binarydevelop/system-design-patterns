@@ -100,7 +100,26 @@ A model is reproducible only if five distinct axes are pinned, and most reproduc
 
 **Features** are a subtle axis because feature definitions evolve independently of model code. A feature named `account_risk` might mean three different things across three versions. The model must pin the feature *view versions* it consumed, and the meaning of those versions must be immutable. (This is why feature stores treat a semantic change as a new feature name, not an in-place edit — see [Feature Stores](./02-feature-stores.md).)
 
-**Parameters** include hyperparameters and random seeds. Without the seed, a model trained twice on identical data can differ, which makes debugging variance from genuine regression impossible.
+**Parameters** include hyperparameters and random seeds. Without the seed, a model trained twice on identical data can differ, which makes debugging variance from genuine regression impossible. The seed alone is not enough on GPUs: several standard kernels are nondeterministic by default because atomic floating-point adds race in hardware, so bit-identical retraining requires opting in explicitly:
+
+```python
+# PyTorch 2.x — the full determinism checklist, not just the seed
+import torch, numpy as np, random, os
+
+seed = 42
+random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
+
+torch.use_deterministic_algorithms(True)        # error on nondeterministic kernels
+torch.backends.cudnn.benchmark = False           # autotuner picks kernels by timing → varies
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # required for deterministic cuBLAS
+
+loader = DataLoader(ds, num_workers=8, shuffle=True,
+                    generator=torch.Generator().manual_seed(seed),
+                    worker_init_fn=lambda w: np.random.seed(seed + w))
+```
+
+Determinism costs 10–20% throughput on some models, which is why many teams reserve bit-exactness for debugging and audit builds and accept *statistical* reproducibility (same data, same code, metrics within noise) for routine runs. Either policy is defensible; the failure is not choosing one, so that "the retrain came out different" cannot be classified as variance or regression.
 
 **Environment** is the axis that produces the most baffling incidents, because it is invisible. A NumPy upgrade changes floating-point accumulation order. A CUDA version changes kernel behavior. The model trained yesterday cannot be reproduced today because the container image was rebuilt. The pipeline must pin the container image *by digest*, not by tag — `ml-train:latest` is the enemy of reproducibility.
 
@@ -230,6 +249,18 @@ The cost of getting this wrong is not just a bad model; it is a bad model that *
 ## The Execution Engine: Where Pipeline System Design Lives
 
 The pipeline DSL — whether TFX, Kubeflow Pipelines, Airflow, or Metaflow — describes *what* should run. The execution engine decides *how* and *when* it actually runs, and this is where the genuinely interesting systems problems live: caching, lineage, scheduling, and fault recovery.
+
+The orchestrators differ less in syntax than in *which of these systems problems they solve for you*:
+
+| Orchestrator | Unit of execution | Artifact/lineage tracking | Step caching | Its actual specialty |
+|---|---|---|---|---|
+| Airflow (2.x) | task in a scheduler-managed DAG | none native (XCom is a mailbox, not a store) | none native | scheduling and backfills for general ETL |
+| Kubeflow Pipelines (2.x) | container pod per step | MLMD-backed artifact store | content-key caching built in | K8s-native ML DAGs with lineage |
+| Metaflow | Python step, local or batch | automatic artifact snapshots per step | `resume` from any step | human ergonomics; versioning invisible |
+| Dagster | software-defined asset | assets are first-class, typed | asset memoization | data-aware orchestration, freshness policies |
+| TFX | typed component | ML Metadata (MLMD) | input-hash caching | schema/validation-centric TF pipelines |
+
+The practical consequence: teams that pick Airflow because it already runs their ETL end up hand-building the artifact store, the content-addressed cache, and the lineage recording that Kubeflow/Metaflow/TFX ship natively — the three subsystems the rest of this section describes. That can be the right call (one orchestrator to operate instead of two), but it should be a conscious buy-versus-build decision, not a default inherited from the data platform.
 
 The architecture separates a control plane from a data plane. The control plane — scheduler, step cache, artifact store, lineage store — decides what to run and records what happened. The data plane — worker pools reading inputs, computing, and writing outputs — does the heavy lifting. The separation matters because the two planes have completely different reliability requirements: the control plane must be durable and consistent (losing lineage is catastrophic), while the data plane must be elastic and cheap (workers are disposable).
 

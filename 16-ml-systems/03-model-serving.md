@@ -72,6 +72,44 @@ safe        ≈ 1,280 × 0.70 = 896 predictions/s
 
 The formula is not a substitute for load testing; it is the sanity check that prevents magical thinking. If the measured system needs 30 replicas, either the effective batch is smaller, queue wait is larger, feature fetch dominates, or the accelerator is not the bottleneck you thought it was.
 
+### Why the Tail Blows Up Nonlinearly
+
+The queueing behavior behind "moderate bursty load is the worst regime" is worth making quantitative, because it is one of the most counterintuitive facts operators meet. For a single-server queue with random arrivals, the expected wait grows with utilization ρ roughly as:
+
+```text
+W ≈ (service_time × ρ) / (1 − ρ)      (M/M/1 approximation)
+
+ρ = 0.50  →  W ≈ 1.0 × service_time
+ρ = 0.70  →  W ≈ 2.3 × service_time
+ρ = 0.90  →  W ≈ 9.0 × service_time
+ρ = 0.95  →  W ≈ 19  × service_time
+```
+
+The wait *quadruples* between 70% and 90% utilization. This is the mathematical reason the capacity model above targets `safe_utilization ≈ 0.70`: run a GPU pool at 95% average utilization and any burst pushes ρ over 1 transiently, the queue grows without bound until the burst ends, and p99 explodes while the mean still looks acceptable. The economics push utilization up (idle GPUs burn money) and the queueing math pushes it down (hot GPUs burn the tail); the 60–75% band is where most serious serving fleets land, and it is a *chosen* compromise, not slack.
+
+### What the Knobs Look Like in Practice
+
+In Triton, the whole batching decision is a few lines of `config.pbtxt`, and each line maps to a concept above:
+
+```protobuf
+# Triton 24.x — model config for a GPU-bound classifier
+name: "fraud_classifier"
+platform: "onnxruntime_onnx"
+max_batch_size: 32                       # OOM bound and latency bound together
+dynamic_batching {
+  preferred_batch_size: [ 8, 16, 32 ]    # dispatch early at these sizes
+  max_queue_delay_microseconds: 5000     # the bounded wait: 5 ms, on the tail budget
+  default_queue_policy {
+    max_queue_size: 128                  # bounded queue: shed load, don't buffer an incident
+    timeout_action: REJECT
+    default_timeout_microseconds: 100000 # a request older than 100 ms is already a failure
+  }
+}
+instance_group [ { count: 2, kind: KIND_GPU, gpus: [0] } ]   # 2 execution streams on one GPU
+```
+
+Two details deserve attention. `max_queue_size` with `REJECT` is [load shedding](../06-scaling/07-backpressure.md) encoded in config: an unbounded queue converts a 30-second saturation burst into minutes of serving stale, already-timed-out requests. And `instance_group.count: 2` runs two copies of the model concurrently on one GPU so that one instance's host-to-device transfer overlaps the other's compute — a free ~20–40% utilization gain for small models that many teams never turn on. TensorFlow Serving exposes the same knobs as `max_batch_size`, `batch_timeout_micros`, and `num_batch_threads`.
+
 ---
 
 ## Tail Latency Is the Real Budget
@@ -200,6 +238,60 @@ The engineering implication is to *measure the crossover* rather than reach for 
 
 ---
 
+## The Optimization Stack: Making the Model Cheaper Before Buying Hardware
+
+The crossover-moving techniques deserve concrete treatment, because they are applied in a specific order — each step cheaper than the next — and skipping the ladder is the most common serving cost mistake.
+
+**Compilation** fuses operations and specializes kernels for the target hardware. Exporting to ONNX Runtime or compiling with TensorRT routinely yields 1.5–3× latency improvement over eager-mode PyTorch with *zero* accuracy change:
+
+```python
+# PyTorch 2.x → ONNX → TensorRT, the standard production path
+torch.onnx.export(model, example_input, "model.onnx",
+                  dynamic_axes={"input": {0: "batch"}},   # allow dynamic batching
+                  opset_version=17)
+```
+
+```bash
+# Build a TensorRT engine with an explicit optimization profile for the batch range
+trtexec --onnx=model.onnx --saveEngine=model.plan \
+        --minShapes=input:1x256 --optShapes=input:16x256 --maxShapes=input:32x256 \
+        --fp16
+```
+
+The `--fp16` flag alone typically halves memory traffic — which matters because most served models are memory-bandwidth-bound, so halving the bytes moved roughly halves the latency.
+
+**Quantization** stores weights (and optionally activations) in fewer bits. The arithmetic is what makes it compelling:
+
+```text
+7B-parameter model:
+  fp32:  7B × 4 B = 28 GB    (doesn't fit a 24 GB L4)
+  fp16:  7B × 2 B = 14 GB    (fits, with little room for batch)
+  int8:  7B × 1 B =  7 GB    (fits with headroom for batching)
+  int4:  7B × 0.5 B = 3.5 GB (fits on half a MIG slice)
+```
+
+Because inference is memory-bound, int8 is not just smaller — it is *faster*, roughly in proportion to the bytes saved. Post-training quantization (ONNX Runtime's `quantize_dynamic`, TensorRT's int8 calibration) costs an afternoon; the accuracy loss is usually under a point for int8 and must be *measured on your evaluation slices*, not assumed — quantization error concentrates in rare, extreme inputs, which is exactly where fraud and safety models earn their keep.
+
+**Distillation** trains a smaller student model to match a large teacher's outputs, and is the heavyweight option: real training work, but 5–10× cheaper serving forever after. The typical pattern is a large teacher scoring offline or in the ranking tier while a distilled student handles the high-QPS filtering tier.
+
+The order matters because of cost: compilation is free accuracy-wise, quantization is cheap and slightly lossy, distillation is a project. Exhaust them in that order, *then* discuss bigger hardware. A team that serves an uncompiled fp32 model on an H100 because "latency was too high on the L4" has usually skipped all three steps of this ladder.
+
+---
+
+## Sharing the GPU: Multi-Model Serving
+
+The utilization economics push toward consolidating many models onto few accelerators, and there is a ladder of mechanisms for doing it, in increasing order of isolation.
+
+**In-process multi-model serving** (Triton loading many models in one server process, each with its own instance groups) shares everything: memory, SM time, PCIe bandwidth. Density is maximal and isolation is zero — one model's OOM kills its neighbors, and a burst on one model steals compute from all. Fine for a catalog of small internal models; wrong for mixing a latency-critical model with anything bursty.
+
+**CUDA MPS (Multi-Process Service)** lets separate processes share a GPU with true concurrent kernel execution, without partitioning memory. Better fault isolation than one process, still no memory isolation.
+
+**MIG (Multi-Instance GPU)**, on A100/H100-class hardware, slices one physical GPU into up to seven fully isolated instances, each with dedicated memory and compute (an H100 slices into profiles like `1g.12gb` or `3g.47gb`). A MIG slice is a hard boundary: a 7-billion-parameter model quantized to fit 20 GB gets a `2g.24gb` slice, its noisy neighbor cannot touch it, and Kubernetes schedules slices as first-class resources. The price is granularity — slices are fixed sizes, and a model that needs 25 GB wastes most of a 47 GB slice.
+
+The decision mirrors any [multi-tenancy](../06-scaling/12-multi-tenancy.md) call: shared process for density among trusted equals, MIG for hard isolation between tenants with different SLOs. The anti-pattern is the unexamined default of one whole dedicated GPU per small model — the most expensive possible configuration, and the most common.
+
+---
+
 ## LLM Serving as a System Problem
 
 Large language models are the same serving problem turned up to a point where its constraints become qualitatively different, and a brief look at *why* is instructive even outside the LLM world.
@@ -208,7 +300,23 @@ The first difference is that LLM inference is **memory-bandwidth-bound during de
 
 The second difference is that requests have **wildly variable, unbounded length**. A static batch is hopeless when one request generates ten tokens and another generates two thousand: the whole batch is held hostage by its longest member, and finished requests cannot leave until the batch completes. The answer, introduced by Orca (Yu et al., OSDI 2022) and popularized by vLLM, is **continuous batching** (also called iteration-level scheduling): the scheduler operates at the granularity of a single decoding step, evicting finished sequences and admitting new ones *between* token steps, so the GPU never idles waiting for the slowest request and new arrivals do not wait for a batch boundary. This is dynamic batching's idea taken to its logical extreme, and it is the single largest throughput lever in LLM serving.
 
-The third difference is that the **KV cache is the scarce resource**, and managing it is where the systems work lives. vLLM's PagedAttention (Kwon et al., SOSP 2023) treated KV-cache memory like virtual memory — allocating it in fixed-size pages rather than one contiguous block per request — which eliminated the fragmentation and over-reservation that previously wasted most of the cache, and reported up to an order-of-magnitude throughput improvement over naive serving as a result. The lesson generalizes beyond LLMs: when a resource is both scarce and the throughput bottleneck, the highest-leverage engineering is in *how that resource is allocated*, not in how fast each operation runs. LLM-specific serving is covered in full in [LLM Infrastructure](../17-llm-systems/05-llm-infrastructure.md).
+The third difference is that the **KV cache is the scarce resource**, and managing it is where the systems work lives. The arithmetic makes the scarcity concrete. Per token, the cache stores a key and a value vector for every layer:
+
+```text
+kv_bytes_per_token = 2 (K and V) × n_layers × n_kv_heads × head_dim × bytes_per_element
+
+Llama-3-70B (fp16 KV, grouped-query attention):
+  2 × 80 layers × 8 kv_heads × 128 dim × 2 B ≈ 0.32 MB per token
+
+One 8K-token conversation:        8,192 × 0.32 MB ≈ 2.6 GB
+Weights (int4-quantized 70B):                     ≈ 35 GB
+H100 (80 GB) after weights:                       ≈ 45 GB free
+Max concurrent 8K conversations:  45 / 2.6        ≈ 17 requests
+```
+
+Seventeen concurrent requests on a $30K accelerator — and that is *with* grouped-query attention cutting the KV heads 8×; a multi-head-attention model of the same size would fit two. This is why KV-cache memory, not compute, caps LLM throughput, and why the batch size that continuous batching can sustain is a memory calculation, not a scheduling choice. vLLM's PagedAttention (Kwon et al., SOSP 2023) attacked the allocation side of this: treating KV-cache memory like virtual memory — fixed-size pages (16 tokens each by default) mapped by a block table, rather than one contiguous max-length reservation per request — eliminated the fragmentation and over-reservation that previously wasted 60–80% of the cache, and reported up to an order-of-magnitude throughput improvement over naive serving as a result. The lesson generalizes beyond LLMs: when a resource is both scarce and the throughput bottleneck, the highest-leverage engineering is in *how that resource is allocated*, not in how fast each operation runs.
+
+The fourth difference is that one request has **two phases with opposite hardware profiles**. *Prefill* (processing the prompt) is compute-bound and parallel — thousands of tokens in one pass; *decode* is memory-bound and serial — one token per pass. Mixing them in one batch means a long prefill stalls every decoding request's next token, which is user-visible as inter-token jitter. Modern stacks either chunk prefills into slices interleaved with decode steps (vLLM's chunked prefill) or disaggregate entirely, running prefill and decode on separate GPU pools connected by a KV-cache transfer (the "prefill/decode split"). The right SLO vocabulary splits accordingly: **TTFT** (time to first token — the prefill experience) and **TPOT/ITL** (time per output token — the decode experience) replace the single "latency" number, because one endpoint can be excellent at one and terrible at the other. LLM-specific serving is covered in full in [LLM Infrastructure](../17-llm-systems/05-llm-infrastructure.md).
 
 ---
 

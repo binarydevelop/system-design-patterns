@@ -64,6 +64,18 @@ def assign(unit_id, experiment_id, salt, num_buckets=1000):
     return h % num_buckets                                  # bucket → variant via config
 ```
 
+At scale, no organization runs one experiment at a time, and the assignment layer must arbitrate hundreds of concurrent ones. Google's overlapping-experiment infrastructure (Tang et al., 2010) introduced the vocabulary the industry still uses: traffic is divided into **layers**, experiments *within* a layer partition the same users exclusively (two experiments that touch the same system parameter cannot both treat one user), while experiments in *different* layers overlap freely — every user is simultaneously in one experiment per layer, and the per-layer salts keep the assignments statistically independent:
+
+```text
+Layer: ranking        |  exp A (30%)  |  exp B (30%)  |  holdout (40%)  |
+Layer: UI             |     exp C (50%)      |       control (50%)      |
+Layer: pricing        |  exp D (10%) |            control (90%)         |
+
+user u = (A-treatment, C-control, D-control)   ← one draw per layer, independent salts
+```
+
+The layer map is a governance artifact: it encodes which subsystems are allowed to experiment independently (their effects are assumed additive) and which must share a layer because they interact. Putting two interacting features in different layers is how platforms end up shipping combinations no one ever tested.
+
 The choice of *what* to hash — the randomization unit — is a modeling decision disguised as a configuration value. Randomizing per request maximizes statistical power but shows one user inconsistent behavior and is only valid for stateless predictions. Randomizing per user gives a coherent experience and is the default for personalized surfaces. Randomizing per session, per entity (a merchant, a creator, a listing), or per cluster trades power for correctness when the smaller unit would let treatment and control interfere. The rule is to randomize at the *coarsest unit at which interference still occurs* — the smallest unit that keeps the groups genuinely independent, because finer units buy power and coarser units buy validity.
 
 ---
@@ -83,6 +95,22 @@ Before any result is interpreted, one check overrides all others: did the traffi
 The reason SRM is so diagnostic is that the split ratio has *no business reason to drift*. When it does, the cause is almost always a mechanical bug that also biases the metric: a treatment that loads more slowly loses more users before they are logged, so the treatment bucket under-counts exactly the impatient users who would have dragged its metric down — the experiment then "wins" because its weakest users silently vanished. Other classic causes are redirect loss (a treatment that bounces through an extra redirect loses traffic that control keeps), asymmetric bot filtering, caching that serves one variant disproportionately, and a logging path present in one arm but not the other. Fabijan et al.'s KDD 2019 work at Microsoft showed SRM is common enough — appearing in a meaningful fraction of experiments — that automated SRM detection is now table stakes on any serious platform.
 
 The operational rule is absolute: **an experiment that fails the SRM check is invalid, and its metrics must not be read.** A team that "eyeballs the SRM but ships anyway because the win is large" has learned nothing, because the same bug that broke the ratio likely manufactured the win. A trustworthy platform surfaces SRM before it surfaces the primary metric, so the integrity verdict is reached before anyone forms an opinion about the result. SRM is the experimentation analog of a checksum failure: you do not interpret corrupted data, you fix the corruption.
+
+Detection is a one-line chi-squared goodness-of-fit test, run automatically on every experiment before any metric is displayed:
+
+```python
+from scipy.stats import chisquare
+
+observed = [1_004_512, 995_488]           # exposed users per arm
+expected = [1_000_000, 1_000_000]         # from the configured 50/50 split
+stat, p = chisquare(observed, expected)
+# p ≈ 1.8e-10  → SRM. A 0.45% imbalance on 2M users is wildly non-random.
+
+if p < 0.001:                             # low threshold: this test runs on every experiment
+    experiment.mark_invalid("SRM")        # hide metrics, page the owner
+```
+
+The example is worth staring at: a 50.2/49.8 split *feels* fine and is astronomically unlikely under correct randomization at this scale. Human intuition about "close enough" ratios fails at large n, which is exactly why the check must be automated and gating rather than an analyst's judgment call.
 
 SRM triage runbook:
 
@@ -118,6 +146,32 @@ n_per_arm ≈ 16 × 0.10 × 0.90 / 0.002² ≈ 360,000 users per arm
 ```
 
 Halving the MDE to 0.1 percentage points requires roughly four times the users. This is why "just run it for a day" is not an experiment plan; it is a traffic allocation with unknown sensitivity.
+
+The analysis itself, for all the ceremony around it, is a two-sample test whose entire validity rests on the machinery above having worked:
+
+```python
+import numpy as np
+from scipy import stats
+
+# Per-user outcomes, keyed by ASSIGNED bucket (intent-to-treat).
+t, c = outcomes["treatment"], outcomes["control"]
+
+effect = t.mean() - c.mean()
+se = np.sqrt(t.var(ddof=1)/len(t) + c.var(ddof=1)/len(c))
+z = effect / se
+p = 2 * stats.norm.sf(abs(z))
+ci = (effect - 1.96*se, effect + 1.96*se)   # report the interval, not just the verdict
+```
+
+CUPED, the variance-reduction workhorse, is a four-line addition to this — it subtracts each user's *pre-experiment* behavior, which the treatment cannot have caused, so its variance is pure noise being removed:
+
+```python
+# x = same metric per user, measured in the weeks BEFORE assignment
+theta = np.cov(y, x)[0, 1] / np.var(x)      # regression coefficient
+y_adj = y - theta * (x - x.mean())          # adjusted outcome; unbiased, lower variance
+```
+
+If pre- and post-experiment behavior correlate at ρ = 0.7 — common for engagement metrics — variance drops by ρ² ≈ 49%, which halves the required sample size from the power calculation above. CUPED is the rare free lunch in experimentation: the same answer, in half the time, with math a code reviewer can verify.
 
 **Peeking** is the most common way honest teams fool themselves. A fixed-horizon significance test is only valid if you look *once*, at the pre-committed end. If you check the dashboard every day and stop the first time `p < 0.05`, you are running many tests and reporting the luckiest one; the true false-positive rate inflates from the nominal 5% to 20% or more. This is not a statistical nuance to wave away — it is the difference between a platform that ships real wins and one that ships noise. There are only two correct designs: fix the horizon in advance and do not stop early, or adopt a *sequential testing* method (always-valid p-values, group-sequential boundaries) that is mathematically built to permit continuous monitoring. What you cannot do is use a fixed-horizon test and peek; the system should enforce this by hiding the verdict until the pre-registered duration or by computing sequential boundaries natively.
 

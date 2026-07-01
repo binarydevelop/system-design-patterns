@@ -80,6 +80,36 @@ dataset_snapshot = extraction_code(commit)
 
 If any term is unpinned, reproducibility is broken. `latest` is the enemy. `current_features` is the enemy. `main` is the enemy. The dataset contract must name exact versions, not moving aliases.
 
+### How Time Travel Actually Works — and When It Silently Stops
+
+Lakehouse table formats make snapshotting nearly free, and understanding the mechanism explains both why it is cheap and where it breaks. An Iceberg table is a tree of immutable metadata: a table pointer names a metadata file, which lists *snapshots*; each snapshot points to a manifest list; each manifest names data files with statistics. A commit writes new data files and a new metadata tree — it never modifies old files:
+
+```text
+table pointer → metadata.json
+                 ├─ snapshot 881198  → manifest-list → [file1, file2, ...]
+                 ├─ snapshot 881204  → manifest-list → [file1, file3, ...]   (file2 replaced)
+                 └─ snapshot 881219  → manifest-list → [...]
+```
+
+Reading an old snapshot is just reading an old tree — which is why pinning `snapshot: 881204` in the dataset contract costs nothing at write time:
+
+```sql
+-- Iceberg (Spark SQL)
+SELECT * FROM warehouse.transactions VERSION AS OF 881204;
+SELECT * FROM warehouse.transactions TIMESTAMP AS OF '2026-06-24 03:00:00';
+
+-- Delta Lake
+SELECT * FROM transactions VERSION AS OF 812;
+DESCRIBE HISTORY transactions;   -- maps versions to commits, jobs, and operations
+
+-- Snowflake
+SELECT * FROM transactions AT (TIMESTAMP => '2026-06-24 03:00:00'::timestamp_tz);
+```
+
+The trap is that **time travel has a garbage collector, and its defaults are much shorter than a model's lifetime.** Delta's `VACUUM` removes unreferenced files after a retention window that defaults to 7 days; Iceberg's `expire_snapshots` maintenance does the same; Snowflake time travel is 1 day by default and 90 at most. A training run that records `VERSION AS OF 812` has recorded a pointer into a tree the janitor will delete next week. Snapshot pinning is only reproducibility if the pinned snapshot is *retained*, which means dataset management must either (a) register training-consumed snapshots with the table's maintenance policy so they are exempt from expiry, or (b) materialize the training view out to its own content-addressed manifest — the pattern in the next section — and let the source table expire freely. Most mature platforms do (b) for training sets and (a) only for short-lived experimentation, because exempting snapshots forever turns every source table into an unbounded archive.
+
+Git-style tools occupy the same design space with different mechanics: **DVC** stores content-hashed data objects in a remote and commits small `.dvc` pointer files to git, so `git checkout && dvc checkout` restores the exact bytes of any historical dataset; **lakeFS** puts git semantics (branches, commits, merges) over an entire object-store namespace, so a training job can run against a commit ID and a backfill can be staged on a branch and reviewed before merge. The mechanism differs from Iceberg's, but the invariant purchased is identical: dataset identity is a hash-addressed, immutable reference, never a path.
+
 ---
 
 ## Immutability and the Backfill Trap
@@ -133,6 +163,20 @@ split_assignments
 ```
 
 This seems bureaucratic until a metric changes because someone reran the split with a different seed. If the validation set is part of the measurement instrument, changing it changes the instrument. Treat it accordingly.
+
+For entity-disjoint splits, the strongest implementation is *stateless hashing* rather than a seeded shuffle, because it stays stable as the dataset grows — an entity keeps its assignment forever, even across dataset versions, without storing or coordinating anything:
+
+```python
+import hashlib
+
+def split_of(entity_id: str, salt: str = "fraud_v6") -> str:
+    h = int(hashlib.sha256(f"{salt}:{entity_id}".encode()).hexdigest(), 16) % 100
+    if h < 80:  return "train"
+    if h < 90:  return "validation"
+    return "test"
+```
+
+The salt plays the same role as an experiment salt in [online experiments](./08-online-experiments.md): changing it re-shuffles the population, so it is part of the dataset contract and must never change silently. A seeded `random.shuffle` gives a different answer the moment a row is added or the library version changes its RNG stream; a hash gives the same answer on any machine, in any language, in any year — the properties a measurement instrument needs. The materialized `split_assignments` table is still worth writing (it is what auditors and debuggers read), but with hashing it becomes a *record* of assignments rather than the *source* of them, and the two can be cross-checked.
 
 ---
 

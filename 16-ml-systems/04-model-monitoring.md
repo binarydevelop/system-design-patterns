@@ -105,6 +105,35 @@ The choice of statistic is secondary and well-trodden: population stability inde
 | Embedding centroid shift | Representation drift for text/image | Hard to interpret or explain |
 | Prediction distribution | Output behavior change | Cannot say whether input or model caused it |
 
+Because PSI is the workhorse, it is worth computing once by hand to demystify what the monitor actually does. PSI compares the fraction of traffic in each bin between baseline and current window:
+
+```text
+PSI = Σ over bins:  (curr% − base%) × ln(curr% / base%)
+
+amount_usd, baseline vs. this week:
+bin           base%   curr%   (c−b)×ln(c/b)
+$0–10         0.18    0.16    0.0024
+$10–25        0.22    0.21    0.0005
+$25–50        0.20    0.18    0.0021
+$50–100       0.16    0.15    0.0006
+$100–250      0.14    0.16    0.0027
+$250+         0.10    0.14    0.0135   ← the tail is where the shift lives
+                              PSI ≈ 0.022
+```
+
+The conventional thresholds — PSI < 0.1 stable, 0.1–0.25 investigate, > 0.25 significant shift — make 0.022 a non-event. But notice the structure: nearly two-thirds of the total comes from the top bin. A monitor that reports only the scalar hides that the shift is concentrated in large transactions, which is precisely the slice a fraud model cares about. Good drift tooling reports the per-bin contributions, not just the index. The computation is a few lines, which is why the system-design content here is the plumbing around it, not the math:
+
+```python
+def psi(base_hist, curr_hist, eps=1e-4):
+    b = np.clip(np.asarray(base_hist), eps, None)
+    c = np.clip(np.asarray(curr_hist), eps, None)
+    b, c = b / b.sum(), c / c.sum()
+    contrib = (c - b) * np.log(c / b)
+    return contrib.sum(), contrib          # scalar for the alert, vector for the triage
+```
+
+Two operational notes. The `eps` clip is not pedantry: a category present in the baseline but absent this week (or vice versa) makes the log term infinite, and an unclipped PSI job crashes or pages on every new enum value. And the *bins are part of the baseline artifact* — recomputing bins from current data each window makes PSI values incomparable across time, which is why the baseline object above stores explicit bin edges rather than letting the job choose them.
+
 Tooling has consolidated around exactly this comparison pattern: open-source **Evidently** and Google's **TensorFlow Data Validation** compute distribution distances against a reference schema, and managed platforms such as **Arize**, **Fiddler**, and **WhyLabs** productize baseline storage, windowed comparison, and slice-aware alerting. They differ in packaging, not in principle. The principle is always: *version the baseline, window the present, measure the distance, and make the alert actionable.*
 
 A monitoring baseline should be a registry object, not an implicit dashboard setting:
@@ -145,7 +174,27 @@ Drift is a change over *time*; skew is a discrepancy at a *single moment* betwee
 
 Skew arises when the feature a model receives in production differs from the feature it would have received during training, for the *same entity at the same time*. The usual culprit is a split implementation: training features computed by a batch job in SQL, serving features computed by a separate online path in application code, and the two drift apart in a unit, a default value, a rounding rule, or a timezone. The model is then asked to reason about inputs it never actually saw, and its production quality collapses even though offline evaluation looked excellent.
 
-The strongest detection is direct: **log the exact feature vector served at decision time, and compare a sample of those served vectors against the values the training path would have produced for the same entities.** A nonzero skew rate on any feature is a defect, full stop. This is why the prediction log is the backbone of the entire monitoring system — it is the join key that lets every later analysis (drift, skew, quality, slices) reconstruct what the model actually saw. The architectural antidote, where affordable, is to compute training and serving features from a *single shared definition* so skew is structurally impossible; the monitor exists to catch the cases where that ideal is not yet reached.
+The strongest detection is direct: **log the exact feature vector served at decision time, and compare a sample of those served vectors against the values the training path would have produced for the same entities.** A nonzero skew rate on any feature is a defect, full stop. The audit is a scheduled join, not exotic infrastructure:
+
+```sql
+-- Nightly skew audit: recompute yesterday's served features through the offline path
+-- and diff against what serving actually used (sampled 1%).
+WITH recomputed AS (
+    SELECT entity_id, predicted_at,
+           offline_feature_fn(entity_id, predicted_at) AS offline_value
+    FROM prediction_log TABLESAMPLE (1 PERCENT)
+    WHERE predicted_at::date = current_date - 1
+)
+SELECT p.model_version,
+       COUNT(*) FILTER (
+         WHERE ABS((p.features->>'avg_txn_amount_7d')::float - r.offline_value)
+               > 0.01 * GREATEST(ABS(r.offline_value), 1.0)   -- >1% relative divergence
+       )::float / COUNT(*) AS skew_rate
+FROM prediction_log p JOIN recomputed r USING (entity_id, predicted_at)
+GROUP BY p.model_version;
+```
+
+The report is one number per feature per model version, and its healthy value is zero. The audit's prerequisite is the part teams skip: serving must log the *actual feature values used*, not just the entity ID — an entity ID lets you recompute what the value *should have been*, but only the logged vector tells you what the model actually saw. This is why the prediction log is the backbone of the entire monitoring system — it is the join key that lets every later analysis (drift, skew, quality, slices) reconstruct what the model actually saw. The architectural antidote, where affordable, is to compute training and serving features from a *single shared definition* so skew is structurally impossible; the monitor exists to catch the cases where that ideal is not yet reached.
 
 ---
 

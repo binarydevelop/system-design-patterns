@@ -20,6 +20,15 @@ flowchart LR
 
 This is the same principle that governs any system facing an impossible per-item cost at scale: you do not make the expensive operation faster, you make sure it runs on far fewer items. A database does this with an index that turns a full-table scan into a B-tree lookup; a recommender does it with a retrieval stage that turns a full-catalog scan into an approximate-nearest-neighbor lookup. The funnel exists because the cost asymmetry between stages is enormous — retrieval might spend microseconds per item while ranking spends milliseconds — and the only way to afford the precise stage is to feed it a short list.
 
+The canonical published example is YouTube's 2016 architecture (Covington et al.): a candidate-generation network narrows *millions* of videos to *hundreds*, and a separate ranking network scores those hundreds with far richer features. The paper's stated reason is exactly the funnel logic: the candidate model must be evaluable in a few milliseconds over the whole corpus (so it is shaped for ANN retrieval), while the ranker can afford hundreds of features per video because it only sees hundreds of videos. The per-item budget across the funnel spans roughly four orders of magnitude:
+
+```text
+Stage                 items in → out       per-item budget      model class
+retrieval             10M → 2,000          ~0.1–1 µs            dot product in ANN index
+ranking               2,000 → 50           ~10–50 µs            deep model, cross features
+re-ranking / policy   50 → 10              ~100 µs+             set-level optimization, rules
+```
+
 The consequence that teams underappreciate is that **each stage has a different objective, and conflating them is a design error.** Retrieval optimizes for *recall*: it must not miss the good items, and it tolerates including mediocre ones because a later stage will filter them. Ranking optimizes for *precision*: given a small, already-decent set, it orders them as accurately as possible. Re-ranking optimizes for *constraints* the score ignores: diversity, freshness, business rules, fairness. A team that tries to make retrieval precise pays for ranking-quality computation across the whole catalog and blows the latency budget; a team that relies on ranking to fix retrieval's misses never recovers an item retrieval failed to surface. The stages are specialized on purpose.
 
 ---
@@ -48,6 +57,82 @@ item catalog changes → embedding job → index build → validation → staged
 | Incremental update | freshness lag and delete handling | stale or ghost items |
 
 A recommender with no index rollback is a deployment system without rollback: one bad embedding job can make the catalog disappear from retrieval while every application endpoint stays healthy.
+
+### The Two-Tower Model as a Systems Contract
+
+The reason two-tower architectures dominate retrieval is not modeling elegance; it is that the architecture *is* the serving plan. The item tower runs offline over the catalog; the user tower runs once per request; the only serving-time interaction between them is a dot product — which is exactly the operation an ANN index accelerates:
+
+```python
+# Two-tower retrieval model (PyTorch), trained with in-batch negatives.
+class TwoTower(nn.Module):
+    def __init__(self, user_features, item_features, dim=128):
+        super().__init__()
+        self.user_tower = MLP(user_features, out=dim)   # runs per request
+        self.item_tower = MLP(item_features, out=dim)   # runs in the nightly batch job
+
+    def forward(self, user_x, item_x):
+        u = F.normalize(self.user_tower(user_x), dim=-1)
+        v = F.normalize(self.item_tower(item_x), dim=-1)
+        return u @ v.T          # [batch, batch] similarity matrix
+
+# In-batch negatives: each user's positive item serves as every other user's negative.
+logits = model(user_x, item_x) / temperature
+loss = F.cross_entropy(logits, torch.arange(len(logits)))   # diagonal = positives
+```
+
+Two production notes hide in those few lines. First, in-batch negatives are cheap but *popularity-biased* — popular items appear in batches more often, so they are over-penalized as negatives; Google's correction (Yi et al., 2019, the "sampling-bias-corrected" paper in the references) subtracts `log(p(item))` from the logit. Second, the architecture forbids user-item cross features by construction — the towers cannot see each other until the dot product — which is precisely why retrieval needs a ranking stage after it: the cross features that carry the most precision are architecturally impossible here and affordable there.
+
+### Inside the ANN Index
+
+"Approximate nearest neighbor" hides two very different engineering designs, and choosing between them is a memory-versus-recall-versus-build-time decision.
+
+**HNSW (Hierarchical Navigable Small World)** is a multi-layer skip-list-like graph: each item is a node linked to `M` neighbors; upper layers are sparse express lanes, the bottom layer contains everything. A query greedily descends — start at the top layer's entry point, walk toward the query vector, drop a layer, repeat — and at the bottom explores a beam of `efSearch` candidates:
+
+```text
+Layer 2:   o ─────────── o                (few nodes, long hops)
+Layer 1:   o ──── o ──── o ──── o         (more nodes)
+Layer 0:   o─o─o─o─o─o─o─o─o─o─o─o        (all items, short links)
+             greedy descent, then beam search at layer 0
+```
+
+The knobs map directly to SLOs: `M` (links per node, typically 16–48) trades memory for recall; `efSearch` (beam width) trades query latency for recall at *query* time — the one knob you can turn during an incident without rebuilding anything. HNSW gives excellent recall at ~1 ms for millions of vectors, but it stores the full vectors plus the graph, and it lives in RAM:
+
+```text
+10M items × 128-dim fp32:  10M × 512 B            ≈ 5.1 GB vectors
+HNSW graph (M=32):         10M × 32 × 2 × 4 B     ≈ 2.6 GB links
+Total                                              ≈ 7.7 GB per replica — fine.
+
+500M items × 768-dim fp32: 500M × 3,072 B          ≈ 1.5 TB — does not fit anything.
+```
+
+**IVF-PQ (inverted file with product quantization)** is the answer when vectors stop fitting. IVF clusters the space into `nlist` cells (k-means centroids) and searches only the `nprobe` closest cells — an index in the database sense, pruning the scan. PQ then compresses each vector by splitting it into `m` sub-vectors and replacing each with a 1-byte codebook index:
+
+```text
+768-dim fp32 vector:                     3,072 bytes
+PQ with m=96 subquantizers (8 bits each):   96 bytes   → 32× compression
+500M items × 96 B ≈ 48 GB — fits a large box; recall@100 ≈ 0.9 with reranking
+```
+
+The standard production pattern is IVF-PQ for the coarse pass plus *exact reranking*: retrieve 1,000 candidates with compressed vectors, then rescore the top 1,000 with full-precision vectors fetched from a flat store. In Faiss (1.8), the whole design is one factory string:
+
+```python
+index = faiss.index_factory(768, "IVF65536,PQ96", faiss.METRIC_INNER_PRODUCT)
+index.train(sample_vectors)      # k-means for centroids + PQ codebooks
+index.add(item_vectors)
+index.nprobe = 64                # cells to search: the recall/latency knob
+D, I = index.search(user_vecs, k=1000)
+```
+
+| | HNSW | IVF-PQ (+ rerank) |
+|---|---|---|
+| Memory | Full vectors + graph (RAM-heavy) | ~32× compressed |
+| Recall@100 | 0.95–0.99 | 0.85–0.95 |
+| Query knob | `efSearch` | `nprobe` |
+| Incremental adds | Good | Good (but centroids drift; retrain periodically) |
+| Deletes | Tombstones, needs rebuild | Tombstones, needs rebuild |
+| Best at | ≤ ~100M vectors, latency-critical | ≥ 100M vectors, memory-bound |
+
+The operational trap in both: **deletes are tombstones**, not removals. An item pulled from the catalog keeps winning ANN searches until the next rebuild unless the serving layer filters it — which is one of the concrete jobs of the re-ranking stage's "never show out-of-stock items" rule, and a reason the index lifecycle table above treats delete handling as a first-class gate.
 
 ---
 
@@ -111,7 +196,18 @@ A recommender trained naively on its own logs degrades in characteristic, well-d
 
 **The filter bubble** is the same dynamic applied to a single user. The system learns a user likes one category, shows more of it, gets more confirmation, and narrows relentlessly until the user sees only that category and the system has no idea what else they might enjoy. The defense is the diversity constraint in re-ranking plus deliberate exploration — the system must occasionally show something outside its confident prediction to keep learning.
 
-**Position bias** corrupts the labels themselves. Items at the top of the list get more clicks *because* they are at the top, independent of relevance. A model that treats a top-position click as pure relevance signal learns position, not quality, and the bias compounds. The defense is to model position explicitly — log the position, account for it during training so the model learns relevance net of position, and serve as if every item were in a neutral slot.
+**Position bias** corrupts the labels themselves. Items at the top of the list get more clicks *because* they are at the top, independent of relevance. A model that treats a top-position click as pure relevance signal learns position, not quality, and the bias compounds. The defense is to model position explicitly — log the position, account for it during training so the model learns relevance net of position, and serve as if every item were in a neutral slot. The two standard mechanisms are worth seeing concretely. *Inverse propensity weighting* divides each click's training weight by the probability the item was examined at its position, so a click earned in position 10 counts for more than one earned in position 1:
+
+```python
+# Examination propensities, estimated from randomization or an intervention log
+# (e.g., swap positions 1<->2 on 1% of traffic and compare CTRs).
+propensity = {1: 1.00, 2: 0.72, 3: 0.55, 5: 0.38, 10: 0.19}
+
+sample_weight = clicked / propensity[position]     # IPS-weighted loss
+loss = weighted_bce(model(features), clicked, sample_weight)
+```
+
+The *position-as-feature* alternative feeds the logged position into the model during training and a constant neutral position at serving, letting the network absorb the bias into a feature it will never again see vary. IPS is unbiased but high-variance when propensities are small (clip them); position-as-feature is low-variance but only as correct as the model's ability to disentangle position from relevance. Either is enormously better than pretending clicks are relevance.
 
 **Objective hacking** is the failure of optimizing a proxy. A system tuned purely for immediate clicks learns to show clickbait — items that earn the click and betray it. The metric improves while the product degrades, because the metric was never the goal, only a measurable stand-in for it. The defense is guardrail metrics and long-term objectives: optimize for engagement that predicts satisfaction and retention, and block any model that improves clicks while harming the guardrails.
 
