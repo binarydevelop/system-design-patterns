@@ -537,6 +537,100 @@ RocksDB's dynamic leveling:
 
 ---
 
+## Compaction Debt: The Throughput Equation
+
+Compaction is a producer-consumer system, and it has a capacity equation that most outages violate:
+
+```
+Sustainable ingest = usable device write bandwidth / write amplification
+
+Example (leveled, WA ≈ 20, NVMe with 2 GB/s sustained writes,
+reserving half the bandwidth for reads and flushes):
+  sustainable ingest ≈ (2 GB/s × 0.5) / 20 = 50 MB/s of app writes
+
+Ingest above that rate doesn't fail — it accrues DEBT:
+  pending compaction bytes grow
+  → more overlapping runs per read (read amp climbs first)
+  → L0 count crosses slowdown trigger (writes throttled)
+  → L0 count crosses stop trigger (writes stall — outage)
+
+The insidious part: a burst 3× over sustainable rate for one hour
+creates hours of catch-up work. Debt is repaid at
+(compaction bandwidth − ongoing ingest × WA), which may be nearly
+zero if steady-state ingest is close to the limit.
+```
+
+Operational rules that follow: size steady-state ingest at **≤50–70% of the sustainable rate** so bursts have repayment headroom; treat *pending compaction bytes* as a first-class SLO signal (it is the leading indicator — read latency and stalls are trailing); and when catching up, either rate-limit ingest explicitly or temporarily relax the strategy (universal/tiered) — letting the stall triggers do the throttling delivers the worst possible latency profile.
+
+### Where the time actually goes
+
+```
+A compaction job is a pipeline: read blocks → decompress → merge-sort
+→ (re)compress → write blocks → sync + manifest update.
+
+CPU can be the bottleneck, not the disk: zstd on the bottom level
+compresses at a few hundred MB/s per core — a 4-thread compaction
+budget caps at ~1 GB/s of logical throughput regardless of NVMe
+speed. This is why per-level compression config (LZ4 up top, zstd
+at the bottom) is a throughput decision, not just a space one.
+```
+
+---
+
+## Tombstone GC Hazards
+
+The mechanics above said tombstones drop at the bottom level; production adds two constraints that make tombstones a recurring incident class:
+
+```
+Resurrection window (Cassandra): a tombstone may only be GC'd after
+gc_grace_seconds (default 10 days). Why: a replica that was DOWN when
+the delete happened never got the tombstone. If the other replicas GC
+it before that node is repaired, repair copies the node's old value
+BACK — the deleted row resurrects cluster-wide.
+  → gc_grace_seconds must exceed your worst repair interval
+  → dropping it to reclaim space faster trades disk for resurrections
+
+The tombstone scan problem: reads over ranges with many deletes must
+iterate every tombstone to prove rows dead. A table used as a queue
+(insert → consume → delete at the head) degrades until every poll
+scans millions of tombstones — Cassandra aborts such reads with
+TombstoneOverwhelmingException. Fixes: don't build queues on LSM
+tables; use time-bucketed tables dropped whole, or FIFO/TWCS where
+expiry deletes files instead of rows.
+
+Targeted tombstone compaction: engines can compact a single SSTable
+when its tombstone ratio is high (Cassandra tombstone_threshold,
+default 0.2; RocksDB CompactOnDeletionCollector) — worth enabling on
+delete-heavy tables so tombstones don't wait for shape-driven
+compaction to find them.
+```
+
+---
+
+## Compaction Off the Box: Tiered and Remote
+
+Because SSTables are immutable and self-contained, neither the files nor the merge work has to live on the serving node:
+
+```
+Tiered storage: bottom-level SSTables (≈90% of bytes, coldest data)
+move to object storage; the node keeps hot levels + indexes/filters
+locally. Reads to cold data pay object-store latency (see
+Object Storage chapter); economics usually win for logs/time-series.
+
+Remote compaction: the merge itself runs on stateless workers reading
+and writing SSTables in object storage (RocksDB-Cloud, and the
+pattern behind several cloud-native engines). The serving node stops
+paying compaction CPU/IO entirely — the amplification triangle's
+write-amp corner becomes an elastic, separately-billed compute pool.
+The cost: coordination (which worker owns which file set) moves into
+a manifest/metadata service — the same "truth in a small pointer,
+bytes in immutable objects" pattern as lakehouse table formats.
+```
+
+This is the direction of travel for cloud LSMs: the SSTable's immutability, designed in 1996 to avoid disk seeks, turns out to be exactly the property that makes storage-compute separation workable.
+
+---
+
 ## Key Takeaways
 
 1. **SSTables are immutable** - Write once, read many

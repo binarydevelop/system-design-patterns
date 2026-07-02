@@ -1,794 +1,361 @@
 # B木
 
-> この記事は英語版から翻訳されました。最新版は[英語版](/03-storage-engines/01-b-trees.md)をご覧ください。
+> この記事は英語版から翻訳されました。最新版は[英語版](/03-storage-engines/01-b-trees.md)をご覧ください。コードブロック・数式・図は原文のまま維持しています。
 
 ## TL;DR
 
-B木はデータベースで最も広く使用されているインデックス構造です。ソートされたデータを維持し、O(log n)での読み取り、書き込み、範囲クエリを提供します。B+木（一般的な変種）はすべてのデータをリーフノードに格納し、範囲スキャンを効率的にします。ページ分割、フィルファクタ、書き込み増幅を理解することが、B木のパフォーマンス最適化の鍵です。
+B木はほぼすべてのOLTPデータベースのデフォルトのインデックス構造であり、50年以上生き延びてきた理由はただひとつ: メモリ階層の形に一致しているからです。ファンアウトが数百のページサイズのノードからなる木は、10億キーを4回のページ読み取りで到達可能に保ちます — そのうち3回は通常キャッシュ済みなので、ポイントルックアップのコストはディスクI/O 1回かゼロです。教科書的な説明が省く部分にこそ本番の挙動が住んでいます: B木は実際には*バッファプール構造*です（「ディスク読み取り」は普通、メモリ読み取り+帳簿処理です）。書き込み増幅は行サイズではなくページサイズです（100バイトの更新が8〜16KBのページをダーティにし、さらにWAL、場合によってはフルページイメージも）。並行アクセスはラッチプロトコル（crabbing、楽観的降下、B-linkの横方向ポインタ）に支配され、それがマルチコアのスケーラビリティを決めます。そしてキーの選択 — シーケンシャルかランダムか — は挿入スループットとインデックスサイズを整数倍単位で揺さぶります。本章ではコストモデルをページから積み上げ、分割/マージ、並行性、リカバリとの相互作用、PostgreSQL/InnoDBの具体論、そして実際に人を呼び出す障害モード（ブロート、UUIDキー、過剰インデックス）を扱います。
 
 ---
 
-## なぜB木なのか？
+## コストモデル: ページ、ファンアウト、メモリ階層
 
-### ディスクアクセスの問題
-
-```
-Disk characteristics:
-  - Sequential read:  100+ MB/s
-  - Random read:      100-200 IOPS (spinning disk)
-  - SSD random read:  10,000+ IOPS
-
-Memory access: ~100 nanoseconds
-Disk access:   ~10 milliseconds (spinning)
-
-Ratio: 100,000x slower for random disk access
-
-Goal: Minimize disk accesses per operation
-```
-
-### B木の解決策
+ストレージはバイト単位ではなくページ単位で読まれます。ランダム読み取りのコストは、ページの8バイトを使おうが全部を使おうがほぼ同じです:
 
 ```
-Store data in large blocks (pages) that match disk I/O
-Few levels → few disk reads
+Access cost (order of magnitude):
+  L1/L2 cache hit:      ~1-10 ns
+  DRAM (buffer pool):   ~100 ns
+  NVMe SSD random 4KB:  ~20-100 μs      (~1,000× DRAM)
+  SATA SSD random:      ~100-200 μs
+  HDD random (seek):    ~5-10 ms        (~100,000× DRAM)
 
-Height 3 B-tree with 100 keys/node:
-  Level 0: 1 node (100 keys)
-  Level 1: 100 nodes (10,000 keys)
-  Level 2: 10,000 nodes (1,000,000 keys)
-
-  3 disk reads to find any of 1 million keys
+Design consequence: the only number that matters for a disk-resident
+index is PAGE READS PER OPERATION. Comparisons are free by comparison.
 ```
 
----
-
-## B木の構造
-
-### ノードレイアウト
+B木の答え: 各ノードを丸ごと1ページにすることで、ページ読み取り1回ごとに探索範囲が2分の1ではなく*ファンアウト*（ノードあたりの子の数）分の1に狭まるようにします:
 
 ```
-Each node is a fixed-size page (typically 4-16 KB)
+Fanout arithmetic (8 KB page, ~16-byte keys + 8-byte child pointers):
+  entries per internal page ≈ 8192 / 24 ≈ 340 → call it ~300
 
-     ┌──────────────────────────────────────────┐
-     │  [P0] K1 [P1] K2 [P2] K3 [P3] ... Kn [Pn] │
-     └──────────────────────────────────────────┘
+  Height 1:  ~300 keys
+  Height 2:  ~90,000
+  Height 3:  ~27,000,000
+  Height 4:  ~8,100,000,000
 
-Ki = Key i
-Pi = Pointer to child (or data in leaf)
-
-Invariant:
-  All keys in subtree P(i-1) < Ki <= All keys in subtree Pi
+A billion-row table is a 4-level tree. And the top of the tree is tiny:
+  root:               1 page
+  level 2:          ~300 pages   (~2.4 MB)
+  level 3:       ~90,000 pages   (~700 MB)
+→ root + level 2 always cached; level 3 mostly cached.
+  A point lookup is typically 3 buffer-pool hits + at most 1 real I/O.
 ```
 
-### B木 vs B+木
-
-```
-B-Tree:
-  - Data stored in all nodes
-  - Fewer total nodes
-  - Range scan requires tree traversal
-
-B+-Tree (most common):
-  - Data only in leaf nodes
-  - Internal nodes = routing only
-  - Leaf nodes linked → efficient range scan
-
-     [10 | 20 | 30]        ← Internal node (keys only)
-     /    |    |    \
-    ↓     ↓    ↓     ↓
-   [1-9][10-19][20-29][30-39]  ← Leaf nodes (keys + data)
-     ↔     ↔     ↔     ↔       ← Sibling pointers
-```
-
-### B+木の特性
-
-```
-Order m (max children per node):
-  - Internal nodes: ⌈m/2⌉ to m children
-  - Leaf nodes: ⌈m/2⌉ to m key-value pairs
-  - Root: 2 to m children (or 0 if empty)
-
-Typical m = 100-1000+ depending on page size
-```
+これがゲームのすべてです: **1操作あたり log_fanout(n) 回のページアクセスで、上位レベルはデータに比べて微小なのでほぼすべてキャッシュヒットになる**。二分探索木、スキップリスト、ハッシュテーブルがディスク上で負けるのは漸近計算量が悪いからではなく、1ステップあたりの絞り込み係数がページサイズのI/Oに見合わないからです。
 
 ---
 
-## 操作
+## 構造: B+木 — みんなが実際に作っているもの
 
-### 検索
-
-```
-def search(node, key):
-    if node.is_leaf:
-        return binary_search(node.keys, key)
-
-    # Find child to descend into
-    i = binary_search_position(node.keys, key)
-    child = read_page(node.pointers[i])
-    return search(child, key)
-
-Complexity: O(log_m n) pages read
-           O(log n) total key comparisons
-```
-
-### 範囲スキャン
+データベースが「B木」と呼ぶものはほぼ常に**B+木**です: 値はリーフのみに存在し、内部ノードはルーティングキーと子ポインタを持ち、リーフは兄弟ポインタで連結されています。
 
 ```
-def range_scan(start, end):
-    # Find start position
-    leaf = find_leaf(start)
-    position = binary_search(leaf.keys, start)
-
-    # Scan leaves using sibling pointers
-    results = []
-    while leaf and leaf.keys[position] <= end:
-        results.append(leaf.values[position])
-        position += 1
-        if position >= len(leaf.keys):
-            leaf = leaf.next_sibling
-            position = 0
-    return results
-
-Efficient: Sequential access after finding start
-```
-
-### 挿入
-
-```
-def insert(key, value):
-    leaf = find_leaf(key)
-
-    if leaf.has_space():
-        leaf.insert(key, value)
-    else:
-        # Split the leaf
-        new_leaf = split(leaf)
-        middle_key = new_leaf.first_key
-
-        # Insert middle key into parent
-        insert_into_parent(leaf.parent, middle_key, new_leaf)
-
-Split may cascade up to root
-```
-
-### リーフ分割
-
-```
-Before (full leaf, m=4):
-  [10, 20, 30, 40]
-
-Insert 25:
-  Split into two leaves
-
-  [10, 20] → [30, 40]  (new leaf takes upper half)
-                ↓
-  [30, 40, 25] → sort → [25, 30, 40]
-
-  Actually:
-  [10, 20, 25] [30, 40]
-
-  Promote 30 to parent:
-  Parent: [..., 30, ...]
-            ↓    ↓
-         [leaf1][leaf2]
-```
-
-### 削除
-
-```
-def delete(key):
-    leaf = find_leaf(key)
-    leaf.remove(key)
-
-    if leaf.is_underfull():
-        if can_borrow_from_sibling(leaf):
-            borrow(leaf)
-        else:
-            merge_with_sibling(leaf)
-            # May cascade up
-
-Underflow when: < ⌈m/2⌉ keys
-```
-
----
-
-## ページレイアウト
-
-### スロットページ形式
-
-```
-┌────────────────────────────────────────────────────┐
-│ Header │ Slot 1 │ Slot 2 │ ... │ Free │ ... │Data│
-├────────┴────────┴────────┴─────┴──────┴─────┴─────┤
-│ ◄─── Slots grow →                 ← Data grows ──►│
-└────────────────────────────────────────────────────┘
-
-Header: Page ID, number of slots, free space pointer
-Slot: Offset to data, length
-Data: Variable-length records
-
-Advantages:
-  - Variable-length keys/values
-  - Easy deletion (mark slot as empty)
-  - Efficient compaction
-```
-
-### キー圧縮
-
-```
-Prefix compression in internal nodes:
-  Original: ["application", "apply", "approach"]
-  Compressed: ["appli", "appr"]  (minimum to distinguish)
-
-Suffix truncation:
-  Don't need full key in internal nodes
-  Just enough to route correctly
-```
-
----
-
-## 書き込み増幅
-
-### 問題
-
-```
-Insert one key-value pair (100 bytes):
-  1. Read page (4 KB)
-  2. Modify page (add 100 bytes)
-  3. Write page (4 KB)
-
-Write amplification = 4 KB / 100 bytes = 40x
-
-For update in place:
-  WAL write + Page write = 2x amplification minimum
-```
-
-### 軽減策
-
-```
-1. Larger pages (more data per I/O)
-2. Buffer pool (cache hot pages in memory)
-3. Batch writes (group modifications)
-4. Append-only B-trees (COW for reduced random writes)
-```
-
----
-
-## 同時実行制御
-
-### ページレベルロック
-
-```
-Simple approach:
-  Lock page during read/write
-  Release when done
-
-Problem:
-  Page splits acquire locks bottom-up
-  Risk of deadlock
-```
-
-### ラッチクラビング
-
-```
-Traversal with safe release:
-
-1. Acquire latch on child
-2. If child is "safe" (won't split/merge):
-   Release latch on all ancestors
-3. Continue down
-
-Safe node:
-  - For insert: has space for one more key
-  - For delete: has more than minimum keys
-```
-
-```
-Search: Read latch → descend → release parent → repeat
-        (crab down the tree)
-
-Insert:
-  Acquire write latches top-down
-  Release ancestors when child is safe
-
-Example (insert, safe child):
-  [Parent] ← write latch
-      ↓
-  [Child is safe] ← write latch, release parent
-      ↓
-  [Leaf] ← write latch, do insert
-```
-
-### 楽観的ロック
-
-```
-1. Traverse with read latches only
-2. At leaf, try to upgrade to write latch
-3. If structure changed (version mismatch):
-   Restart traversal
-
-Reduces contention for read-heavy workloads
-```
-
----
-
-## 永続性とリカバリ
-
-### 先行書き込みログ (WAL)
-
-```
-Before modifying page:
-  1. Write log record (page ID, old value, new value)
-  2. Fsync log
-  3. Modify page in buffer pool
-  4. Eventually flush dirty page
-
-Recovery:
-  Replay log to reconstruct pages
-```
-
-### クラッシュリカバリ
-
-```
-WAL ensures:
-  - Committed transactions' changes applied
-  - Uncommitted transactions' changes undone
-
-B-tree specific:
-  - Half-completed splits must be completed or undone
-  - Log sufficient info to redo split
-```
-
----
-
-## コピーオンライトB木
-
-### コンセプト
-
-ページを直接変更しません。
-
-```
-Original tree:
-     [A]
-    /   \
-  [B]   [C]
-
-Update to [B]:
-  1. Create new [B'] with modification
-  2. Create new [A'] pointing to [B'] and [C]
-  3. Update root pointer to [A']
-
-Old pages remain until garbage collected
-```
-
-### 利点
-
-```
-+ No WAL needed (old version always valid)
-+ Readers never blocked
-+ Snapshots are free (just keep old root)
-+ Simple crash recovery
-```
-
-### 欠点
-
-```
-- Write amplification (entire path to root)
-- Fragmentation (new pages not contiguous)
-- Garbage collection needed
-- Space amplification during updates
-```
-
-### COWを使用するシステム
-
-```
-LMDB:   Copy-on-write B-tree
-BoltDB: Copy-on-write B+-tree
-btrfs:  Copy-on-write filesystem
-```
-
----
-
-## B木の変種
-
-### B*木
-
-```
-More aggressive node filling:
-  - Siblings help before splitting
-  - Minimum occupancy: 2/3 (not 1/2)
-  - Better space utilization
-```
-
-### Bᵋ木（Bイプシロン木）
-
-```
-Buffer at each node for pending updates:
-  - Insert writes to buffer
-  - Buffer flushed when full
-  - Reduces write amplification
-
-Trade-off: Faster writes, slower reads
-```
-
-### フラクタル木
-
-```
-Similar to Bᵋ-tree:
-  - Messages buffered at each level
-  - Batch flushes down tree
-
-Used by TokuDB (MySQL), PerconaFT
-```
-
----
-
-## パフォーマンス特性
-
-### 計算量
-
-| 操作 | 平均 | 最悪 |
-|------|------|------|
-| 検索 | O(log n) | O(log n) |
-| 挿入 | O(log n) | O(log n) |
-| 削除 | O(log n) | O(log n) |
-| 範囲 | O(log n + k) | O(log n + k) |
-
-k = 結果の数
-
-### 空間利用率
-
-```
-Typical fill factor: 50-70%
-  - Splits create half-full nodes
-  - Random inserts fill non-uniformly
-
-Bulk loading: 90%+ possible
-  - Sort data first
-  - Build bottom-up
-  - Pack leaves fully
-```
-
-### I/Oパターン
-
-```
-Read:   Random I/O (traverse nodes)
-        Sequential within page
-
-Write:  Random I/O (update pages)
-        WAL is sequential
-
-Range:  Sequential after finding start
-        (leaf nodes linked)
-```
-
----
-
-## 実用的な考慮事項
-
-### ページサイズの選択
-
-```
-Larger pages:
-  + Fewer levels (faster traversal)
-  + Better for range scans
-  + Better for HDDs
-  - More write amplification
-  - More memory per page
-
-Typical: 4 KB (SSD), 8-16 KB (HDD)
-```
-
-### フィルファクタ
-
-```
-CREATE INDEX ... WITH (fillfactor = 70);
-
-Lower fill factor:
-  + Room for inserts without splits
-  + Better for write-heavy workloads
-  - More space, more pages to read
-
-Higher fill factor:
-  + Less space, fewer pages
-  + Better for read-heavy workloads
-  - More splits on insert
-```
-
-### モニタリング
-
-```
-Key metrics:
-  - Tree height (should be stable)
-  - Page splits per second
-  - Fill factor / space utilization
-  - Cache hit ratio for index pages
-  - I/O wait time
-```
-
----
-
-## B木 vs B+木
-
-### 構造的な違い
-
-```
-B-Tree:
-  - Keys AND values stored in both internal and leaf nodes
-  - Any node can satisfy a lookup — no need to reach a leaf
-  - Fewer total nodes (values packed into internal nodes)
-  - Range scans require in-order tree traversal (expensive)
-
-B+Tree:
-  - Values stored ONLY in leaf nodes
-  - Internal nodes are pure routing nodes — contain keys and child pointers only
-  - Leaf nodes are linked via sibling pointers for sequential access
-  - Range scan = find start leaf, then follow links
-
      ┌─────────────┐
-     │  30  |  60   │              ← Internal: routing only
+     │  30  |  60   │                ← internal: routing keys only
      └──┬────┬────┬─┘
         ↓    ↓    ↓
    ┌──────┐ ┌──────┐ ┌──────┐
-   │10|20 │→│30|40 │→│60|80 │    ← Leaves: keys + values + sibling links
+   │10|20 │→│30|40 │→│60|80 │       ← leaves: keys + values, sibling-linked
    └──────┘ └──────┘ └──────┘
+
+Why values-only-in-leaves wins:
+  1. Internal nodes stay small (key + pointer, no payload)
+     → maximum fanout → minimum height
+  2. Every lookup has identical depth → predictable latency
+  3. Range scan = locate start leaf, then walk sibling pointers
+     sequentially — no re-traversal
+  4. Internal keys are only separators: they can be truncated to the
+     shortest prefix that still routes correctly ("suffix truncation"),
+     raising fanout further
 ```
 
-### なぜデータベースはB+木を使うのか
+古典的なB木（すべてのノードに値を持つ）が生き残っているのは主に教科書の中です。SQLiteはインデックス用b-treeに使っていますがテーブルはB+であり、それ以外 — PostgreSQL nbtree、InnoDB、SQL Server、Oracle、WiredTiger — はすべて改良を加えたB+です。
+
+### ページの内側: スロット化レイアウト
 
 ```
-1. Smaller internal nodes → higher fan-out → fewer levels
-   B-Tree internal node: key + value + pointer ≈ large
-   B+Tree internal node: key + pointer ≈ small
+┌──────────────────────────────────────────────────────┐
+│ header │ slot array →   ...free space...   ← records │
+└──────────────────────────────────────────────────────┘
+  header: page LSN, record count, free-space pointers
+  slots:  (offset, length) pairs, kept sorted by key
+  records: variable-length, grow from the end
 
-2. Fan-out example (8 KB page, 100-byte keys, 8-byte pointers):
-   Keys per internal node: ~80
-   Level 0:          1 node  →          80 keys
-   Level 1:         80 nodes →       6,400 keys
-   Level 2:      6,400 nodes →     512,000 keys
-   Level 3:    512,000 nodes →  40,960,000 keys
-   → 4 levels covers 40M+ keys
+Binary search runs over the slot array (fixed-width, cache-friendly);
+records never move on insert — only slots do. Deletion marks a slot
+dead; space is reclaimed by in-page compaction when needed.
+```
 
-3. Range scans follow leaf links — no tree re-traversal
-4. Consistent depth — every lookup touches the same number of pages
+ヘッダのページLSNは[Write-Ahead Logging](./04-write-ahead-logging.md)へのフックです: リカバリはこれをログレコードと比較し、どの変更が既にページに反映済みかを判定します — redoを冪等にする仕組みです。
 
-Databases using B+Tree variants:
-  PostgreSQL:   nbtree (B+Tree with high-key optimization)
-  MySQL InnoDB: clustered B+Tree (data in leaf pages)
-  SQLite:       B+Tree for tables, B-Tree for indexes
+### クラスタ化 vs セカンダリ: 「値」とは何か
+
+```
+Heap tables (PostgreSQL):
+  index leaf holds (key → TID), a pointer into the heap
+  every index on the table is equal; row lives in the heap
+
+Clustered index (InnoDB, SQL Server default):
+  the PRIMARY KEY B+-tree's leaves ARE the rows
+  secondary index leaves hold (key → primary key value)
+  → secondary lookup = two B-tree descents (secondary, then PK)
+  → a fat primary key silently fattens EVERY secondary index
+```
+
+最後の行は本番で繰り返される驚きです: InnoDBで36バイトのUUID文字列を主キーにすると、そのテーブルの全セカンダリインデックスの全エントリに36バイトが加算されます。
+
+---
+
+## 操作、そしてコストが実際にある場所
+
+### 探索とレンジスキャン
+
+```
+Point lookup:  descend root → leaf, binary search each page
+  cost = height page accesses ≈ 3-4, nearly all cached
+
+Range scan [a, b):  descend to leaf containing a,
+  then walk sibling pointers until b
+  cost = height + ⌈K / entries_per_leaf⌉ sequential page reads
+  — sequential after the seek, which is why B-trees serve
+    ORDER BY ... LIMIT and time-range queries so well
+```
+
+### 挿入と分割のカスケード
+
+```
+insert(k, v):
+  descend to leaf; if room → write into page (common case: 1 dirty page)
+  if full → SPLIT:
+    allocate new page, move upper half of entries there,
+    insert separator key into parent
+    if parent full → split parent … possibly up to the root
+    root split → tree grows one level (the ONLY way height increases,
+    which is why B-trees stay balanced with no rebalancing pass)
+```
+
+分割を集計上安価に保つ事実が2つあります。第一に、分割は稀です: リーフは分割の合間に `entries_per_leaf / 2` のオーダーの挿入を吸収するので、挿入あたりの償却コストはページ書き込みの何分の一かです。第二に、エンジンは最悪になりうるパターンを特別扱いします: **シーケンシャルキーに対する右端分割**です。単調増加キーの挿入は常に最右のリーフに当たります。素朴な半分割は半分空のページの行列を残しますが、エンジンは代わりに「挿入点で」分割し（PostgreSQLのfastpath、InnoDBのシーケンシャル挿入ヒューリスティック）、左側のページをほぼ満杯のまま残し、追記型キーではインデックスを90%以上の密度に詰め込みます。
+
+```
+Split economics, 8 KB leaves, ~150 entries/leaf:
+
+  Sequential keys (timestamps, sequences):
+    splits only at right edge, pages left ~100% full
+    index density ~90-100%, minimal page count
+
+  Random keys (UUIDv4):
+    every leaf equally likely to split; steady-state fill ≈ 2/3 (ln 2 ≈ 69%)
+    → ~1.4× more leaf pages for the same data
+    → 1.4× more buffer-pool pressure, 1.4× more pages to WAL-image
+    AND: every insert touches a random page → the working set is the
+    ENTIRE leaf level; with a 700 MB leaf level and a smaller buffer
+    pool, every insert is a read-modify-write with a real disk read.
+```
+
+2つ目のブロックが「UUID主キーは遅い」現象の定量化です。時間順序付きID（ULID、UUIDv7、Snowflake ID）は分散生成を保ったままシーケンシャルなパターンを回復します — 通常これが正しい修正です。
+
+### 削除: 教科書より怠惰
+
+CLRSはアンダーフローしたノードを即座にマージします。実システムはほぼやりません: PostgreSQLはインデックスタプルを死んだとマークし、VACUUMは*空になった*ページのみ回収します（部分的に埋まったページをマージすることはありません）。InnoDBはページが閾値（`MERGE_THRESHOLD`、デフォルト50%）を下回ったときだけマージします。理由: 削除の多いワークロードは同じレンジに再挿入することが多く、マージ→再分割のスラッシングは緩みを抱えるより高くつくからです。帰結: **B木インデックスは再構築でしか引き締まりません** — 大量削除してもインデックスは `REINDEX` / `OPTIMIZE TABLE` まで同じサイズのままです。
+
+---
+
+## 書き込み増幅: ページサイズ、プラスログ
+
+B木のI/O単位はページなので、小さな行に対する書き込み増幅は構造的です:
+
+```
+UPDATE of a 100-byte row, 8 KB pages, worst case (PostgreSQL-flavored):
+  WAL record:                        ~150 bytes
+  full-page image (first touch of the page after a checkpoint):
+                                     ~8 KB into the WAL
+  heap page write (at checkpoint):    8 KB
+  index page write (if index updated): 8 KB
+  ────────────────────────────────────────────
+  ~24 KB of I/O for 100 logical bytes ≈ 240×  (worst case)
+
+Steady state is far better: pages absorb many updates between
+checkpoints (one page write amortizes over all of them), and only the
+first touch per checkpoint pays the full-page image. Realistic WA for
+OLTP: ~2-10×. But the WORST case is what sizes your disks and your
+checkpoint tuning — spiky WAL volume right after each checkpoint is
+the visible symptom.
+```
+
+フルページイメージが存在するのは**torn page**（引き裂かれたページ）のためです — 8KBのページ書き込みは4KBセクタのデバイス上でアトミックではありません。防御策（FPI、InnoDBのダブルライトバッファ）は[Write-Ahead Logging](./04-write-ahead-logging.md)で扱います。
+
+[LSM木](./02-lsm-trees.md)と対比すると: LSMはランダムなページサイズの書き込みをシーケンシャルなバッチ書き込みに変換しますが（インジェストに優れる）、コンパクションで繰り返し支払います（*論理データ*に対して10〜30倍のWA、時間に分散）。B木のWAは更新ごと・即時、LSMのWAは遅延・バックグラウンドです。どちらが安いかは更新の局所性次第です: 繰り返し更新されるホットな行はB木ではほぼ無料（同じページ、最終的に1回の書き込み）で、LSMでは高価（全バージョンが全レベルを通して書き直される）です。
+
+### エンジンが実際に使う緩和策
+
+```
+- Buffer pool absorbs re-writes: dirty page written once per checkpoint,
+  not per update — checkpoint interval is a WA knob
+- Group/async commit amortize the WAL fsync (see WAL chapter)
+- HOT updates (PostgreSQL): update that changes no indexed column
+  rewrites only the heap page — zero index writes
+- Change buffering (InnoDB): secondary-index modifications for pages
+  not in memory are buffered and merged later — turns random index I/O
+  into batched I/O
+- B^ε-trees push this to the limit: each internal node carries a buffer
+  of pending messages flushed downward in batches — write-optimized
+  B-trees (TokuDB/PerconaFT lineage), trading read latency for write WA
 ```
 
 ---
 
-## ページ分割とマージ
+## 並行性: ラッチ、crabbing、そして横へ行く
 
-### 分割
-
-```
-When a leaf page is full and a new key must be inserted:
-  1. Allocate a new page
-  2. Move upper half of keys to new page
-  3. Insert new routing key into parent
-  4. If parent is also full → split parent (cascade upward)
-  5. If root splits → new root created, tree grows one level
-
-Before split (page full, 4 keys max):
-  Parent: [... 50 ...]
-               ↓
-  Leaf:   [10, 20, 30, 40]
-
-Insert 25:
-  Parent: [... 30 | 50 ...]        ← 30 promoted
-            ↓        ↓
-  Leaf1: [10, 20, 25]  Leaf2: [30, 40]
-```
-
-### マージ
+並行アクセス下のB木は、物理的なページの整合性（ラッチ、マイクロ秒スケール）とトランザクション分離（ロック、トランザクションスケール）を別々に守らなければなりません。興味深いエンジニアリングはラッチ側にあります — 数百コアの時代、どうラッチするかがインデックスのスケールを決めます。
 
 ```
-When adjacent pages are both less than half full:
-  1. Merge two leaf pages into one
-  2. Remove routing key from parent
-  3. If parent becomes underfull → merge parent (cascade upward)
-  4. If root has only one child → root removed, tree shrinks
+Latch crabbing (the classical protocol):
+  descend holding parent latch until child latch acquired;
+  release parent as soon as child is "safe"
+  (safe = can't split for insert / can't underflow for delete)
+
+  Readers: shared latches, release immediately → cheap
+  Writers: exclusive latches; the root is the choke point —
+  a pessimistic writer holds it until it knows no split will cascade
 ```
 
-### フラグメンテーションとメンテナンス
+```
+Optimistic descent (what modern engines do):
+  descend with SHARED (or no) latches assuming no split will happen
+  latch exclusively only the leaf; if it turns out to split,
+  restart the descent pessimistically
+  → splits are rare, so the fast path wins almost always
+  Optimistic Lock Coupling generalizes this with per-page version
+  counters: readers don't latch at all, they validate versions —
+  reads scale linearly with cores
+```
 
 ```
-Splits create half-full pages → up to 50% wasted space
-Sequential inserts are better — append to rightmost leaf
+B-link trees (Lehman & Yao 1981): every node gets a HIGH KEY and a
+RIGHT-SIBLING pointer. A split first creates the right sibling, then
+updates the parent — and a concurrent reader that lands on the old
+page mid-split detects (key > high key) and simply follows the sibling
+pointer sideways. Readers never block on splits; writers latch at most
+2-3 pages. This is PostgreSQL's actual implementation, and the reason
+its index scans don't stall behind concurrent inserts.
+```
 
-PostgreSQL specifics:
-  - VACUUM reclaims dead tuples but does NOT defragment B-tree indexes
-  - REINDEX rebuilds the index from scratch — reclaims space
-  - pg_stat_user_indexes.idx_scan = 0 → unused index, consider dropping
+リカバリもここに絡みます: 分割の途中でクラッシュしても、到達不能なページを残してはなりません。PostgreSQLは分割を1つのアトミックなWALレコード+redo時に完了される遅延親挿入としてログし、InnoDBはミニトランザクション（アトミックな複数ページredoグループ)を使います。不変条件: **構造変更は複数ページにまたがってもログ上アトミック** — [Write-Ahead Logging](./04-write-ahead-logging.md)参照。
 
-Fill factor (PostgreSQL):
-  - Default fillfactor for indexes: 90
-  - Leaves 10% headroom per page to delay splits
-  - For append-only tables (e.g., time-series): fillfactor = 100 is fine
-  - For random updates: fillfactor = 70-80 reduces split frequency
-  CREATE INDEX idx_orders ON orders(created_at) WITH (fillfactor = 90);
+### Copy-on-Write B木: もうひとつの道
 
-HOT updates (Heap-Only Tuples):
-  - PostgreSQL optimization for UPDATE that does NOT change indexed columns
-  - New tuple version stays on the same heap page
-  - No new index entry needed → avoids index bloat entirely
-  - Check: pg_stat_user_tables.n_tup_hot_upd vs n_tup_upd
+LMDB、BoltDB、btrfsは書き込み側のラッチングを丸ごとスキップします: ページをin-placeで変更せず、変更されたリーフとルートまでのパスの新しいコピーを書き、ルートポインタをアトミックに差し替えます。
+
+```
++ readers need NO latches ever (any root they hold is a consistent snapshot)
++ crash recovery is free — old root is always valid, no WAL required
++ snapshots/MVCC are a pointer copy
+- every logical write rewrites height pages (WA multiplied by tree height)
+- single writer at a time (LMDB), space reclamation needs GC
+→ superb for read-dominated embedded workloads; wrong shape for
+  write-heavy multi-writer OLTP
 ```
 
 ---
 
-## PostgreSQLインデックスの内部構造
-
-### B木ページの検査
-
-```sql
--- Enable pageinspect extension
-CREATE EXTENSION IF NOT EXISTS pageinspect;
-
--- View B-tree metapage (root location, tree height)
-SELECT * FROM bt_metap('idx_orders');
---  magic  | version | root | level | fastroot | fastlevel
--- --------+---------+------+-------+----------+-----------
---  340322 |       4 |    3 |     1 |        3 |         1
-
--- View items on a specific B-tree page
-SELECT * FROM bt_page_items('idx_orders', 1) LIMIT 5;
---  itemoffset |  ctid   | itemlen | data
--- ------------+---------+---------+------
---           1 | (0,1)   |      16 | ...
-```
-
-### インデックス肥大化の検出
-
-```sql
--- pgstattuple extension for bloat analysis
-CREATE EXTENSION IF NOT EXISTS pgstattuple;
-
-SELECT * FROM pgstatindex('idx_orders');
---  version | tree_level | index_size | root_block_no | internal_pages |
---  leaf_pages | empty_pages | deleted_pages | avg_leaf_density | leaf_fragmentation
---
--- Key metrics:
---   avg_leaf_density < 50% → significant bloat, consider REINDEX
---   leaf_fragmentation > 30% → pages out of order on disk
-```
-
-### インデックスオンリースキャン
-
-```sql
--- When all required columns are in the index, PostgreSQL skips heap access
-CREATE INDEX idx_orders_status_total ON orders(status, total);
-
--- This query can be an index-only scan:
-EXPLAIN SELECT status, total FROM orders WHERE status = 'shipped';
--- Index Only Scan using idx_orders_status_total
-
--- Visibility map must be up-to-date (run VACUUM) for index-only scans
--- Monitor: pg_stat_user_indexes.idx_blks_hit (buffer hits vs disk reads)
-```
-
-### カバリングインデックスと部分インデックス
-
-```sql
--- Covering index: INCLUDE adds non-key columns for index-only scans
--- Included columns are NOT used for ordering or filtering — just payload
-CREATE INDEX idx_orders_covering ON orders(customer_id) INCLUDE (status, total);
-
--- Partial index: index only rows matching a condition — smaller and faster
-CREATE INDEX idx_active_orders ON orders(created_at) WHERE status = 'active';
--- Only rows with status='active' are indexed
--- Queries must include WHERE status = 'active' to use this index
-```
-
-### 複合インデックスの順序
+## PostgreSQLとInnoDB: 重要なノブ
 
 ```
-Leftmost prefix rule for composite index (a, b, c):
-
-  ✓ WHERE a = 1                      → uses index
-  ✓ WHERE a = 1 AND b = 2            → uses index
-  ✓ WHERE a = 1 AND b = 2 AND c = 3  → uses index
-  ✗ WHERE b = 2                      → cannot use index
-  ✗ WHERE b = 2 AND c = 3            → cannot use index
-  ✓ WHERE a = 1 AND c = 3            → uses index for a, filter c
-
-The index is sorted by (a, then b within a, then c within b).
-Skipping a leftmost column breaks the sort order.
+PostgreSQL nbtree:
+  fillfactor (default 90): headroom per leaf to absorb inserts without
+    splitting — drop to 70-80 for heavy random-update columns
+  HOT updates: keep frequently-updated columns OUT of indexes so
+    updates skip index maintenance entirely
+    (check pg_stat_user_tables.n_tup_hot_upd / n_tup_upd)
+  B-tree deduplication (PG 13+): duplicate keys stored once with a
+    TID list — low-cardinality indexes shrink 3-10×
+  Bottom-up index deletion (PG 14+): kills dead index tuples at the
+    moment a page would split, preventing bloat from update churn
+  REINDEX CONCURRENTLY: the only way to un-bloat; VACUUM never
+    merges partially-empty index pages
+  Diagnostics: pgstatindex() → avg_leaf_density (<50% = bloated),
+    bt_metap() for height; pg_stat_user_indexes.idx_scan = 0 → drop it
 ```
 
-### B木の代わりにBRINを使う場合
+```
+InnoDB:
+  clustered PK: keep it SHORT and MONOTONIC (bigint auto-inc or UUIDv7)
+    — every secondary index carries a copy of it
+  change buffer: batches secondary-index updates for cold pages
+  adaptive hash index: hash shortcut over hot B-tree pages, built
+    automatically (and sometimes worth disabling under contention)
+  innodb_fill_factor, MERGE_THRESHOLD per index
+```
 
 ```
-BRIN (Block Range INdex): stores min/max per block range (e.g., 128 pages)
-
-Use BRIN when:
-  - Table is physically sorted by the indexed column (e.g., auto-increment ID)
-  - Table is very large (100M+ rows)
-  - Exact lookups are rare; range scans are common
-  - Time-series data with append-only inserts
-
-BRIN advantages:
-  - Tiny index size: ~1000x smaller than B-tree for large tables
-  - Near-zero insert overhead
-
-CREATE INDEX idx_events_ts ON events USING brin(created_at) WITH (pages_per_range = 128);
+When a B-tree is the wrong index (PostgreSQL menu):
+  BRIN: physically-ordered append-only data (time series) —
+    min/max per block range, ~1000× smaller than B-tree
+  GIN: contains-style queries (arrays, JSONB, full text)
+  Hash: equality-only, marginal wins; rarely worth it
+  Partial/covering indexes: cheaper than another full B-tree —
+    index only the rows (WHERE ...) or add INCLUDE payload columns
+    to enable index-only scans
+Multi-column indexes route by leftmost prefix: (a,b,c) serves
+  a / a,b / a,b,c — never b alone. Order columns by equality-first,
+  then range; a range predicate stops index use for later columns.
 ```
 
 ---
 
-## B木のパフォーマンス特性
+## 障害モード
 
-### 操作コスト
+**更新/削除の出入りによるインデックスブロート。** 死んだインデックスタプルが蓄積し、ページは半分空のまま残り、同じ論理インデックスが2〜5倍のページを消費し、キャッシュヒット率が下がり、スキャンは*徐々に*遅くなります — エラーはなく、ただ漂流するだけ。過充填されたブルームフィルタとまったく同じです。`avg_leaf_density` を監視し、書き込みの激しいインデックスには `REINDEX CONCURRENTLY` をスケジュールしてください。PG 13/14の重複排除+bottom-up deletionはこれを劇的に削減します。それ以前のバージョンではブロート管理は常設の運用業務です。
 
-```
-Point lookup:
-  O(log_B N) page reads, where B = branching factor (fan-out)
-  Example: B = 80, N = 40M keys → log_80(40M) ≈ 4 levels
-  4 random I/Os per lookup (root page usually cached → 3 in practice)
+**ランダムキー挿入のワーキングセット。** UUIDv4キーはすべての挿入を一様にランダムなリーフに当てます。リーフレベルがバッファプールを超えた瞬間、挿入1回 = ランダム読み取り1回+いずれランダム書き込み1回となり、スループットは「200GBあたりでデータベースが遅くなった」ように見える崖から落ちます。直すべきはキー（UUIDv7/ULID）であってハードウェアではありません。
 
-Range scan:
-  O(log_B N + K/B) page reads, where K = result set size
-  Find start: same as point lookup
-  Then follow leaf links: sequential I/O, reading K/B leaf pages
+**ホットな右端。** 単調キーはすべての挿入を最右リーフに集中させます — 高並行下でのラッチホットスポットです（SQL Serverの「last page insert contention」、OPTIMIZE_FOR_SEQUENTIAL_KEYで緩和。PostgreSQLのfastpathが大半を解消）。皮肉にも前項と正反対の病理です: シーケンシャルキーは1つのラッチにストレスをかけ、ランダムキーはキャッシュ全体にストレスをかけます。
 
-Insert:
-  O(log_B N) amortized — one page write + WAL entry
-  Worst case: page split cascades to root → 2× the page writes
-  Amortized split cost is low — each page absorbs ~B inserts before splitting
+**過剰インデックス。** すべてのインデックスは、すべての書き込みで維持される丸ごと1本の追加B木です: セカンダリインデックス5本 ≈ 挿入1回あたり6回のページダーティ化+そのWAL。二桁のインデックス数を持つ書き込み重視テーブルは、I/Oの大半を誰もクエリしないインデックスの維持に費やします。`idx_scan` を監査して削除しましょう。
 
-Delete:
-  O(log_B N) amortized — mark dead, eventual merge
-  Most systems defer merges (PostgreSQL marks tuples dead, VACUUM cleans up)
-```
+**クリーンアップを打ち破る長時間トランザクション。** HOTプルーニング、bottom-up deletion、VACUUMはすべて最古の可視スナップショットを尊重します。忘れられた `idle in transaction` セッション1つがデータベース全体のインデックスクリーンアップを止め、出入りをそのままブロートに変換します。
 
-### シーケンシャルI/O vs ランダムI/Oのトレードオフ
+**太ったキー。** 幅広のテキストキーはファンアウトを縮め（ページあたりのセパレータが減る → 木が高くなる → ルックアップあたりのI/O増）、InnoDBでは全セカンダリインデックスに複製されます。長い文字列はハッシュかプレフィックスをインデックスし、主キーは8〜16バイトに保ちましょう。
 
-```
-B-tree writes are random I/O:
-  - Update-in-place means writing to arbitrary page locations
-  - Each insert touches a different leaf page (for random key order)
+---
 
-LSM-tree writes are sequential I/O:
-  - All writes go to an append-only memtable → flush to sorted files
-  - This is the fundamental B-tree vs LSM trade-off
-  (see 02-lsm-trees.md for full LSM coverage)
+## 意思決定フレームワーク
 
-Impact on hardware:
-  HDD:  Random I/O ≈ 10ms seek → B-tree writes are expensive
-  SSD:  Random I/O ≈ 0.05-0.1ms → penalty is 100x smaller
-  NVMe: Random I/O ≈ 0.01ms → B-tree and LSM gap narrows significantly
-```
-
-### 書き込み増幅の比較
-
-```
-B-tree write amplification:
-  - 1 WAL write + 1 page write = ~2× per logical write
-  - Page splits add occasional extra writes
-  - Overall: 2-5× typical
-
-LSM write amplification:
-  - Compaction rewrites data across multiple levels
-  - Overall: 10-30× typical (varies by compaction strategy)
-  (see 02-lsm-trees.md for compaction details)
-
-B-tree wins on write amplification, LSM wins on write throughput.
-For read-heavy OLTP (point lookups, short ranges): B-tree is usually better.
-For write-heavy ingestion (logs, metrics, events): LSM may be better.
-```
+| 状況 | 選ぶもの |
+|---|---|
+| OLTPのポイントルックアップ+短いレンジスキャン、中程度の書き込み | B+木（デフォルトであるのには理由がある） |
+| 書き込み重視のインジェスト、ポイント読み取り少、キー順データ | [LSM木](./02-lsm-trees.md) — シーケンシャル書き込みがページRMWに勝つ |
+| 追記のみの時系列、時間によるレンジスキャン | BRIN（PostgreSQL）または時間順キーのLSM |
+| 分散ID生成+B木主キー | UUIDv7/ULID/Snowflake — UUIDv4を主キーにしない |
+| 読み取り中心の組み込みストア、スナップショット読み取り | COW B木（LMDB/BoltDB） |
+| 更新の激しいカラム | インデックスから外す（HOTを有効化）。fillfactorを下げる |
+| 低カーディナリティのインデックス（status、type） | PG 13+の重複排除B木、またはホット値ごとの部分インデックス |
+| バッファプールより大きいインデックス+ランダムアクセス | I/Oバウンドな挙動を予期する。キーを縮め、未使用インデックスを削除し、さもなくばキャッシュミスの経済を受け入れる |
 
 ---
 
 ## 重要なポイント
 
-1. **B+木がデータベースを支配している** - リーフノードにデータを格納し、スキャンのためにリンクされています
-2. **Log(n)の操作** - どの操作でも少ないディスクアクセスで済みます
-3. **ページ分割はカスケードする** - 挿入が複数のページを変更する可能性があります
-4. **書き込み増幅は現実の問題** - 40倍も珍しくありません
-5. **同時実行制御は複雑** - 安全性のためのラッチクラビング
-6. **COWはリカバリを簡素化する** - より多くの書き込みの代償として
-7. **フィルファクタは調整可能** - 空間と書き込みパフォーマンスのトレードオフ
-8. **範囲スキャンは効率的** - 位置特定後のシーケンシャルアクセス
+1. **ページ読み取りを数え、そのうちどれがキャッシュ済みかを数える** — B木のルックアップは高さ分のアクセスで、上位2〜3レベルは実質無料。設計全体がファンアウト最大化のために存在する。
+2. **どこもかしこもB+**: 値はリーフに、切り詰められたセパレータは内部ノードに、リーフは兄弟連結でスキャンに備える。
+3. **書き込み増幅はページサイズ+ログサイズ** — 最悪ケースで数百倍、償却で2〜10倍。チェックポイント頻度とフルページイメージがスパイクを決める。
+4. **キーの順序は第一級の設計判断** — シーケンシャルキーはページを詰めキャッシュに美しく乗る（が右端で競合する）。ランダムUUIDは木を約1.4倍膨らませ、リーフレベル全体をワーキングセットに変える。
+5. **削除はB木を縮めない** — 縮めるのは再構築だけ。ブロートは異常ではなく、監視され管理される量である。
+6. **モダンな並行性は楽観的+横方向** — バージョン検証付き降下とB-linkの兄弟ポインタであり、ルートラッチの行列ではない。
+7. **クラスタ化設計では主キーはすべてのインデックスの一部** — 短く単調な主キーはスタイルの好みではなくストレージの意思決定。
+8. **B木/LSMの選択は更新の局所性の問題** — ホットな行への繰り返し更新はB木に有利、大量のユニークキーインジェストはLSMに有利。
+
+---
+
+## 参考文献
+
+- Bayer, R., & McCreight, E. (1972). *Organization and Maintenance of Large Ordered Indexes*. Acta Informatica.
+- Comer, D. (1979). *The Ubiquitous B-Tree*. ACM Computing Surveys.
+- Lehman, P., & Yao, S. B. (1981). *Efficient Locking for Concurrent Operations on B-Trees*. TODS. (B-link trees.)
+- Graefe, G. (2011). *Modern B-Tree Techniques*. Foundations and Trends in Databases. (The comprehensive survey.)
+- Leis, V., et al. (2019). *Optimistic Lock Coupling: A Scalable and Efficient General-Purpose Synchronization Method*. IEEE Data Eng. Bulletin.
+- Brodal, G., & Fagerberg, R. (2003); Bender, M., et al. — B^ε-tree / write-optimization line of work behind TokuDB/PerconaFT.
+- PostgreSQL documentation: *nbtree README*, B-tree deduplication (13), bottom-up deletion (14); `pageinspect`, `pgstattuple`.
+- MySQL/InnoDB documentation: clustered indexes, change buffer, adaptive hash index.
