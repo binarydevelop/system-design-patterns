@@ -231,6 +231,11 @@ const sidebarEN = [
       { text: 'Recommendation Systems', link: '/16-ml-systems/07-recommendation-systems' },
       { text: 'Online Experiments', link: '/16-ml-systems/08-online-experiments' },
       { text: 'ML Risk & Governance', link: '/16-ml-systems/09-ml-risk-governance' },
+      { text: 'Label & Ground-Truth Systems', link: '/16-ml-systems/10-label-ground-truth-systems' },
+      { text: 'Dataset Management & Versioning', link: '/16-ml-systems/11-dataset-management-versioning' },
+      { text: 'Offline Evaluation & Metrics', link: '/16-ml-systems/12-offline-evaluation-metrics' },
+      { text: 'Model Registry & Metadata', link: '/16-ml-systems/13-model-registry-metadata' },
+      { text: 'ML Capacity & Cost Planning', link: '/16-ml-systems/14-ml-capacity-cost-planning' },
     ]
   },
   {
@@ -594,6 +599,11 @@ export default withMermaid({
                 { text: '推薦システム', link: '/ja/16-ml-systems/07-recommendation-systems' },
                 { text: 'オンライン実験', link: '/ja/16-ml-systems/08-online-experiments' },
                 { text: 'MLリスクとガバナンス', link: '/ja/16-ml-systems/09-ml-risk-governance' },
+                { text: 'ラベルとグラウンドトゥルース', link: '/ja/16-ml-systems/10-label-ground-truth-systems' },
+                { text: 'データセット管理とバージョニング', link: '/ja/16-ml-systems/11-dataset-management-versioning' },
+                { text: 'オフライン評価とメトリクス設計', link: '/ja/16-ml-systems/12-offline-evaluation-metrics' },
+                { text: 'モデルレジストリとMLメタデータ', link: '/ja/16-ml-systems/13-model-registry-metadata' },
+                { text: 'MLキャパシティとコストプランニング', link: '/ja/16-ml-systems/14-ml-capacity-cost-planning' },
               ]
             },
             {
