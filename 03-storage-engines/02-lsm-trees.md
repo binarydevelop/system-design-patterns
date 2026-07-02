@@ -2,525 +2,161 @@
 
 ## TL;DR
 
-Log-Structured Merge Trees trade read performance for write performance. Writes go to an in-memory buffer, then flush to immutable sorted files on disk. Background compaction merges files to maintain read performance. LSM trees excel at write-heavy workloads and are used by LevelDB, RocksDB, Cassandra, and HBase.
+The Log-Structured Merge tree is the answer to one question: what if the storage engine never performed a random write? All writes land in a sorted in-memory buffer and reach disk only as sequential flushes of immutable sorted files (SSTables); background *compaction* merges those files to keep reads and space in check. The price is that a key no longer lives in one place — reads must consult many runs (read amplification), compaction rewrites data many times (write amplification), and obsolete versions linger until merged away (space amplification). The three amplifications form a triangle: no compaction strategy wins all three, which is why leveled/tiered/FIFO exist and why LSM tuning is workload engineering, not configuration. LSMs power RocksDB (and through it CockroachDB, TiKV, YugabyteDB), Cassandra/ScyllaDB, and HBase — essentially every write-heavy distributed store. This chapter builds the structure, quantifies the triangle, and covers the production surface: RocksDB tuning, tombstone pathologies, write stalls, and monitoring.
 
 ---
 
 ## The Write Problem
 
-### B-Tree Write Cost
+A [B-tree](./01-b-trees.md) updates data in place. For a workload of small writes with random keys, that means a page-sized read-modify-write per update, scattered across the whole index:
 
 ```
-B-tree random write:
-  1. Find page (random read)
-  2. Modify page
-  3. Write page back (random write)
-  4. Write to WAL (sequential)
-  
-Random I/O is slow, especially on HDDs
+B-tree, 100-byte insert with a random key, 8 KB pages:
+  1. read the target leaf page      (random read — a miss once the
+                                     tree exceeds the buffer pool)
+  2. modify 100 bytes in memory
+  3. WAL the change                 (sequential — cheap)
+  4. eventually write the page back (random 8 KB write)
+
+Per-insert device cost at steady state: ~1 random read + ~1 random write
+  HDD  (~100-200 IOPS):    → low hundreds of inserts/sec. Catastrophic.
+  NVMe (~10⁵-10⁶ IOPS):    → fine, until it isn't (below)
 ```
 
-### LSM Solution
+The LSM removes the random I/O entirely:
 
 ```
-Convert random writes to sequential:
-  1. Buffer writes in memory (MemTable)
-  2. When full, flush to disk as sorted file
-  3. All disk writes are sequential
+LSM, same insert:
+  1. append to WAL                  (sequential)
+  2. insert into in-memory memtable (no disk)
+  ...later, amortized:
+  3. flush a FULL memtable (64-256 MB) as one sequential file write
+  4. compaction rewrites data in large sequential merges
 
-SSDs: Still faster (no erase-before-write)
-HDDs: Much faster (10-100x improvement)
+Every byte the device sees is part of a large sequential write.
+A single NVMe drive sustains 1-3 GB/s sequential — the ingest ceiling
+becomes compaction bandwidth, not IOPS.
 ```
+
+Two notes that survive the move from HDD to SSD. First, SSDs still strongly prefer large sequential writes: the FTL coalesces them into whole erase blocks, minimizing device-internal garbage collection and its write cliff (device-level write amplification compounds with the engine's). Second, immutable-file output is what makes the rest of the architecture fall out for free — checksummed, compressible, cache-friendly files that can be replicated or uploaded wholesale ([SSTables & Compaction](./03-sstables-compaction.md), [Object Storage](./08-object-storage.md)).
 
 ---
 
-## LSM Tree Structure
-
-### Overview
+## Structure and the Write Path
 
 ```mermaid
 graph TD
     W["Writes"] -->|"insert"| MT["MemTable<br/>(in-memory, sorted, mutable)"]
     MT -->|"flush when full"| IMT["Immutable MemTable<br/>(being flushed)"]
-    IMT -->|"write to disk"| L0[("Level 0<br/>SST · SST · SST<br/>(recent, unsorted between files)")]
+    IMT -->|"write to disk"| L0[("Level 0<br/>SST · SST · SST<br/>(recent, files may overlap)")]
     L0 -->|"compact"| L1[("Level 1<br/>SST · SST · SST · SST<br/>(sorted, non-overlapping)")]
-    L1 -->|"compact"| L2[("Level 2<br/>SST · SST · SST · SST<br/>(larger, non-overlapping)")]
+    L1 -->|"compact"| L2[("Level 2<br/>10× larger, non-overlapping")]
     L2 -->|"compact"| MORE["..."]
 ```
 
-### MemTable
+**The memtable** is a sorted in-memory structure — almost always a **skip list** (RocksDB, Cassandra, Pebble), not a balanced tree. The reasons are concurrency-shaped: a skip list supports lock-free concurrent inserts with simple epoch-based memory reclamation, and its flat node structure makes the sorted iteration during flush cheap. Writes are O(log n) memory operations; the WAL append ahead of them is the only disk touch on the write path.
+
+**The flush cycle:** when the memtable reaches its size limit (`write_buffer_size`, typically 64–256 MB), it is atomically swapped for a fresh one and becomes an *immutable memtable*; a background thread streams it to disk as a Level-0 SSTable and then truncates the corresponding WAL segment. Reads during the transition consult both memtables — no pause. The knob `max_write_buffer_number` bounds how many immutable memtables may pile up; if flush can't keep pace, the engine first throttles and then **stalls writes** — the LSM's signature failure mode, covered under monitoring.
 
 ```
-In-memory sorted structure:
-  - Red-black tree
-  - Skip list (common choice)
-  - B-tree
+Write path, end to end:
+  1. append to WAL                          → durability
+  2. insert into memtable                   → visibility
+  3. ack the client                         (total: 1 sequential append
+                                             + 1 in-memory insert)
+  4. [async] memtable full → immutable → flushed as L0 SSTable
+  5. [async] compaction merges L0 → L1 → ... in the background
 
-Properties:
-  - Fast writes: O(log n)
-  - Ordered for efficient flush
-  - Size limited (typically 64 MB)
+The client-visible latency contains no random I/O and no compaction —
+those are background costs, paid later. This deferral is both the
+LSM's superpower and its operational trap: ingest can outrun
+compaction for hours, and the debt comes due as read degradation
+and, eventually, write stalls.
 ```
 
-### SSTable (Sorted String Table)
-
-```
-Immutable file on disk:
-
-┌────────────────────────────────────────────┐
-│ Data Block 1 │ Data Block 2 │ ... │ Index │
-└────────────────────────────────────────────┘
-
-Data Block:
-  [key1, value1][key2, value2]...
-  Sorted by key
-  Compressed (LZ4, Snappy, Zstd)
-
-Index Block:
-  Sparse index: [key → block offset]
-  Find block, then binary search within
-```
+**Level 0 is special.** Each L0 file is a complete memtable snapshot, so L0 files overlap each other in key range — a read must check all of them. Every deeper level is one sorted run partitioned into non-overlapping files, so a read needs at most one file per level. Keeping L0 small is therefore the highest-priority compaction job.
 
 ---
 
-## Write Path
-
-### Step by Step
+## The Read Path
 
 ```
-1. Write to WAL (sequential, for durability)
-2. Write to MemTable (in-memory)
-3. Ack to client
+Get(key) — newest to oldest, first hit wins:
+  1. memtable
+  2. immutable memtable(s)
+  3. every L0 file, newest first        ← all may contain the key
+  4. one candidate file per level L1+   (binary search on file ranges)
 
-4. When MemTable full:
-   - Make current MemTable immutable
-   - Create new MemTable for writes
-   - Background: Flush immutable MemTable to SSTable
-
-5. Background compaction merges SSTables
+Runs to consult ≈ #L0 files + #levels ≈ 10 in a healthy tree.
+Without filters, a MISS costs ~10 file probes (index + data block each).
+With a bloom filter per SSTable at 1% FPR, expected wasted reads ≈ 0.1.
 ```
 
-### Code Example
+Bloom filters are what make LSM point reads competitive — the filter math, cache-line-aware layouts, per-level FPR allocation (Monkey), and the static alternatives (ribbon, binary fuse) are covered in depth in [Bloom Filters](./05-bloom-filters.md).
 
-```python
-class LSMTree:
-    def __init__(self):
-        self.wal = WriteAheadLog()
-        self.memtable = SkipList()
-        self.immutable_memtables = []
-        self.levels = [[] for _ in range(MAX_LEVELS)]
-        
-    def write(self, key, value):
-        # Durability: Write to log first
-        self.wal.append(key, value)
-        
-        # Then to memory
-        self.memtable.put(key, value)
-        
-        if self.memtable.size() > MEMTABLE_SIZE:
-            self.flush_memtable()
-    
-    def flush_memtable(self):
-        # Make immutable
-        self.immutable_memtables.append(self.memtable)
-        self.memtable = SkipList()
-        
-        # Schedule background flush
-        schedule(self.flush_to_l0)
-    
-    def flush_to_l0(self):
-        immutable = self.immutable_memtables.pop(0)
-        sstable = SSTable.create_from(immutable)
-        self.levels[0].append(sstable)
-        self.wal.truncate_flushed()
-```
+What filters cannot fix: **range scans**, which must merge-iterate every run (no filter can answer a range question), and **hot-key version pileup** — a key updated thousands of times between compactions exists in many runs, and its read must still find the newest. Read amplification is thus workload-dependent in a way B-tree reads aren't: a well-compacted LSM reads like a B-tree; a compaction-starved one reads like a linear scan over runs.
 
 ---
 
-## Read Path
+## Compaction: Paying the Deferred Bill
 
-### Search Order
+Compaction merges sorted runs, keeping only the newest version of each key and (eventually) dropping tombstones. It exists because without it every deferred cost compounds: L0 grows unbounded (read amp ↑), obsolete versions accumulate (space amp ↑), and nothing is ever reclaimed.
 
-```
-1. Check MemTable
-2. Check Immutable MemTables (if any)
-3. Check Level 0 SSTables (all of them, might overlap)
-4. Check Level 1+ (binary search, non-overlapping)
-5. Return value or "not found"
-```
-
-### Optimization: Bloom Filters
+The strategy space is a spectrum between two poles:
 
 ```
-Before reading SSTable from disk:
-  Check Bloom filter
+Size-tiered (STCS): collect ~4 runs of similar size, merge into one
+  run in the next tier. Each key is rewritten ~once per tier.
+  → LOW write amp, HIGH read amp (many runs), HIGH space amp
+    (duplicates of a key may exist once per tier; worst case ~2×+)
 
-if bloom_filter.might_contain(key):
-    read_sstable()  # Might be there
-else:
-    skip()  # Definitely not there (false positive rate ~1%)
-    
-Reduces disk reads for non-existent keys
+Leveled (LCS): maintain one sorted run per level, levels sized
+  L(i+1) = 10 × L(i). Compacting a file merges it with the ~10
+  overlapping files below — each key is rewritten ~10× per level.
+  → HIGH write amp (~10 per level), LOW read amp (1 file/level),
+    LOW space amp (~1.1×)
+
+FIFO: no merging at all; delete oldest files past a size/TTL bound.
+  → for data whose value expires (metrics, logs)
 ```
 
-The filter math, cache-line-aware layouts, per-level FPR allocation (Monkey), and the static alternatives (ribbon, binary fuse) are covered in depth in [Bloom Filters](./05-bloom-filters.md).
-
-### Read Amplification
-
-```
-Worst case (key doesn't exist):
-  MemTable: 1 check
-  L0: N SSTables (all overlap)
-  L1: 1 SSTable
-  L2: 1 SSTable
-  ...
-  
-Total: 1 + N + (L-1) checks
-
-Bloom filters reduce actual disk reads
-```
-
----
-
-## Compaction
-
-### Why Compact?
-
-```
-Without compaction:
-  - Many overlapping files in L0
-  - Same key in multiple SSTables
-  - Read performance degrades
-  - Disk space wasted (obsolete values)
-
-Compaction:
-  - Merges SSTables
-  - Removes duplicates (keep latest)
-  - Removes tombstones
-  - Improves read performance
-```
-
-### Compaction Strategies
-
-**Size-Tiered (STCS):**
-```
-Merge SSTables of similar size
-
-When N SSTables of size S exist:
-  Merge into 1 SSTable of size ~N*S
-
-Pros: Simple, good write amplification
-Cons: Space amplification (need 2x during compaction)
-```
-
-**Leveled (LCS):**
-```
-Each level has size limit: L(i) = L0 * ratio^i
-Files in level are non-overlapping
-
-When level exceeds limit:
-  Pick file, merge with overlapping files in next level
-
-Pros: Controlled space, better read performance
-Cons: Higher write amplification
-```
-
-**FIFO:**
-```
-Delete oldest SSTables when size limit reached
-No merge, just deletion
-
-Use case: Time-series data with TTL
-```
-
----
-
-## Write Amplification
-
-### Definition
-
-```
-Write amplification = (Total bytes written to disk) / (Bytes written by user)
-
-Sources:
-  1. WAL write
-  2. MemTable flush
-  3. Compaction (data rewritten multiple times)
-```
-
-### Leveled Compaction Math
-
-```
-Level ratio = 10
-Data moves through ~L levels
-
-At each level:
-  Key might be rewritten ~10 times (merge with 10 files)
-
-Total: ~10 * L writes per key
-For 1 TB data, 4 levels: ~40x write amplification
-```
-
-### Trade-offs
-
-| Strategy | Write Amp | Space Amp | Read Amp |
-|----------|-----------|-----------|----------|
-| Size-tiered | Low | High | High |
-| Leveled | High | Low | Low |
-| FIFO | None | None | N/A |
-
----
-
-## Space Amplification
-
-### Causes
-
-```
-1. Obsolete values
-   Key updated multiple times, old values not yet compacted
-
-2. Tombstones
-   Deleted keys, tombstones not yet garbage collected
-
-3. Compaction temp space
-   During compaction, both old and new SSTables exist
-```
-
-### Size-Tiered Space
-
-```
-Worst case: All SSTables being compacted simultaneously
-Space needed: 2x actual data size
-
-Typical: 1.5-2x data size
-```
-
-### Leveled Space
-
-```
-Bounded by level ratio
-Typical: 1.1x data size
-
-Lower because:
-  - Non-overlapping files per level
-  - Incremental compaction
-```
+Mechanics — file formats, merge iterators, tombstone GC rules, scheduling, trivial moves, subcompactions — live in [SSTables & Compaction](./03-sstables-compaction.md). The strategy comparison and selection guidance appear later in this chapter, after the amplification math that motivates them.
 
 ---
 
 ## Deletes and Tombstones
 
-### Problem
+An immutable-file design cannot remove a key by touching old files; a delete is a *write* of a tombstone marker that shadows older versions:
 
 ```
-Naive delete:
-  Remove key from MemTable
-  
-But key might exist in SSTables!
-Next read might find old value
+delete(k)  →  write (k, TOMBSTONE, seq)
+
+Read:  sees tombstone first (it's newest) → "not found"
+Compaction: tombstone erases older versions of k it meets...
+  ...but the tombstone itself can only be dropped when it reaches
+  the bottom level (or provably overlaps no older data) — otherwise
+  a yet-unmerged older version would "resurrect".
+  Plus (Cassandra): not before gc_grace_seconds, so the tombstone
+  has time to replicate to nodes that missed the delete — dropping
+  it early resurrects data cluster-wide via repair.
 ```
 
-### Tombstone Solution
+Consequences worth designing around:
 
-```
-Write special "tombstone" marker:
-  write(key, TOMBSTONE)
-
-Read returns "not found" when tombstone seen
-Tombstone propagates through compaction
-Eventually garbage collected at bottom level
-```
-
-### Tombstone Compaction
-
-```
-Tombstone can only be removed when:
-  - It has reached the bottom level
-  - All older versions are removed
-  
-Long-lived tombstones = space overhead
-```
+- **Deletes consume space before they release it.** A mass delete makes the dataset *larger* until compaction carries the tombstones to the bottom. Deleting a table's worth of rows the night before a capacity review is a classic self-own.
+- **The queue anti-pattern.** Using an LSM table as a FIFO queue (insert, read, delete) accumulates tombstones at the head; every "read next" scans over millions of tombstoned entries before finding a live row. Cassandra emits `TombstoneOverwhelmingException` for exactly this. Queues belong in [message queues](../05-messaging/01-message-queues.md), or at minimum in time-bucketed tables dropped wholesale (the FIFO/TWCS pattern).
+- **Range tombstones** (delete a whole prefix/partition in one marker) are far cheaper to write than per-key tombstones but make reads carry the range marker until compaction resolves it — bounded use only.
+- **TTL data**: prefer natural-expiry strategies (FIFO/TWCS) where whole files age out — deletion by file drop costs zero compaction work and zero tombstones.
 
 ---
 
-## LSM Tree Tuning
-
-### Key Parameters
+## The Amplification Triangle
 
 ```
-memtable_size:
-  Larger: Better write throughput, longer recovery
-  Typical: 64 MB - 256 MB
-
-level0_file_num_compaction_trigger:
-  Files in L0 before compaction triggers
-  Larger: Better write, worse read
-  Typical: 4
-
-level_ratio (max_bytes_for_level_multiplier):
-  Size ratio between levels
-  Larger: Fewer levels, more write amp
-  Typical: 10
-
-write_buffer_count:
-  Number of MemTables before stalling
-  Typical: 2-4
+Write Amplification (WA) = bytes written to device / bytes written by app
+Read Amplification (RA)  = device reads per logical read
+Space Amplification (SA) = bytes on device / logical data size
 ```
-
-### Bloom Filter Sizing
-
-```
-Bits per key: 10 = ~1% false positive
-Bits per key: 15 = ~0.1% false positive
-
-More bits = Less reads, more memory
-Typical: 10 bits per key
-```
-
-### Compression
-
-```
-Level 0-1: LZ4/Snappy (fast, moderate compression)
-Level 2+:  Zstd (better compression, slower)
-
-Trade-off: CPU for I/O
-SSDs favor faster compression
-```
-
----
-
-## Systems Using LSM Trees
-
-### LevelDB / RocksDB
-
-```
-Google's LevelDB: Original, simple
-Facebook's RocksDB: Production-hardened, many features
-
-RocksDB additions:
-  - Column families
-  - Transactions
-  - Multiple compaction styles
-  - Statistics and monitoring
-```
-
-### Cassandra
-
-```
-Each table has its own LSM tree
-Compaction strategies configurable per table
-
-Size-tiered: Default (good for write-heavy)
-Leveled: Better for read-heavy
-Time-window: Time-series data
-```
-
-### HBase
-
-```
-LSM-based on HDFS
-MemStore (MemTable) → HFiles (SSTables)
-
-Major compaction: Merge all files
-Minor compaction: Merge some files
-```
-
----
-
-## B-Tree vs LSM Tree
-
-| Aspect | B-Tree | LSM Tree |
-|--------|--------|----------|
-| Write | Random I/O | Sequential I/O |
-| Read | 1 lookup | Multiple lookups |
-| Write amp | ~10x | ~10-30x |
-| Space amp | ~1.5x | ~1.1-2x |
-| Compaction | None | Background |
-| Range scan | Excellent | Good |
-| Point lookup | Excellent | Good |
-
-### When to Use LSM
-
-```
-✓ Write-heavy workloads
-✓ Sequential write patterns (time-series)
-✓ SSD-based storage (tolerates read amp)
-✓ Key-value stores
-✓ Need high write throughput
-
-✗ Read-heavy workloads
-✗ Complex queries
-✗ Latency-sensitive reads
-✗ Predictable performance needed
-```
-
----
-
-## Write Amplification Deep Dive
-
-### Formal Definition
-
-```
-Write Amplification (WA) = Total bytes written to storage device
-                           ─────────────────────────────────────
-                           Total bytes written by application
-
-A WA of 20× means for every 1 GB the application writes,
-the storage engine writes 20 GB to disk.
-```
-
-### Leveled Compaction WA
-
-```
-WA = O(L × size_ratio)
-
-Where:
-  L          = number of levels
-  size_ratio = level size multiplier (typically 10)
-
-Example (RocksDB defaults):
-  6 levels, size_ratio = 10
-  Each key may be rewritten up to size_ratio times per level
-  WA ≈ 10–30× in practice
-
-  For a 1 TB dataset:
-    L0: 256 MB  →  L1: 2.56 GB  →  L2: 25.6 GB  →  L3: 256 GB  →  L4: 1 TB
-    A single key written to L0 may be compacted through every level,
-    each time merged with ~10 neighboring SSTables.
-```
-
-### Tiered Compaction WA
-
-```
-WA = O(T × levels)
-
-Where:
-  T = number of runs accumulated per tier before merge (typically 4)
-
-Example (Cassandra STCS defaults):
-  4 tiers before merge, ~4 levels deep
-  WA ≈ 4–10× in practice
-
-Lower WA because each merge combines same-tier files
-rather than rewriting into a fully sorted level.
-```
-
-### Measuring WA in RocksDB
-
-```
-RocksDB exposes counters in its statistics:
-  rocksdb.compact.write.bytes   — bytes written by compaction
-  rocksdb.flush.write.bytes     — bytes written by flush
-  rocksdb.bytes.written         — bytes written by application (Put/Merge/Delete)
-
-  WA = (compact.write.bytes + flush.write.bytes) / bytes.written
-
-Monitor via:
-  db->GetProperty("rocksdb.stats", &stats);
-  or the LOG file section "Cumulative compaction"
-```
-
-### The Amplification Tradeoff Triangle
 
 ```mermaid
 graph TD
@@ -533,12 +169,53 @@ graph TD
     PICK -.- NOTE3["Hybrid: middle ground on all three"]
 ```
 
-```
-Concrete numbers (RocksDB leveled, size_ratio=10, 6 levels):
-  WA ≈ 20×  |  SA ≈ 1.1×  |  RA ≈ 1 disk read per point lookup (with bloom)
+### Leveled WA, derived
 
-This triangle drives every LSM tuning decision.
 ```
+WA(leveled) ≈ 1 (WAL) + 1 (flush) + size_ratio × (#levels - 1)
+                                     ↑ each level rewrite merges the
+                                       moving file with ~size_ratio
+                                       overlapping files below
+
+Example (RocksDB defaults, size_ratio = 10):
+  1 TB dataset → levels: 256 MB → 2.5 GB → 25 GB → 250 GB → 1 TB (5 levels)
+  WA ≈ 2 + 10 × 4 ≈ 40× worst case; 10-30× measured in practice
+  (measured is lower: trivial moves, keys that die young in upper
+   levels, and skew all reduce rewrites)
+
+Consequence: sustained ingest of 100 MB/s at WA 20 = 2 GB/s of
+compaction writes. THIS is the number to check against device
+bandwidth — not the application write rate.
+```
+
+### Tiered WA, derived
+
+```
+WA(tiered) ≈ 1 + 1 + (#tiers)      — each key rewritten ~once per tier
+Example (Cassandra STCS, ~4 tiers): WA ≈ 4-10×
+
+The saving comes from merging same-size runs instead of pushing into
+a fully-sorted level; the cost is carrying T overlapping runs per tier
+(read amp) and up to a full duplicate of the dataset mid-merge (space).
+Worst-case STCS space: a single giant compaction needs input + output
+live simultaneously — budget 50%+ disk headroom.
+```
+
+### Measuring WA in RocksDB
+
+```
+  rocksdb.compact.write.bytes   — bytes written by compaction
+  rocksdb.flush.write.bytes     — bytes written by flush
+  rocksdb.bytes.written         — bytes written by application
+
+  WA = (compact.write.bytes + flush.write.bytes) / bytes.written
+
+Or read the LOG file's "Cumulative compaction" section.
+Concrete healthy reference (leveled, ratio 10, 6 levels):
+  WA ≈ 20×  |  SA ≈ 1.1×  |  RA ≈ 1 disk read per point lookup (with bloom)
+```
+
+The research frontier formalizes the triangle: **Monkey** (SIGMOD '17) optimizes filter-memory allocation across levels; **Dostoevsky** (SIGMOD '18) shows leveled and tiered are endpoints of a continuum ("lazy leveling") and picks the merge policy per level. RocksDB's universal compaction and ScyllaDB's ICS are production steps along the same continuum.
 
 ---
 
@@ -703,9 +380,9 @@ ScyllaDB Incremental Compaction Strategy (ICS):
 RocksDB is the storage engine beneath most modern distributed databases:
 
 CockroachDB:
-  Uses RocksDB (migrating to Pebble, a Go rewrite) for MVCC key-value storage.
-  Each range (partition) is a RocksDB column family.
-  Leveled compaction. Heavy use of prefix bloom filters.
+  Migrated from RocksDB to Pebble (a Go reimplementation of the same
+  design) for MVCC key-value storage. Leveled compaction; heavy use
+  of prefix bloom filters.
 
 TiDB (TiKV):
   Rust-based storage node embedding RocksDB.
@@ -721,7 +398,8 @@ YugabyteDB (DocDB):
 
 ```
 LevelDB (Google, 2011):
-  Original reference implementation by Jeff Dean and Sanjay Ghemawat.
+  Original reference implementation by Jeff Dean and Sanjay Ghemawat,
+  distilling the Bigtable tablet design.
   Used by Bitcoin Core for UTXO set, Chrome for IndexedDB.
   Single-threaded compaction, no column families.
   Still useful for embedded, single-writer use cases.
@@ -847,13 +525,55 @@ Parse these with a log shipper and alert on occurrence count.
 
 ---
 
+## B-Tree vs LSM: The Real Decision
+
+| Aspect | B-Tree | LSM Tree |
+|--------|--------|----------|
+| Write path | Random page RMW, immediate | Sequential append, deferred merge |
+| Write amp | 2–10× amortized, page-sized spikes | 10–30× (leveled), paid in background |
+| Point read | height page accesses, mostly cached | memtable + ~1 disk read (with bloom) |
+| Range scan | Excellent (sibling-linked leaves) | Good (k-way merge across runs) |
+| Space amp | 1.3–2× (fill factor, bloat) | 1.1× (leveled) to 2× (tiered) |
+| Latency profile | Steady | Steady until compaction debt → stalls |
+| Hot-row updates | Nearly free (same page) | Every version rewritten through levels |
+| Concurrency cost | Latching complexity | Immutable files: trivial snapshot reads |
+
+```
+Choose LSM when:
+  ✓ Ingest rate is the defining requirement (events, time-series, logs)
+  ✓ Keys are write-once or write-rarely (unique IDs, append streams)
+  ✓ Sequential-write economics matter (SSD endurance, cloud disks)
+  ✓ You want immutable files for replication/backup/tiering
+
+Choose B-tree when:
+  ✓ Read latency predictability is the defining requirement
+  ✓ Hot rows are updated repeatedly (update locality)
+  ✓ Rich transactional workloads (the RDBMS ecosystem is B-tree-shaped)
+  ✗ Don't choose LSM to "make writes fast" if your write rate is
+    modest — you'll pay the read and operational tax for nothing.
+```
+
+---
+
 ## Key Takeaways
 
-1. **Writes to memory first** - Sequential disk writes via flush
-2. **SSTables are immutable** - Append-only design
-3. **Compaction is essential** - Maintains read performance
-4. **Trade-off triangle** - Write amp, read amp, space amp
-5. **Bloom filters critical** - Reduce disk reads
-6. **Leveled for reads** - Size-tiered for writes
-7. **Tombstones have cost** - Delayed garbage collection
-8. **Tuning is workload-specific** - No universal configuration
+1. **LSM = never write randomly**: WAL + memtable + sequential flush; all random-I/O cost is converted into background sequential merge work.
+2. **The triangle is the whole theory** — write amp, read amp, space amp; leveled and tiered are its two poles and every "new" strategy is a point between them.
+3. **Compaction bandwidth is the real ingest ceiling**: sustained app writes × WA must fit in device sequential bandwidth, with headroom for reads.
+4. **L0 is the pressure gauge** — file count there drives read amp and triggers the slowdown → stall ladder; alert on it.
+5. **Deletes are writes** and tombstones have a lifecycle; mass deletes grow the dataset first, and FIFO/time-window strategies delete for free what compaction deletes expensively.
+6. **Bloom filters are load-bearing**, not an optimization — without them every point read pays the run count ([Bloom Filters](./05-bloom-filters.md)).
+7. **Immutable SSTables are the quiet win**: trivial snapshots, checksummed replication units, per-level compression, cloud tiering.
+8. **Tune against measurements** — WA from compaction counters, stall micros, L0 count, pending compaction bytes; the defaults encode someone else's workload.
+
+---
+
+## References
+
+- O'Neil, P., Cheng, E., Gawlick, D., & O'Neil, E. (1996). *The Log-Structured Merge-Tree*. Acta Informatica.
+- Chang, F., et al. (2006). *Bigtable: A Distributed Storage System for Structured Data*. OSDI. (The design LevelDB distilled; see [Bigtable whitepaper chapter](../09-whitepapers/03-bigtable.md).)
+- Dong, S., et al. (2017). *Optimizing Space Amplification in RocksDB*. CIDR.
+- Dayan, N., Athanassoulis, M., & Idreos, S. (2017). *Monkey: Optimal Navigable Key-Value Store*. SIGMOD.
+- Dayan, N., & Idreos, S. (2018). *Dostoevsky: Better Space-Time Trade-Offs for LSM-Tree Based Key-Value Stores*. SIGMOD.
+- Luo, C., & Carey, M. (2020). *LSM-based Storage Techniques: A Survey*. VLDB Journal.
+- RocksDB Wiki: *Compaction*, *Write Stalls*, *Tuning Guide*; ScyllaDB docs: *Incremental Compaction Strategy*.

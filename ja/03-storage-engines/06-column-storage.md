@@ -541,6 +541,112 @@ PostgreSQL:
 
 ---
 
+## ArrowとParquet: メモリ内 vs 保存時
+
+カラムナの世界が*2つの*フォーマットに標準化したのは、最適化の対象が異なるからです:
+
+```
+Parquet (at rest): optimize for SIZE and skippability.
+  Heavy encodings (dictionary, RLE, bit-packing) + block compression.
+  Values are NOT randomly accessible — you decode a page to read it.
+
+Arrow (in memory): optimize for COMPUTE.
+  Fixed-width arrays, validity bitmaps, contiguous buffers — a value
+  is at base + i × width, SIMD-scannable directly, no decode step.
+  The same buffer layout in every language (C++, Rust, Java, Python
+  via zero-copy FFI) — "serialization" between processes sharing
+  Arrow is memcpy or shared memory, not encode/decode.
+
+The pipeline every modern engine runs:
+  Parquet page → decode once → Arrow batch → all further operators
+  (filter, join, aggregate) work on Arrow vectors.
+  Arrow Flight / ADBC move Arrow batches over the network, replacing
+  row-at-a-time protocols (JDBC/ODBC) that spend more CPU converting
+  than transferring.
+```
+
+実務上の帰結: 「どちらのフォーマット？」は選択ではありません — Parquet*と*Arrowであり、境界はスキャンにあります。選択なのは: その境界より下に仕事を押し込むこと（Parquetリーダーへの述語/射影プッシュダウン）で、デコードされるページ自体を減らすことです。
+
+### ベクトル化実行を具体的に
+
+```
+SELECT SUM(amount) WHERE region_code = 7    (1M rows)
+
+Row engine:  1M × (interpret row layout → extract field → branch → add)
+             ~5-20 ns per row of interpretation overhead
+
+Vectorized engine on Arrow batches (~1K-4K values per batch):
+  region_code: compare 32 codes per AVX-512 instruction → bitmask
+  amount:      masked SIMD add, 16 int32s per instruction
+  ≈ 1M rows / 16 per instr ≈ 62K instructions + branch-free selection
+  → 10-100× less CPU per row; memory bandwidth becomes the limit
+
+Two details that make it work:
+  - dictionary-encoded columns can evaluate predicates on the CODES
+    (compare against the dictionary once, then scan small integers)
+  - selection vectors/bitmaps defer materialization — operators pass
+    "which rows survive" instead of copying survivors
+```
+
+---
+
+## 本当のインデックスはソート順
+
+カラムストアでは、物理的なソート順がOLTPにおけるB木インデックスの仕事をします — 圧縮率と、スキャンがどれだけデータをスキップできるかの両方を決めます:
+
+```
+Same 1B-row events table, two layouts:
+
+Sorted by (event_time):
+  event_time: delta encoding → ~1-2 bits/value
+  zone maps on event_time: a 1-day query scans ~1/365 of row groups
+  but: WHERE user_id = X must scan EVERY row group (user_id is
+  scattered — its per-group min/max spans the whole domain)
+
+Sorted by (user_id, event_time):
+  user_id: RLE → almost free; queries by user prune to a few groups
+  event_time: still locally sorted within a user → decent deltas
+  but: pure time-range queries now scan everything
+
+The sort key is a QUERY WORKLOAD decision, revisited as workloads
+change. Multi-dimensional compromise: Z-order / Hilbert curves
+interleave dimensions so BOTH user_id and event_time predicates
+prune reasonably (Delta OPTIMIZE ZORDER BY, Iceberg sort orders,
+ClickHouse ORDER BY tuple).
+```
+
+そしてインジェストがソート順で届くことは稀なので、クラスタリングは*減衰*します: ストリームされたデータは到着順に着地し、ゾーンマップは広がり、スキャンは遅くなります。エンジンはバックグラウンドで再ソートします（Snowflakeの自動クラスタリング、Delta/Icebergのソート付きコンパクション）— LSMコンパクションのカラムナ版であり、同じ通貨（バックグラウンドのI/Oと計算）で支払います。
+
+---
+
+## 書き直しなしの更新: 削除ベクトル
+
+古典的なカラムナの更新はcopy-on-writeでした: 1行を変えるためにローグループ全体（下手をすると128MBのファイル）を書き直す。モダンなテーブルフォーマットはmerge-on-readの中間路を追加しました:
+
+```
+Deletion vector: a compressed bitmap (often roaring) per data file
+marking rows as dead. DELETE/UPDATE writes:
+  - a tiny deletion-vector file (positions of deleted rows)
+  - (for UPDATE) the new row versions into a new file
+The 128 MB data file is untouched.
+
+Read path: scan file ⊕ apply its deletion vector — a masked scan,
+nearly free in a vectorized engine (it's just another bitmap AND).
+
+The LSM parallel is exact: deletion vectors are tombstones, readers
+pay a small merge cost, and background compaction eventually rewrites
+files to fold deletes in. Same debt dynamics too — millions of
+accumulated deletes without compaction degrade scans, so table
+maintenance (OPTIMIZE / rewrite_data_files) is an operational duty,
+not an optimization.
+
+(Iceberg v2 position/equality deletes, Delta deletion vectors,
+DuckDB and Photon read them natively — see
+[レイクハウステーブルフォーマット](../13-data-pipelines/05-lakehouse-table-formats.md).)
+```
+
+---
+
 ## まとめ
 
 1. **カラムストレージは必要なカラムのみ読み取る** - 大幅なI/O削減

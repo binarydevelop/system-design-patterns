@@ -2,738 +2,312 @@
 
 ## TL;DR
 
-Data encoding serializes in-memory data structures into bytes for storage or transmission. Choose based on trade-offs: JSON/XML for human readability, Protocol Buffers/Thrift for efficiency and schema evolution, Avro for dynamic schemas. Schema evolution is critical for long-lived systems—forward and backward compatibility prevent breaking changes.
+Encoding is the contract between your data and time. Every byte that crosses a durable boundary — disk, network, queue — outlives the code that wrote it, and will be read by code that doesn't exist yet. That makes encoding two problems wearing one name: a *performance* problem (JSON parses at ~100 MB/s and triples payload size; Protobuf does 5–10× better; zero-copy formats skip parsing entirely) and a *compatibility* problem (can last year's consumer read tomorrow's producer's output, and vice versa?). The compatibility problem is the one that causes outages: it's governed by mechanical rules — Protobuf's field tags, Avro's reader/writer schema resolution, the reserved-number discipline — and enforced, in mature systems, by a schema registry that rejects breaking changes at CI time instead of discovering them at 3 a.m. This chapter covers the wire formats and why they're shaped that way, the evolution rules per format, registry operations, and the failure modes (JSON number precision, tag reuse, required-field traps, data-lake schema drift) that recur across every company.
 
 ---
 
-## Why Encoding Matters
-
-### The Translation Problem
+## The Problem: Data Outlives Code
 
 ```
-In-memory object:
-  User {
-    id: 123,
-    name: "Alice",
-    emails: ["a@example.com", "b@example.com"]
+In-memory object:                       Must become bytes for:
+  User {                                  - disk (storage engines, backups)
+    id: 123,                              - network (RPC, APIs)
+    name: "Alice",                        - queues (events that sit for days)
+    emails: [...]                         - other languages entirely
   }
 
-Must become bytes for:
-  - Disk storage
-  - Network transmission
-  - Cross-language communication
+And the reverse, years later, by code that has been deployed
+hundreds of times since the bytes were written.
 ```
 
-### Key Considerations
+The asymmetry that drives all encoding design: **writes happen once, under one schema; reads happen forever, under every schema that will ever exist.** A rolling deploy means old and new code run *simultaneously* against the same topics and tables, so compatibility isn't a migration event — it's a permanent operating condition:
 
 ```
-1. Efficiency: Size and speed
-2. Schema evolution: Can we change the structure?
-3. Human readability: Debug-friendly?
-4. Language support: Cross-platform?
-5. Compatibility: Forward and backward?
+Backward compatibility:  NEW code reads OLD data
+  (required to deploy consumers first, and to read historical data —
+   missing fields must have defaults)
+
+Forward compatibility:   OLD code reads NEW data
+  (required to deploy producers first — unknown fields must be
+   skippable without breaking)
+
+Full compatibility = both = deploy in any order. Rolling deploys and
+multi-team ownership effectively demand full compatibility.
 ```
 
 ---
 
-## Text-Based Formats
-
-### JSON
+## Text Formats: JSON and Its Sharp Edges
 
 ```json
-{
-  "id": 123,
-  "name": "Alice",
-  "emails": ["a@example.com", "b@example.com"],
-  "active": true,
-  "balance": 99.99
-}
+{"id": 123, "name": "Alice", "emails": ["a@example.com"], "balance": 99.99}
 ```
 
-**Pros:**
-- Human readable
-- Universal language support
-- Self-describing (keys included)
-- Flexible (no schema required)
-
-**Cons:**
-- Verbose (repeated key names)
-- No binary data (base64 needed)
-- Numbers ambiguous (int vs float)
-- No schema enforcement
-
-### XML
-
-```xml
-<user>
-  <id>123</id>
-  <name>Alice</name>
-  <emails>
-    <email>a@example.com</email>
-    <email>b@example.com</email>
-  </emails>
-</user>
-```
-
-**Pros:**
-- Human readable
-- Rich schema support (XSD)
-- Namespaces for composition
-
-**Cons:**
-- Very verbose
-- Complex parsing
-- Slower than alternatives
-
-### Size Comparison
+JSON won the boundary between organizations — self-describing, universal, debuggable with eyeballs — and its costs are well-known (3–5× the bytes of binary, key names repeated per record, ~100 MB/s parse throughput, base64 for binary data). Less well-known are the sharp edges that cause real incidents:
 
 ```
-Same data:
-  JSON: 95 bytes
-  XML:  153 bytes
-  Protocol Buffers: 33 bytes
+Number precision: JSON has ONE number type — IEEE-754 double.
+  Integers above 2⁵³ silently lose precision in JavaScript and many
+  parsers. Twitter's snowflake IDs (64-bit) famously broke JS clients:
+    {"id": 10765432100123456789}  → parsed as ...456780
+  Fix: serialize 64-bit IDs as strings ("id_str"), or use a
+  big-integer-aware parser. This bug ships to production constantly.
 
-3-5x size difference affects:
-  - Storage costs
-  - Network bandwidth
-  - Parse time
+No schema = no contract: a "compatible" change is whatever your
+  most fragile consumer's hand-written parsing tolerates. null vs
+  absent-field vs "" distinctions differ per language and library.
+
+Duplicate keys, key ordering, NaN/Infinity: all
+  implementation-defined. Canonicalization (for signing/hashing JSON)
+  is a minefield — see JCS (RFC 8785) before hashing JSON.
 ```
+
+XML survives where its schema machinery (XSD, namespaces) or document orientation is genuinely used — SOAP-era enterprise, config, documents. For data records it's strictly dominated. YAML is for humans editing config, never for machine-to-machine data (implicit typing: `no` parses as `false`, `3.10` as `3.1`).
 
 ---
 
-## Binary Formats
+## Binary Formats: Three Different Bets
 
-### Protocol Buffers (Protobuf)
+### Protobuf: tag numbers on the wire
 
-Schema definition (`.proto`):
 ```protobuf
 message User {
-  int32 id = 1;
+  int32 id = 1;                //  ← the "= 1" is the wire identity
   string name = 2;
   repeated string emails = 3;
-  bool active = 4;
-  double balance = 5;
 }
 ```
 
-Wire format:
 ```
-Field 1 (id): [tag: 08][value: 7B]  // 123 in varint
-Field 2 (name): [tag: 12][length: 05][data: Alice]
-Field 3 (emails): [tag: 1A][length: 0D][data: a@example.com]
-...
+Wire format: a stream of (tag, wire-type, value) triples
+  field 1 (id=123):    08 7B          — tag+type: 1 byte, varint value
+  field 2 ("Alice"):   12 05 41 6c 69 63 65   — tag, length, bytes
+
+Varint: 7 bits per byte, high bit = continuation.
+  0-127 → 1 byte; 300 → 2 bytes. Small numbers are nearly free.
+  (sint32/64 add ZigZag: maps -1→1, 1→2 so negatives stay small.)
+
+The consequences of tags-on-wire:
+  + unknown tags are SKIPPABLE (wire type tells the length)
+    → forward compatibility is structural, not optional
+  + field NAMES are compile-time only — renaming a field is free
+  - the tag number IS the field's identity forever
+    → reusing a tag misinterprets old data with the new field's type:
+      silent corruption, the worst failure mode in this chapter
 ```
 
-**Pros:**
-- Compact binary format
-- Strong typing
-- Schema evolution support
-- Fast serialization
-- Generated code
+### Avro: no tags, schema does the work
 
-**Cons:**
-- Not human readable
-- Requires schema
-- Field tags must be unique
+```json
+{"type": "record", "name": "User", "fields": [
+  {"name": "id", "type": "int"},
+  {"name": "name", "type": "string"}
+]}
+```
 
-### Thrift
+```
+Wire format: just concatenated values, in schema order. No tags,
+no field names, no lengths where the type implies them.
+  → the smallest payloads of any general format
+  → but UNREADABLE without the writer's exact schema
 
-Similar to Protobuf, from Facebook.
+Reading = schema resolution: reader supplies ITS schema, runtime
+matches fields BY NAME against the writer's schema:
+  writer has extra field  → reader skips it (forward compat)
+  reader has extra field  → default value fills it (backward compat,
+                            IF a default was declared — enforced!)
+  renamed field           → aliases: ["old_name"]
 
-```thrift
-struct User {
-  1: i32 id,
-  2: string name,
-  3: list<string> emails,
-  4: bool active,
-  5: double balance
+The bet: schemas are cheap to distribute (embedded in files for
+batch: one schema, a million rows; registry ID for streaming: 5 bytes
+per message). Where that holds — Kafka, data lakes — Avro excels.
+Where it doesn't — ad-hoc RPC — Protobuf's self-delimiting fields win.
+```
+
+### Zero-copy: FlatBuffers and Cap'n Proto
+
+```
+Traditional: bytes → parse → object graph → access
+Zero-copy:   bytes → access (fields read directly from the buffer
+             via offsets; "parse time" is zero)
+
+Use when: you read millions of records and touch 2 fields each
+  (games, ML feature pipelines, mmap'd files, IPC).
+Costs: larger payloads than protobuf (alignment, offset tables),
+  awkward mutation, less ecosystem. Wrong default for APIs.
+```
+
+MessagePack/CBOR are "binary JSON" — schemaless, 40–60% smaller, faster; right when you want JSON's flexibility with less waste (CBOR is the IoT/COSE standard), but they inherit JSON's no-contract problem.
+
+---
+
+## Schema Evolution: The Rules, Per Format
+
+### Protobuf
+
+```protobuf
+message User {
+  reserved 2, 5;                 // tags retired FOREVER
+  reserved "name", "age";        // names too (prevents tooling confusion)
+  int32 id = 1;
+  string email = 3;
+  string phone = 4;
 }
 ```
 
-Multiple protocols:
-- Binary (compact)
-- Compact (smaller)
-- JSON (readable)
+```
+Safe:                                Unsafe:
+  add field with NEW tag               reuse a tag number — silent corruption
+  remove field + reserve its tag       change a field's type (mostly)
+  rename a field (names ≠ wire)        change int32 ↔ sint32 (different encoding!)
+  optional → repeated (scalars)        anything with required (proto2 — which is
+                                       why proto3 removed required entirely)
+```
+
+The `required` lesson is generational: a field that must exist can never be removed, because some reader somewhere will reject the message. Every mature schema culture converged on "everything optional, defaults everywhere, validation in code" — constraints belong to the application layer, which can be deployed; wire formats can't.
 
 ### Avro
 
-Schema:
-```json
-{
-  "type": "record",
-  "name": "User",
-  "fields": [
-    {"name": "id", "type": "int"},
-    {"name": "name", "type": "string"},
-    {"name": "emails", "type": {"type": "array", "items": "string"}},
-    {"name": "active", "type": "boolean"},
-    {"name": "balance", "type": "double"}
-  ]
-}
+```
+Safe:                                Requires care:
+  add field WITH default               add field without default: breaks
+  remove field that HAD default          backward compat (registry rejects)
+  rename via aliases                   type promotions: int→long→float→double
+  reorder fields (matched by name)       OK; the reverse is not
 ```
 
-**Key difference:** No field tags in wire format.
-- Schema must be available at read time
-- Smaller payloads
-- Excellent for batch processing (Hadoop)
+### JSON
 
-### MessagePack
-
-```
-JSON-compatible binary format
-
-JSON: {"name":"Alice","age":30}
-MessagePack: 82 A4 6E 61 6D 65 A5 41 6C 69 63 65 A3 61 67 65 1E
-
-50-80% size of JSON
-Faster parsing
-No schema required
-```
+No mechanical rules exist — evolution discipline is conventions: additive-only changes, `additionalProperties: true` if you use JSON Schema, version envelopes (`{"v": 2, ...}`) or versioned endpoints, and contract tests standing in for what a registry would enforce.
 
 ---
 
-## Schema Evolution
+## Schema Registry: Making Compatibility Enforceable
 
-### The Problem
-
-```
-Version 1:
-  User { id, name }
-
-Version 2 (add field):
-  User { id, name, email }
-
-Version 3 (remove field, add another):
-  User { id, email, phone }
-
-Old readers, new writers. New readers, old writers.
-Must all continue to work.
-```
-
-### Compatibility Types
+The registry turns evolution rules from tribal knowledge into a build-time gate:
 
 ```
-Forward compatible:
-  Old code can read new data
-  (Ignores unknown fields)
+Producer:  register schema (once) → get 4-byte schema ID
+           send [magic 0x0][schema_id: 4B][avro payload]
+Consumer:  read ID → fetch schema (cached — registry is NOT on the
+           hot path) → resolve against its own reader schema
 
-Backward compatible:
-  New code can read old data
-  (Handles missing fields)
-
-Full compatible:
-  Both forward and backward
+The enforcement: registering a schema that violates the subject's
+compatibility mode is REJECTED — the incompatible producer fails in
+CI/deploy, not in the consumer at runtime.
 ```
 
-### Protobuf Evolution Rules
+```
+Compatibility modes (Confluent vocabulary):
+  BACKWARD (default): new schema can read data written by the last
+    schema. Deployment order: consumers first.
+  FORWARD:  last schema can read data written by the new schema.
+    Deployment order: producers first.
+  FULL:     both. Deploy in any order.
+  *_TRANSITIVE: checked against ALL registered versions, not just the
+    last — REQUIRED if a topic/lake retains data older than one schema
+    generation (i.e., almost always the right choice; the non-transitive
+    defaults are a common gap: v3 is compatible with v2, v2 with v1,
+    but v3 cannot read v1's data still sitting in the topic).
 
-```protobuf
-// Version 1
-message User {
-  int32 id = 1;
-  string name = 2;
-}
-
-// Version 2: Add optional field (backward compatible)
-message User {
-  int32 id = 1;
-  string name = 2;
-  string email = 3;  // New field, optional by default
-}
-
-// Version 3: Remove field (forward compatible)
-message User {
-  int32 id = 1;
-  // name removed - old readers still work
-  string email = 3;
-  string phone = 4;
-}
+API sketch:
+  POST /subjects/{subject}/versions            → register, returns {"id": 42}
+  POST /compatibility/subjects/{s}/versions/latest → pre-flight check
+  PUT  /config/{subject}                       → set mode per subject
 ```
 
-**Rules:**
-- Never reuse field numbers
-- Add fields with new numbers
-- Use `optional` or `repeated` (not `required`)
-- Removed fields: Reserve the number
-
-### Avro Evolution
-
-```
-Writer schema (v2):
-  {id: int, name: string, email: string}
-
-Reader schema (v1):
-  {id: int, name: string}
-
-Resolution:
-  Reader ignores 'email' (not in reader schema)
-  
-Reader schema (v3):
-  {id: int, name: string, phone: string}
-
-Resolution:
-  Reader uses default for 'phone' (not in writer schema)
-```
-
-Avro uses schema resolution:
-- Writer schema embedded or known
-- Reader schema specified by application
-- Fields matched by name
+Protobuf ecosystems get the same gate from `buf breaking` (schema linting against a baseline in CI) with or without a registry; the principle is identical — **breaking changes should fail a build, not a consumer**.
 
 ---
 
-## Field Identification
+## Performance: What the Benchmarks Actually Say
 
-### By Tag Number (Protobuf, Thrift)
-
-```
-Wire format includes field tag:
-  [tag=1, value=123][tag=2, value="Alice"]
-
-Old reader sees unknown tag:
-  [tag=3, value="new@email.com"]
-  → Skip (knows length from type)
-
-Robust to additions
-```
-
-### By Position (Avro)
-
-```
-Wire format: [value1][value2][value3]
-No tags, just values in order
-
-Reader and writer must agree on schema
-Schema resolution matches fields by name
-Smaller than tagged formats
-```
-
-### By Name (JSON)
-
-```
-{"id": 123, "name": "Alice"}
-
-Field names repeated in every record
-Verbose but self-describing
-```
-
----
-
-## Encoding Performance
-
-### Benchmarks (Approximate)
-
-| Format | Encode | Decode | Size |
-|--------|--------|--------|------|
-| JSON | 100 MB/s | 200 MB/s | 100% |
-| Protobuf | 500 MB/s | 1 GB/s | 30% |
-| Avro | 400 MB/s | 800 MB/s | 25% |
-| MessagePack | 300 MB/s | 600 MB/s | 60% |
-| FlatBuffers | N/A* | 10 GB/s | 40% |
-
-*FlatBuffers: Zero-copy, no decode step
-
-### Zero-Copy Formats
-
-```
-Traditional:
-  [bytes on disk] → [parse] → [in-memory objects]
-  Must copy and transform
-
-Zero-copy (FlatBuffers, Cap'n Proto):
-  [bytes on disk] → [access directly]
-  Read fields without full deserialization
-  
-Benefits:
-  - Instant "parsing"
-  - Lower memory usage
-  - Great for mmap
-
-Trade-offs:
-  - More complex access patterns
-  - Alignment requirements
-```
-
----
-
-## Database Encoding
-
-### Row-Based
-
-```
-PostgreSQL row:
-  [header][null bitmap][col1][col2][col3]
-
-Fixed columns at fixed offsets
-Variable-length columns use length prefix
-```
-
-### Column-Based
-
-```
-Each column encoded separately:
-  int column: [RLE or bit-packed integers]
-  string column: [dictionary + indices]
-
-Different encoding per column type
-```
-
-### Log-Structured
-
-```
-Key-value entry:
-  [key_length][key][value_length][value][sequence][type]
-
-Type: PUT or DELETE
-Sequence: For ordering/versioning
-```
-
----
-
-## Network Protocol Encoding
-
-### HTTP APIs
-
-```
-Common choices:
-  REST + JSON: Ubiquitous, human-friendly
-  gRPC + Protobuf: Efficient, typed
-  GraphQL + JSON: Flexible queries
-
-JSON for external APIs
-Protobuf for internal services
-```
-
-### RPC Encoding
-
-```
-gRPC:
-  HTTP/2 + Protobuf
-  Bidirectional streaming
-  Generated clients
-
-Thrift:
-  Multiple transports (HTTP, raw TCP)
-  Multiple protocols (binary, compact, JSON)
-```
-
-### Event Streaming
-
-```
-Kafka:
-  Key + Value, both byte arrays
-  Usually Avro or JSON
-  Schema Registry for evolution
-
-Common pattern:
-  Schema ID in message header
-  Registry lookup for schema
-  Decode with schema
-```
-
----
-
-## Schema Registry
-
-### Concept
-
-```
-Central service storing schemas:
-  Schema ID 1 → User v1 schema
-  Schema ID 2 → User v2 schema
-  Schema ID 3 → Order v1 schema
-
-Producer:
-  1. Register schema (if new)
-  2. Get schema ID
-  3. Send [schema_id][payload]
-
-Consumer:
-  1. Read schema_id from message
-  2. Fetch schema from registry
-  3. Decode with schema
-```
-
-### Confluent Schema Registry
-
-```
-POST /subjects/user/versions
-Content-Type: application/json
-{
-  "schema": "{\"type\":\"record\",\"name\":\"User\",...}"
-}
-
-Response:
-{"id": 1}
-
-Message format:
-[magic byte: 0][schema_id: 4 bytes][payload]
-```
-
-### Compatibility Enforcement
-
-```
-Configure compatibility mode:
-  BACKWARD: New can read old
-  FORWARD: Old can read new
-  FULL: Both
-  NONE: No checks
-
-Registry rejects incompatible schemas
-Prevents accidental breaking changes
-```
-
----
-
-## Choosing an Encoding
-
-### Decision Matrix
-
-| Requirement | Format |
-|-------------|--------|
-| Human debugging | JSON |
-| Maximum efficiency | Protobuf, FlatBuffers |
-| Hadoop/Spark | Avro, Parquet |
-| External API | JSON |
-| Internal RPC | Protobuf, Thrift |
-| Schema flexibility | JSON, MessagePack |
-| Strong contracts | Protobuf, Avro |
-| Zero-copy access | FlatBuffers, Cap'n Proto |
-
-### Questions to Ask
-
-```
-1. Who needs to read this data?
-   - Machines only → binary
-   - Humans → text
-
-2. How long will data live?
-   - Short-lived → any format
-   - Long-lived → schema evolution critical
-
-3. Cross-language needs?
-   - Yes → Protobuf, JSON
-   - Single language → native formats OK
-
-4. Size/speed constraints?
-   - Critical → binary formats
-   - Relaxed → JSON fine
-```
-
----
-
-## Schema Evolution Strategies
-
-### Compatibility in Deployment Context
-
-```
-Forward (old code reads new data):  Deploy producers first. Unknown fields skipped.
-Backward (new code reads old data): Deploy consumers first. Missing fields defaulted.
-Full (both directions):             Deploy independently. Rolling deploys demand this.
-```
-
-### Format-Specific Evolution Rules
-
-**Protobuf:**
-- Adding `optional` field with new tag → forward + backward compatible
-- Removing field → mark tag as `reserved` forever
-- Changing `optional` to `repeated` → safe for scalar types
-- Never change a field's tag number — silently corrupts data
-
-```protobuf
-message User {
-  reserved 2, 5;           // field numbers retired forever
-  reserved "name", "age";  // field names retired forever
-  int32 id = 1;
-  string email = 3;
-  string phone = 4;
-}
-```
-
-**Avro:**
-- Reader schema + writer schema resolution at deserialization
-- Fields matched by name, not position
-- Adding field: must have default (backward compatible)
-- Removing field: removed field must have had default (forward compatible)
-- Renaming: use `aliases` for compatibility
-
-```json
-{
-  "type": "record", "name": "User",
-  "fields": [
-    {"name": "id", "type": "int"},
-    {"name": "full_name", "type": "string", "aliases": ["name"], "default": ""}
-  ]
-}
-```
-
-**JSON (with JSON Schema):**
-- No built-in evolution — schema is external and optional
-- `additionalProperties: true` (default) enables forward compatibility
-- Use `required` sparingly — every required field is a future migration burden
-- Versioning: URL path (`/v2/users`), header, or envelope (`{"version": 2, ...}`)
-
-### Compatibility Comparison
-
-| Feature | Protobuf | Avro | Thrift | JSON Schema |
-|---------|----------|------|--------|-------------|
-| Schema required? | Yes (.proto) | Yes (JSON/IDL) | Yes (.thrift) | Optional |
-| Forward compatible? | Yes (skip unknown tags) | Yes (schema resolution) | Yes (skip unknown tags) | Only with `additionalProperties` |
-| Backward compatible? | Yes (defaults for missing) | Yes (defaults required) | Yes (defaults for missing) | Manual handling |
-| Human readable wire format? | No | No | No (binary) / Yes (JSON protocol) | Yes |
-| Schema in payload? | No (tags only) | Writer schema or ID | No (tags only) | No |
-
----
-
-## Schema Registry Deep Dive
-
-### Architecture and Workflow
-
-```
-Producer → registers schema → Registry assigns ID
-Producer → sends message: [magic:1B][schema_id:4B][payload]
-Consumer → reads schema_id from message → fetches schema from Registry
-Consumer → deserializes payload using fetched schema
-```
-
-### Confluent Schema Registry API
-
-```bash
-# Register schema → returns global ID
-POST /subjects/{subject}/versions  →  {"id": 42}
-
-# Fetch schema by ID
-GET /schemas/ids/{id}  →  {"schema": "{...}"}
-
-# Check compatibility before registering
-POST /compatibility/subjects/{subject}/versions/latest  →  {"is_compatible": true}
-
-# Set compatibility mode per subject
-PUT /config/{subject}  →  {"compatibility": "FULL"}
-```
-
-### Compatibility Modes in Practice
-
-```
-BACKWARD (default): New schema reads old data. Consumer-first deploys.
-FORWARD:            Old schema reads new data. Producer-first deploys.
-FULL:               Both directions. Independent deployment safe.
-
-*_TRANSITIVE variants: Check against ALL prior versions, not just last.
-  Use when cold storage may contain very old schema versions.
-
-NONE: No checking. Development only.
-```
-
-### Why Schema Registry Matters
-
-```
-Without registry:
-  - Schema changes coordinated via tickets/Slack → deployment coupling
-  - Bad schema change silently corrupts downstream data
-  - No audit trail of schema history
-
-With registry:
-  - Schemas versioned and immutable once registered
-  - Incompatible changes rejected automatically
-  - Consumers cache schemas locally — registry not on hot path
-```
-
----
-
-## Encoding Performance Deep Dive
-
-### Benchmark Comparison (Typical 1 KB Object)
-
-| Format | Serialize | Deserialize | Encoded Size | Schema |
+| Format | Serialize | Deserialize | Size (1 KB JSON baseline) | Schema |
 |--------|-----------|-------------|--------------|--------|
-| JSON | ~100 MB/s | ~200 MB/s | 1000 B (baseline) | No |
-| JSON+gzip | ~50 MB/s | ~80 MB/s | ~400 B | No |
-| Protobuf | ~800 MB/s | ~1.5 GB/s | ~300 B | Yes |
-| Avro | ~600 MB/s | ~1.0 GB/s | ~280 B | Yes |
-| MessagePack | ~400 MB/s | ~800 MB/s | ~650 B | No |
-| FlatBuffers | ~1.5 GB/s | Zero-copy | ~450 B | Yes |
-| Cap'n Proto | Zero-copy | Zero-copy | ~500 B | Yes |
+| JSON | ~100 MB/s | ~200 MB/s | 100% | no |
+| JSON + gzip | ~50 MB/s | ~80 MB/s | ~40% | no |
+| MessagePack | ~400 MB/s | ~800 MB/s | ~65% | no |
+| Protobuf | ~800 MB/s | ~1.5 GB/s | ~30% | yes |
+| Avro | ~600 MB/s | ~1 GB/s | ~28% | yes |
+| FlatBuffers | ~1.5 GB/s | zero-copy | ~45% | yes |
 
-*Numbers are order-of-magnitude guidance; vary by language, hardware, and data shape.*
+*Order-of-magnitude guidance; varies by language and data shape. JS/Python narrow the gaps (their JSON parsers are C, their protobuf often isn't); Go/Java/C++/Rust widen them.*
 
-### Why Protobuf Is Fast
-
-```
-1. Varint encoding: Small integers use fewer bytes (1 → 1B, 300 → 2B)
-2. No field names on wire: Tags are 1-2 byte ints vs repeating key strings
-3. No parsing ambiguity: Types known at compile time from schema
-4. Generated code: Direct field access, no reflection or hash map lookups
-```
-
-### Zero-Copy Formats: When Parsing Is the Bottleneck
-
-```
-FlatBuffers (Google): Access fields directly from buffer, no deserialization.
-Cap'n Proto (by Protobuf creator): Zero-copy + built-in RPC system.
-
-Use when:
-  - Reading millions of records, accessing 1-2 fields each
-  - Memory-mapped file access, latency-sensitive IPC
-
-Avoid when:
-  - Data crosses network boundaries (alignment/endianness concerns)
-  - Need maximum compression (zero-copy formats are larger)
-```
+Why binary-with-schema wins: no field names on the wire (tags/positions instead), no type sniffing (schema fixes types at compile time), varints for small numbers, generated code instead of reflection. When it doesn't matter: a service doing 50 req/s spends nothing meaningful on JSON — encoding optimization pays at *pipeline* scale (per-hop costs × hops × message rate) or at *storage* scale (billions of rows, where you should be in [Parquet/columnar](./06-column-storage.md) anyway, which applies these same encodings — dictionary, RLE, bit-packing — per column).
 
 ---
 
-## Choosing an Encoding Format
-
-### Decision Tree
+## Where Encodings Live in a System
 
 ```
-Human readability needed?        → JSON (or YAML for config)
-Schema evolution critical?       → Protobuf or Avro
-  ├─ Kafka ecosystem?            → Avro + Schema Registry
-  └─ gRPC / internal RPC?        → Protobuf
-Browser-facing API?              → JSON
-High-performance IPC?            → FlatBuffers or Cap'n Proto
-Analytical storage?              → Parquet or ORC (see 06-column-storage.md)
-JSON-like flexibility, smaller?  → MessagePack or CBOR
+External API:      JSON (REST/GraphQL) — humans and unknown clients
+Internal RPC:      Protobuf over gRPC — contracts + codegen + speed
+Event streaming:   Avro (or Protobuf) + Schema Registry on Kafka
+                   — messages outlive deploys; registry is the contract
+Analytics at rest: Parquet/ORC — columnar; schema evolution rules of
+                   the TABLE FORMAT (Iceberg/Delta) apply on top
+Storage engines:   internal record formats (slotted pages, LSM entries)
+                   — see B-Trees / LSM chapters; WAL records must be
+                   versioned too (recovery reads old-format records
+                   after an upgrade!)
+Config:            YAML/JSON — human-edited, schema-validated in CI
 ```
 
-### Common Patterns in Practice
+The recurring anti-patterns: JSON between internal services at high fan-out (parse cost × 10 hops adds real p99); a custom binary format ("we'll document it later" — you now own evolution, tooling, and debugging forever); protobuf blobs in a database column with no schema version attached (which `.proto` decodes row 40M?); required-field maximalism in any format.
 
-```
-Typical microservice architecture:
-  External API:    JSON over REST / GraphQL
-  Internal RPC:    Protobuf over gRPC
-  Event streaming: Avro + Schema Registry (Kafka)
-  Configuration:   YAML or JSON
-  Analytics:       Parquet in object storage
-```
+---
 
-### Anti-Patterns to Avoid
+## Failure Modes
 
-```
-JSON for internal service-to-service at scale:
-  Parsing overhead compounds across 10+ hops → use Protobuf/gRPC.
+**Tag/field-number reuse (Protobuf).** Deleting `string nickname = 5;` and later adding `int64 team_id = 5;` makes old messages decode nickname bytes as a team ID — no error, garbage data. This is why `reserved` exists and why schema review must treat tag numbers as append-only. `buf breaking` catches it mechanically.
 
-Custom binary format:
-  No evolution, no tooling, maintenance burden → use established formats.
+**JSON 64-bit integers.** Any ID that can exceed 2⁵³ must travel as a string. The failure is silent rounding in whichever consumer parses to double — often discovered as "two different users got the same ID" weeks later.
 
-Protobuf without schema versioning:
-  Nobody knows which .proto produced old data → use Schema Registry.
+**Missing-default Avro fields.** A producer team adds a field without a default and pushes with compatibility NONE (or no registry): every consumer with the old reader schema throws on resolution. The registry's whole job is making this impossible; use TRANSITIVE modes so it stays impossible across more than one version gap.
 
-required fields everywhere:
-  Can never be removed without breaking readers → prefer optional + defaults.
-```
+**Schema drift in data lakes.** Streaming JSON into a lake and inferring schema per batch yields columns whose type flip-flops (`user_id`: int in Monday's files, string in Tuesday's). Queries fail months later on the mixed history. Fix: schema-on-write (enforce at ingest with a registry) and a table format (Iceberg/Delta) that owns column identity and type promotion.
+
+**WAL/snapshot format upgrades.** Storage engines and stateful services must read *their own* old formats after an upgrade — recovery replays records written by the previous binary ([WAL](./04-write-ahead-logging.md)). Version every persistent record header, and test upgrade paths with data written by N−1 and N−2, not just fresh state.
+
+**Compression confusion.** Encoding and compression are separate layers: Protobuf is compact but still compresses ~2× with zstd; JSON+zstd can approach protobuf sizes at high CPU cost. Measure end-to-end (CPU + bytes + latency) before concluding either "we need binary" or "gzip is enough."
+
+---
+
+## Decision Framework
+
+| Requirement | Choice |
+|-------------|--------|
+| Public/external API | JSON (REST or GraphQL); 64-bit IDs as strings |
+| Internal service RPC | Protobuf + gRPC, `buf breaking` in CI |
+| Kafka / event streams | Avro or Protobuf + Schema Registry, FULL_TRANSITIVE |
+| Analytical storage | Parquet/ORC under Iceberg/Delta — encode once, columnar |
+| Long-lived stored blobs | Anything *with* an embedded schema version header |
+| Hot IPC / mmap, few fields touched | FlatBuffers / Cap'n Proto |
+| Schemaless but smaller than JSON | CBOR or MessagePack (accepting JSON's contract gap) |
+| Human-edited | YAML/JSON + schema validation in CI; never machine-to-machine |
+| Signing/hashing payloads | Canonical form first (JCS for JSON) or sign raw bytes |
 
 ---
 
 ## Key Takeaways
 
-1. **JSON for readability** - Debug-friendly, universal
-2. **Protobuf for efficiency** - Compact, fast, typed
-3. **Avro for batch processing** - Schema in data, Hadoop-friendly
-4. **Schema evolution is critical** - Plan for change
-5. **Field tags enable evolution** - Don't reuse numbers
-6. **Compatibility is bidirectional** - Forward and backward
-7. **Zero-copy for performance** - FlatBuffers, Cap'n Proto
-8. **Schema Registry for coordination** - Centralized schema management
+1. **Encoding is a compatibility problem first, a performance problem second** — data outlives code, and rolling deploys make old-reads-new and new-reads-old permanent operating conditions, not migration events.
+2. **The wire identity differs per format**: Protobuf = tag numbers (never reuse; names are free), Avro = names via schema resolution (defaults mandatory), JSON = whatever your most fragile consumer does.
+3. **Everything optional, defaults everywhere** — `required` at the wire level is a one-way door every mature schema culture has closed; validate in application code.
+4. **Enforce evolution mechanically** — schema registry with TRANSITIVE compatibility, or `buf breaking` in CI; a breaking change should fail a build, not page a consumer team.
+5. **JSON numbers are doubles** — 64-bit IDs travel as strings, or they corrupt silently.
+6. **Binary-with-schema is 5–10× faster and 3× smaller than JSON**, and it matters at pipeline and storage scale — not for your 50-req/s service.
+7. **Zero-copy formats trade size and ergonomics for zero parse time** — right for read-heavy few-field access, wrong as an API default.
+8. **Version your storage formats too** — WALs, snapshots, and DB-column blobs are read by future binaries; give every record a schema/version header.
+
+---
+
+## References
+
+- Kleppmann, M. (2017). *Designing Data-Intensive Applications*, Ch. 4 "Encoding and Evolution" — the canonical treatment.
+- Protocol Buffers documentation: *Encoding* (varint/wire format) and *Proto Best Practices* (reserved, field numbering).
+- Apache Avro specification: *Schema Resolution*.
+- Confluent Schema Registry documentation: *Compatibility Types* (incl. transitive modes).
+- `buf` documentation: *Breaking Change Detection*.
+- RFC 8785: *JSON Canonicalization Scheme (JCS)*; RFC 8949: *CBOR*.
+- FlatBuffers and Cap'n Proto design documents (zero-copy layouts).

@@ -1,741 +1,315 @@
 # データエンコーディング
 
-> この記事は英語版から翻訳されました。最新版は[英語版](/03-storage-engines/07-data-encoding.md)をご覧ください。
+> この記事は英語版から翻訳されました。最新版は[英語版](/03-storage-engines/07-data-encoding.md)をご覧ください。コードブロック・数式・図は原文のまま維持しています。
 
 ## TL;DR
 
-データエンコーディングは、メモリ上のデータ構造をバイト列にシリアライズし、ストレージや通信に利用できるようにします。トレードオフに基づいて選択してください：人間が読みやすいものならJSON/XML、効率性とスキーマ進化ならProtocol Buffers/Thrift、動的スキーマならAvroです。スキーマ進化は長期運用システムにとって重要であり、前方互換性と後方互換性が破壊的変更を防ぎます。
+エンコーディングとは、データと時間の間の契約です。永続的な境界 — ディスク、ネットワーク、キュー — を越えるすべてのバイトは、それを書いたコードより長生きし、まだ存在しないコードによって読まれます。つまりエンコーディングは、ひとつの名前をまとった2つの問題です: *パフォーマンス*の問題（JSONは約100MB/sでパースされペイロードを3倍にする。Protobufは5〜10倍良い。ゼロコピーフォーマットはパース自体をスキップする）と、*互換性*の問題（昨年のコンシューマは明日のプロデューサの出力を読めるか？逆は？）。障害を引き起こすのは互換性の問題のほうです。それは機械的なルール — Protobufのフィールドタグ、Avroのreader/writerスキーマ解決、reserved番号の規律 — に支配されており、成熟したシステムではスキーマレジストリが、破壊的変更を午前3時に発見する代わりにCI時点で拒否します。本章ではワイヤフォーマットとその形の理由、フォーマットごとの進化ルール、レジストリの運用、そしてあらゆる会社で再発する障害モード（JSONの数値精度、タグの再利用、requiredフィールドの罠、データレイクのスキーマドリフト）を扱います。
 
 ---
 
-## エンコーディングが重要な理由
-
-### 変換の問題
+## 問題: データはコードより長生きする
 
 ```
-In-memory object:
-  User {
-    id: 123,
-    name: "Alice",
-    emails: ["a@example.com", "b@example.com"]
+In-memory object:                       Must become bytes for:
+  User {                                  - disk (storage engines, backups)
+    id: 123,                              - network (RPC, APIs)
+    name: "Alice",                        - queues (events that sit for days)
+    emails: [...]                         - other languages entirely
   }
 
-Must become bytes for:
-  - Disk storage
-  - Network transmission
-  - Cross-language communication
+And the reverse, years later, by code that has been deployed
+hundreds of times since the bytes were written.
 ```
 
-### 主要な検討事項
+すべてのエンコーディング設計を駆動する非対称性: **書き込みは1回、1つのスキーマの下で起こる。読み取りは永遠に、これから存在するすべてのスキーマの下で起こる。** ローリングデプロイは古いコードと新しいコードが同じトピックとテーブルに対して*同時に*動くことを意味するので、互換性は移行イベントではなく恒常的な運用条件です:
 
 ```
-1. Efficiency: Size and speed
-2. Schema evolution: Can we change the structure?
-3. Human readability: Debug-friendly?
-4. Language support: Cross-platform?
-5. Compatibility: Forward and backward?
+Backward compatibility:  NEW code reads OLD data
+  (required to deploy consumers first, and to read historical data —
+   missing fields must have defaults)
+
+Forward compatibility:   OLD code reads NEW data
+  (required to deploy producers first — unknown fields must be
+   skippable without breaking)
+
+Full compatibility = both = deploy in any order. Rolling deploys and
+multi-team ownership effectively demand full compatibility.
 ```
 
 ---
 
-## テキストベースフォーマット
-
-### JSON
+## テキストフォーマット: JSONとその鋭い刃
 
 ```json
-{
-  "id": 123,
-  "name": "Alice",
-  "emails": ["a@example.com", "b@example.com"],
-  "active": true,
-  "balance": 99.99
-}
+{"id": 123, "name": "Alice", "emails": ["a@example.com"], "balance": 99.99}
 ```
 
-**メリット：**
-- 人間が読みやすい
-- あらゆる言語でサポート
-- 自己記述的（キー名が含まれる）
-- 柔軟（スキーマ不要）
-
-**デメリット：**
-- 冗長（キー名の繰り返し）
-- バイナリデータ非対応（base64が必要）
-- 数値が曖昧（intかfloatか）
-- スキーマの強制なし
-
-### XML
-
-```xml
-<user>
-  <id>123</id>
-  <name>Alice</name>
-  <emails>
-    <email>a@example.com</email>
-    <email>b@example.com</email>
-  </emails>
-</user>
-```
-
-**メリット：**
-- 人間が読みやすい
-- 豊富なスキーマサポート（XSD）
-- 名前空間による構成
-
-**デメリット：**
-- 非常に冗長
-- パース処理が複雑
-- 他の方式より低速
-
-### サイズ比較
+JSONは組織間の境界で勝利しました — 自己記述的で、普遍的で、目視でデバッグできる。そのコストはよく知られています（バイナリの3〜5倍のバイト数、レコードごとに繰り返されるキー名、約100MB/sのパーススループット、バイナリデータにはbase64）。あまり知られていないのは、実際のインシデントを引き起こす鋭い刃のほうです:
 
 ```
-Same data:
-  JSON: 95 bytes
-  XML:  153 bytes
-  Protocol Buffers: 33 bytes
+Number precision: JSON has ONE number type — IEEE-754 double.
+  Integers above 2⁵³ silently lose precision in JavaScript and many
+  parsers. Twitter's snowflake IDs (64-bit) famously broke JS clients:
+    {"id": 10765432100123456789}  → parsed as ...456780
+  Fix: serialize 64-bit IDs as strings ("id_str"), or use a
+  big-integer-aware parser. This bug ships to production constantly.
 
-3-5x size difference affects:
-  - Storage costs
-  - Network bandwidth
-  - Parse time
+No schema = no contract: a "compatible" change is whatever your
+  most fragile consumer's hand-written parsing tolerates. null vs
+  absent-field vs "" distinctions differ per language and library.
+
+Duplicate keys, key ordering, NaN/Infinity: all
+  implementation-defined. Canonicalization (for signing/hashing JSON)
+  is a minefield — see JCS (RFC 8785) before hashing JSON.
 ```
+
+XMLが生き残るのは、そのスキーマ機構（XSD、名前空間）やドキュメント指向が本当に使われている場所です — SOAP時代のエンタープライズ、設定、文書。データレコード用途では完全に劣位です。YAMLは人間が設定を編集するためのもので、マシン間のデータには決して使いません（暗黙の型付け: `no` は `false` に、`3.10` は `3.1` にパースされます）。
 
 ---
 
-## バイナリフォーマット
+## バイナリフォーマット: 3つの異なる賭け
 
-### Protocol Buffers (Protobuf)
+### Protobuf: ワイヤ上のタグ番号
 
-スキーマ定義（`.proto`）:
 ```protobuf
 message User {
-  int32 id = 1;
+  int32 id = 1;                //  ← the "= 1" is the wire identity
   string name = 2;
   repeated string emails = 3;
-  bool active = 4;
-  double balance = 5;
 }
 ```
 
-ワイヤフォーマット:
 ```
-Field 1 (id): [tag: 08][value: 7B]  // 123 in varint
-Field 2 (name): [tag: 12][length: 05][data: Alice]
-Field 3 (emails): [tag: 1A][length: 0D][data: a@example.com]
-...
+Wire format: a stream of (tag, wire-type, value) triples
+  field 1 (id=123):    08 7B          — tag+type: 1 byte, varint value
+  field 2 ("Alice"):   12 05 41 6c 69 63 65   — tag, length, bytes
+
+Varint: 7 bits per byte, high bit = continuation.
+  0-127 → 1 byte; 300 → 2 bytes. Small numbers are nearly free.
+  (sint32/64 add ZigZag: maps -1→1, 1→2 so negatives stay small.)
+
+The consequences of tags-on-wire:
+  + unknown tags are SKIPPABLE (wire type tells the length)
+    → forward compatibility is structural, not optional
+  + field NAMES are compile-time only — renaming a field is free
+  - the tag number IS the field's identity forever
+    → reusing a tag misinterprets old data with the new field's type:
+      silent corruption, the worst failure mode in this chapter
 ```
 
-**メリット：**
-- コンパクトなバイナリフォーマット
-- 強い型付け
-- スキーマ進化のサポート
-- 高速なシリアライゼーション
-- コード自動生成
+### Avro: タグなし、スキーマが仕事をする
 
-**デメリット：**
-- 人間が読めない
-- スキーマが必要
-- フィールドタグは一意でなければならない
+```json
+{"type": "record", "name": "User", "fields": [
+  {"name": "id", "type": "int"},
+  {"name": "name", "type": "string"}
+]}
+```
 
-### Thrift
+```
+Wire format: just concatenated values, in schema order. No tags,
+no field names, no lengths where the type implies them.
+  → the smallest payloads of any general format
+  → but UNREADABLE without the writer's exact schema
 
-Protobufと似ており、Facebook製です。
+Reading = schema resolution: reader supplies ITS schema, runtime
+matches fields BY NAME against the writer's schema:
+  writer has extra field  → reader skips it (forward compat)
+  reader has extra field  → default value fills it (backward compat,
+                            IF a default was declared — enforced!)
+  renamed field           → aliases: ["old_name"]
 
-```thrift
-struct User {
-  1: i32 id,
-  2: string name,
-  3: list<string> emails,
-  4: bool active,
-  5: double balance
+The bet: schemas are cheap to distribute (embedded in files for
+batch: one schema, a million rows; registry ID for streaming: 5 bytes
+per message). Where that holds — Kafka, data lakes — Avro excels.
+Where it doesn't — ad-hoc RPC — Protobuf's self-delimiting fields win.
+```
+
+### ゼロコピー: FlatBuffersとCap'n Proto
+
+```
+Traditional: bytes → parse → object graph → access
+Zero-copy:   bytes → access (fields read directly from the buffer
+             via offsets; "parse time" is zero)
+
+Use when: you read millions of records and touch 2 fields each
+  (games, ML feature pipelines, mmap'd files, IPC).
+Costs: larger payloads than protobuf (alignment, offset tables),
+  awkward mutation, less ecosystem. Wrong default for APIs.
+```
+
+MessagePack/CBORは「バイナリJSON」です — スキーマレスで40〜60%小さく高速。JSONの柔軟性を無駄少なく使いたいときに適します（CBORはIoT/COSEの標準）が、JSONの契約不在の問題を受け継ぎます。
+
+---
+
+## スキーマ進化: フォーマットごとのルール
+
+### Protobuf
+
+```protobuf
+message User {
+  reserved 2, 5;                 // tags retired FOREVER
+  reserved "name", "age";        // names too (prevents tooling confusion)
+  int32 id = 1;
+  string email = 3;
+  string phone = 4;
 }
 ```
 
-複数のプロトコル：
-- Binary（コンパクト）
-- Compact（より小さい）
-- JSON（可読性あり）
+```
+Safe:                                Unsafe:
+  add field with NEW tag               reuse a tag number — silent corruption
+  remove field + reserve its tag       change a field's type (mostly)
+  rename a field (names ≠ wire)        change int32 ↔ sint32 (different encoding!)
+  optional → repeated (scalars)        anything with required (proto2 — which is
+                                       why proto3 removed required entirely)
+```
+
+`required` の教訓は世代をまたぎます: 存在必須のフィールドは決して削除できません。どこかのリーダーがメッセージを拒否するからです。成熟したスキーマ文化はすべて「全部optional、どこでもデフォルト、バリデーションはコードで」に収束しました — 制約はデプロイ可能なアプリケーション層に属します。ワイヤフォーマットはデプロイできません。
 
 ### Avro
 
-スキーマ:
-```json
-{
-  "type": "record",
-  "name": "User",
-  "fields": [
-    {"name": "id", "type": "int"},
-    {"name": "name", "type": "string"},
-    {"name": "emails", "type": {"type": "array", "items": "string"}},
-    {"name": "active", "type": "boolean"},
-    {"name": "balance", "type": "double"}
-  ]
-}
+```
+Safe:                                Requires care:
+  add field WITH default               add field without default: breaks
+  remove field that HAD default          backward compat (registry rejects)
+  rename via aliases                   type promotions: int→long→float→double
+  reorder fields (matched by name)       OK; the reverse is not
 ```
 
-**主な違い：** ワイヤフォーマットにフィールドタグがありません。
-- 読み取り時にスキーマが必要
-- より小さなペイロード
-- バッチ処理（Hadoop）に最適
+### JSON
 
-### MessagePack
-
-```
-JSON-compatible binary format
-
-JSON: {"name":"Alice","age":30}
-MessagePack: 82 A4 6E 61 6D 65 A5 41 6C 69 63 65 A3 61 67 65 1E
-
-50-80% size of JSON
-Faster parsing
-No schema required
-```
+機械的なルールは存在しません — 進化の規律は慣習です: 追加のみの変更、JSON Schemaを使うなら `additionalProperties: true`、バージョンエンベロープ（`{"v": 2, ...}`）またはバージョン付きエンドポイント、そしてレジストリが強制するはずのものを代替するコントラクトテスト。
 
 ---
 
-## スキーマ進化
+## スキーマレジストリ: 互換性を強制可能にする
 
-### 問題
-
-```
-Version 1:
-  User { id, name }
-
-Version 2 (add field):
-  User { id, name, email }
-
-Version 3 (remove field, add another):
-  User { id, email, phone }
-
-Old readers, new writers. New readers, old writers.
-Must all continue to work.
-```
-
-### 互換性の種類
+レジストリは進化ルールを部族の知恵からビルド時のゲートに変えます:
 
 ```
-Forward compatible:
-  Old code can read new data
-  (Ignores unknown fields)
+Producer:  register schema (once) → get 4-byte schema ID
+           send [magic 0x0][schema_id: 4B][avro payload]
+Consumer:  read ID → fetch schema (cached — registry is NOT on the
+           hot path) → resolve against its own reader schema
 
-Backward compatible:
-  New code can read old data
-  (Handles missing fields)
-
-Full compatible:
-  Both forward and backward
+The enforcement: registering a schema that violates the subject's
+compatibility mode is REJECTED — the incompatible producer fails in
+CI/deploy, not in the consumer at runtime.
 ```
 
-### Protobuf の進化ルール
+```
+Compatibility modes (Confluent vocabulary):
+  BACKWARD (default): new schema can read data written by the last
+    schema. Deployment order: consumers first.
+  FORWARD:  last schema can read data written by the new schema.
+    Deployment order: producers first.
+  FULL:     both. Deploy in any order.
+  *_TRANSITIVE: checked against ALL registered versions, not just the
+    last — REQUIRED if a topic/lake retains data older than one schema
+    generation (i.e., almost always the right choice; the non-transitive
+    defaults are a common gap: v3 is compatible with v2, v2 with v1,
+    but v3 cannot read v1's data still sitting in the topic).
 
-```protobuf
-// Version 1
-message User {
-  int32 id = 1;
-  string name = 2;
-}
-
-// Version 2: Add optional field (backward compatible)
-message User {
-  int32 id = 1;
-  string name = 2;
-  string email = 3;  // New field, optional by default
-}
-
-// Version 3: Remove field (forward compatible)
-message User {
-  int32 id = 1;
-  // name removed - old readers still work
-  string email = 3;
-  string phone = 4;
-}
+API sketch:
+  POST /subjects/{subject}/versions            → register, returns {"id": 42}
+  POST /compatibility/subjects/{s}/versions/latest → pre-flight check
+  PUT  /config/{subject}                       → set mode per subject
 ```
 
-**ルール：**
-- フィールド番号を再利用しない
-- 新しい番号でフィールドを追加する
-- `optional` または `repeated` を使用する（`required` は使わない）
-- 削除したフィールドの番号は予約する
-
-### Avro の進化
-
-```
-Writer schema (v2):
-  {id: int, name: string, email: string}
-
-Reader schema (v1):
-  {id: int, name: string}
-
-Resolution:
-  Reader ignores 'email' (not in reader schema)
-
-Reader schema (v3):
-  {id: int, name: string, phone: string}
-
-Resolution:
-  Reader uses default for 'phone' (not in writer schema)
-```
-
-Avroはスキーマ解決を使用します：
-- ライタースキーマが埋め込みまたは既知
-- リーダースキーマはアプリケーションが指定
-- フィールドは名前でマッチング
+Protobufのエコシステムは同じゲートを（レジストリの有無にかかわらず）`buf breaking`（CIでベースラインに対するスキーマリンティング）から得ます。原則は同一です — **破壊的変更はコンシューマではなくビルドを失敗させるべき**。
 
 ---
 
-## フィールド識別
+## パフォーマンス: ベンチマークが実際に言っていること
 
-### タグ番号による識別（Protobuf、Thrift）
-
-```
-Wire format includes field tag:
-  [tag=1, value=123][tag=2, value="Alice"]
-
-Old reader sees unknown tag:
-  [tag=3, value="new@email.com"]
-  → Skip (knows length from type)
-
-Robust to additions
-```
-
-### 位置による識別（Avro）
-
-```
-Wire format: [value1][value2][value3]
-No tags, just values in order
-
-Reader and writer must agree on schema
-Schema resolution matches fields by name
-Smaller than tagged formats
-```
-
-### 名前による識別（JSON）
-
-```
-{"id": 123, "name": "Alice"}
-
-Field names repeated in every record
-Verbose but self-describing
-```
-
----
-
-## エンコーディングのパフォーマンス
-
-### ベンチマーク（概算値）
-
-| フォーマット | エンコード | デコード | サイズ |
-|--------|--------|--------|------|
-| JSON | 100 MB/s | 200 MB/s | 100% |
-| Protobuf | 500 MB/s | 1 GB/s | 30% |
-| Avro | 400 MB/s | 800 MB/s | 25% |
-| MessagePack | 300 MB/s | 600 MB/s | 60% |
-| FlatBuffers | N/A* | 10 GB/s | 40% |
-
-*FlatBuffers: ゼロコピー、デコードステップなし
-
-### ゼロコピーフォーマット
-
-```
-Traditional:
-  [bytes on disk] → [parse] → [in-memory objects]
-  Must copy and transform
-
-Zero-copy (FlatBuffers, Cap'n Proto):
-  [bytes on disk] → [access directly]
-  Read fields without full deserialization
-
-Benefits:
-  - Instant "parsing"
-  - Lower memory usage
-  - Great for mmap
-
-Trade-offs:
-  - More complex access patterns
-  - Alignment requirements
-```
-
----
-
-## データベースのエンコーディング
-
-### 行ベース
-
-```
-PostgreSQL row:
-  [header][null bitmap][col1][col2][col3]
-
-Fixed columns at fixed offsets
-Variable-length columns use length prefix
-```
-
-### カラムベース
-
-```
-Each column encoded separately:
-  int column: [RLE or bit-packed integers]
-  string column: [dictionary + indices]
-
-Different encoding per column type
-```
-
-### ログ構造化
-
-```
-Key-value entry:
-  [key_length][key][value_length][value][sequence][type]
-
-Type: PUT or DELETE
-Sequence: For ordering/versioning
-```
-
----
-
-## ネットワークプロトコルのエンコーディング
-
-### HTTP API
-
-```
-Common choices:
-  REST + JSON: Ubiquitous, human-friendly
-  gRPC + Protobuf: Efficient, typed
-  GraphQL + JSON: Flexible queries
-
-JSON for external APIs
-Protobuf for internal services
-```
-
-### RPCエンコーディング
-
-```
-gRPC:
-  HTTP/2 + Protobuf
-  Bidirectional streaming
-  Generated clients
-
-Thrift:
-  Multiple transports (HTTP, raw TCP)
-  Multiple protocols (binary, compact, JSON)
-```
-
-### イベントストリーミング
-
-```
-Kafka:
-  Key + Value, both byte arrays
-  Usually Avro or JSON
-  Schema Registry for evolution
-
-Common pattern:
-  Schema ID in message header
-  Registry lookup for schema
-  Decode with schema
-```
-
----
-
-## スキーマレジストリ
-
-### コンセプト
-
-```
-Central service storing schemas:
-  Schema ID 1 → User v1 schema
-  Schema ID 2 → User v2 schema
-  Schema ID 3 → Order v1 schema
-
-Producer:
-  1. Register schema (if new)
-  2. Get schema ID
-  3. Send [schema_id][payload]
-
-Consumer:
-  1. Read schema_id from message
-  2. Fetch schema from registry
-  3. Decode with schema
-```
-
-### Confluent Schema Registry
-
-```bash
-# Register schema → returns global ID
-POST /subjects/{subject}/versions  →  {"id": 42}
-
-# Fetch schema by ID
-GET /schemas/ids/{id}  →  {"schema": "{...}"}
-
-# Check compatibility before registering
-POST /compatibility/subjects/{subject}/versions/latest  →  {"is_compatible": true}
-
-# Set compatibility mode per subject
-PUT /config/{subject}  →  {"compatibility": "FULL"}
-```
-
-### 互換性の強制
-
-```
-Configure compatibility mode:
-  BACKWARD: New can read old
-  FORWARD: Old can read new
-  FULL: Both
-  NONE: No checks
-
-Registry rejects incompatible schemas
-Prevents accidental breaking changes
-```
-
----
-
-## エンコーディングの選択
-
-### 判断マトリクス
-
-| 要件 | フォーマット |
-|-------------|--------|
-| 人間によるデバッグ | JSON |
-| 最大効率 | Protobuf、FlatBuffers |
-| Hadoop/Spark | Avro、Parquet |
-| 外部API | JSON |
-| 内部RPC | Protobuf、Thrift |
-| スキーマの柔軟性 | JSON、MessagePack |
-| 強い契約 | Protobuf、Avro |
-| ゼロコピーアクセス | FlatBuffers、Cap'n Proto |
-
-### 問うべき質問
-
-```
-1. Who needs to read this data?
-   - Machines only → binary
-   - Humans → text
-
-2. How long will data live?
-   - Short-lived → any format
-   - Long-lived → schema evolution critical
-
-3. Cross-language needs?
-   - Yes → Protobuf, JSON
-   - Single language → native formats OK
-
-4. Size/speed constraints?
-   - Critical → binary formats
-   - Relaxed → JSON fine
-```
-
----
-
-## スキーマ進化の戦略
-
-### デプロイコンテキストにおける互換性
-
-```
-Forward (old code reads new data):  Deploy producers first. Unknown fields skipped.
-Backward (new code reads old data): Deploy consumers first. Missing fields defaulted.
-Full (both directions):             Deploy independently. Rolling deploys demand this.
-```
-
-### フォーマット固有の進化ルール
-
-**Protobuf:**
-- 新しいタグで `optional` フィールドを追加 → 前方＋後方互換
-- フィールド削除 → タグを永久に `reserved` にする
-- `optional` から `repeated` への変更 → スカラー型では安全
-- フィールドのタグ番号は絶対に変更しない — データが暗黙的に破損する
-
-```protobuf
-message User {
-  reserved 2, 5;           // field numbers retired forever
-  reserved "name", "age";  // field names retired forever
-  int32 id = 1;
-  string email = 3;
-  string phone = 4;
-}
-```
-
-**Avro:**
-- デシリアライゼーション時にリーダースキーマ＋ライタースキーマで解決
-- フィールドは位置ではなく名前でマッチング
-- フィールド追加：デフォルト値が必要（後方互換）
-- フィールド削除：削除するフィールドにデフォルト値が必要（前方互換）
-- リネーム：互換性のために `aliases` を使用
-
-```json
-{
-  "type": "record", "name": "User",
-  "fields": [
-    {"name": "id", "type": "int"},
-    {"name": "full_name", "type": "string", "aliases": ["name"], "default": ""}
-  ]
-}
-```
-
-**JSON（JSON Schema使用時）:**
-- 組み込みの進化機能なし — スキーマは外部でオプション
-- `additionalProperties: true`（デフォルト）で前方互換性を有効化
-- `required` は控えめに — 必須フィールドは将来のマイグレーション負担になる
-- バージョニング：URLパス（`/v2/users`）、ヘッダー、またはエンベロープ（`{"version": 2, ...}`）
-
-### 互換性の比較
-
-| 機能 | Protobuf | Avro | Thrift | JSON Schema |
-|---------|----------|------|--------|-------------|
-| スキーマ必須？ | はい（.proto） | はい（JSON/IDL） | はい（.thrift） | オプション |
-| 前方互換？ | はい（未知のタグをスキップ） | はい（スキーマ解決） | はい（未知のタグをスキップ） | `additionalProperties` のみ |
-| 後方互換？ | はい（不足分はデフォルト） | はい（デフォルト必須） | はい（不足分はデフォルト） | 手動対応 |
-| ワイヤフォーマットが人間可読？ | いいえ | いいえ | いいえ（バイナリ）/はい（JSONプロトコル） | はい |
-| ペイロード内にスキーマ？ | いいえ（タグのみ） | ライタースキーマまたはID | いいえ（タグのみ） | いいえ |
-
----
-
-## スキーマレジストリの詳細
-
-### アーキテクチャとワークフロー
-
-```
-Producer → registers schema → Registry assigns ID
-Producer → sends message: [magic:1B][schema_id:4B][payload]
-Consumer → reads schema_id from message → fetches schema from Registry
-Consumer → deserializes payload using fetched schema
-```
-
-### Confluent Schema Registry API
-
-```bash
-# Register schema → returns global ID
-POST /subjects/{subject}/versions  →  {"id": 42}
-
-# Fetch schema by ID
-GET /schemas/ids/{id}  →  {"schema": "{...}"}
-
-# Check compatibility before registering
-POST /compatibility/subjects/{subject}/versions/latest  →  {"is_compatible": true}
-
-# Set compatibility mode per subject
-PUT /config/{subject}  →  {"compatibility": "FULL"}
-```
-
-### 実践における互換性モード
-
-```
-BACKWARD (default): New schema reads old data. Consumer-first deploys.
-FORWARD:            Old schema reads new data. Producer-first deploys.
-FULL:               Both directions. Independent deployment safe.
-
-*_TRANSITIVE variants: Check against ALL prior versions, not just last.
-  Use when cold storage may contain very old schema versions.
-
-NONE: No checking. Development only.
-```
-
-### スキーマレジストリが重要な理由
-
-```
-Without registry:
-  - Schema changes coordinated via tickets/Slack → deployment coupling
-  - Bad schema change silently corrupts downstream data
-  - No audit trail of schema history
-
-With registry:
-  - Schemas versioned and immutable once registered
-  - Incompatible changes rejected automatically
-  - Consumers cache schemas locally — registry not on hot path
-```
-
----
-
-## エンコーディングパフォーマンスの詳細
-
-### ベンチマーク比較（典型的な1KBオブジェクト）
-
-| フォーマット | シリアライズ | デシリアライズ | エンコードサイズ | スキーマ |
+| フォーマット | シリアライズ | デシリアライズ | サイズ（1KB JSON基準） | スキーマ |
 |--------|-----------|-------------|--------------|--------|
-| JSON | ~100 MB/s | ~200 MB/s | 1000 B（基準） | なし |
-| JSON+gzip | ~50 MB/s | ~80 MB/s | ~400 B | なし |
-| Protobuf | ~800 MB/s | ~1.5 GB/s | ~300 B | あり |
-| Avro | ~600 MB/s | ~1.0 GB/s | ~280 B | あり |
-| MessagePack | ~400 MB/s | ~800 MB/s | ~650 B | なし |
-| FlatBuffers | ~1.5 GB/s | ゼロコピー | ~450 B | あり |
-| Cap'n Proto | ゼロコピー | ゼロコピー | ~500 B | あり |
+| JSON | ~100 MB/s | ~200 MB/s | 100% | 不要 |
+| JSON + gzip | ~50 MB/s | ~80 MB/s | ~40% | 不要 |
+| MessagePack | ~400 MB/s | ~800 MB/s | ~65% | 不要 |
+| Protobuf | ~800 MB/s | ~1.5 GB/s | ~30% | 必要 |
+| Avro | ~600 MB/s | ~1 GB/s | ~28% | 必要 |
+| FlatBuffers | ~1.5 GB/s | ゼロコピー | ~45% | 必要 |
 
-*数値はオーダー（桁数）の目安です。言語、ハードウェア、データ形状により異なります。*
+*オーダーレベルの目安。言語とデータの形で変動します。JS/Pythonでは差は縮まり（JSONパーサはCで書かれ、protobufはそうでないことが多い）、Go/Java/C++/Rustでは広がります。*
 
-### Protobuf が高速な理由
-
-```
-1. Varint encoding: Small integers use fewer bytes (1 → 1B, 300 → 2B)
-2. No field names on wire: Tags are 1-2 byte ints vs repeating key strings
-3. No parsing ambiguity: Types known at compile time from schema
-4. Generated code: Direct field access, no reflection or hash map lookups
-```
-
-### ゼロコピーフォーマット：パースがボトルネックの場合
-
-```
-FlatBuffers (Google): Access fields directly from buffer, no deserialization.
-Cap'n Proto (by Protobuf creator): Zero-copy + built-in RPC system.
-
-Use when:
-  - Reading millions of records, accessing 1-2 fields each
-  - Memory-mapped file access, latency-sensitive IPC
-
-Avoid when:
-  - Data crosses network boundaries (alignment/endianness concerns)
-  - Need maximum compression (zero-copy formats are larger)
-```
+スキーマ付きバイナリが勝つ理由: ワイヤ上にフィールド名がない（代わりにタグ/位置）、型の推測がない（スキーマがコンパイル時に型を固定）、小さな数値にはvarint、リフレクションではなく生成コード。それが問題にならない場合: 50 req/sのサービスはJSONに意味のあるコストを払っていません — エンコーディング最適化が報われるのは*パイプライン*スケール（ホップごとのコスト × ホップ数 × メッセージレート）か*ストレージ*スケール（数十億行 — その場合はそもそも[Parquet/カラムナ](./06-column-storage.md)にいるべきで、そこでは同じエンコーディング — 辞書、RLE、ビットパッキング — がカラム単位で適用されます）。
 
 ---
 
-## エンコーディングフォーマットの選択
-
-### 判断ツリー
+## システムの中でエンコーディングが住む場所
 
 ```
-Human readability needed?        → JSON (or YAML for config)
-Schema evolution critical?       → Protobuf or Avro
-  ├─ Kafka ecosystem?            → Avro + Schema Registry
-  └─ gRPC / internal RPC?        → Protobuf
-Browser-facing API?              → JSON
-High-performance IPC?            → FlatBuffers or Cap'n Proto
-Analytical storage?              → Parquet or ORC (see 06-column-storage.md)
-JSON-like flexibility, smaller?  → MessagePack or CBOR
+External API:      JSON (REST/GraphQL) — humans and unknown clients
+Internal RPC:      Protobuf over gRPC — contracts + codegen + speed
+Event streaming:   Avro (or Protobuf) + Schema Registry on Kafka
+                   — messages outlive deploys; registry is the contract
+Analytics at rest: Parquet/ORC — columnar; schema evolution rules of
+                   the TABLE FORMAT (Iceberg/Delta) apply on top
+Storage engines:   internal record formats (slotted pages, LSM entries)
+                   — see B-Trees / LSM chapters; WAL records must be
+                   versioned too (recovery reads old-format records
+                   after an upgrade!)
+Config:            YAML/JSON — human-edited, schema-validated in CI
 ```
 
-### 実践における一般的なパターン
-
-```
-Typical microservice architecture:
-  External API:    JSON over REST / GraphQL
-  Internal RPC:    Protobuf over gRPC
-  Event streaming: Avro + Schema Registry (Kafka)
-  Configuration:   YAML or JSON
-  Analytics:       Parquet in object storage
-```
-
-### 避けるべきアンチパターン
-
-```
-JSON for internal service-to-service at scale:
-  Parsing overhead compounds across 10+ hops → use Protobuf/gRPC.
-
-Custom binary format:
-  No evolution, no tooling, maintenance burden → use established formats.
-
-Protobuf without schema versioning:
-  Nobody knows which .proto produced old data → use Schema Registry.
-
-required fields everywhere:
-  Can never be removed without breaking readers → prefer optional + defaults.
-```
+再発するアンチパターン: 高ファンアウトの内部サービス間JSON（パースコスト × 10ホップは実際のp99に効く）。独自バイナリフォーマット（「ドキュメントは後で」— 進化・ツーリング・デバッグを永遠に自分で所有することになる）。スキーマバージョンを添付しないデータベースカラム内のprotobufブロブ（4000万行目をデコードするのはどの `.proto` ？）。あらゆるフォーマットでのrequiredフィールド最大主義。
 
 ---
 
-## まとめ
+## 障害モード
 
-1. **可読性ならJSON** - デバッグしやすく、ユニバーサル
-2. **効率性ならProtobuf** - コンパクトで高速、型付き
-3. **バッチ処理ならAvro** - データにスキーマを含み、Hadoop向き
-4. **スキーマ進化は不可欠** - 変更に備えた設計を
-5. **フィールドタグが進化を可能にする** - 番号を再利用しない
-6. **互換性は双方向** - 前方と後方の両方
-7. **パフォーマンスにはゼロコピー** - FlatBuffers、Cap'n Proto
-8. **スキーマレジストリで連携** - 一元的なスキーマ管理
+**タグ/フィールド番号の再利用（Protobuf）。** `string nickname = 5;` を削除し、後から `int64 team_id = 5;` を追加すると、古いメッセージのnicknameのバイト列がチームIDとしてデコードされます — エラーなし、ゴミデータ。`reserved` が存在する理由であり、スキーマレビューがタグ番号を追加専用として扱うべき理由です。`buf breaking` は機械的にこれを捕捉します。
+
+**JSONの64ビット整数。** 2⁵³を超えうるIDはすべて文字列として運ぶこと。障害は、doubleにパースするどこかのコンシューマでの無音の丸めです — 「2人の別ユーザーが同じIDになった」として数週間後に発見されがちです。
+
+**デフォルトなしのAvroフィールド。** プロデューサチームがデフォルトなしのフィールドを追加し、互換性NONE（またはレジストリなし）でプッシュ: 古いreaderスキーマを持つすべてのコンシューマが解決時に例外を投げます。これを不可能にするのがレジストリの仕事のすべてです。1世代を超えて不可能に保つためにTRANSITIVEモードを使ってください。
+
+**データレイクのスキーマドリフト。** JSONをレイクにストリームしてバッチごとにスキーマ推論すると、型が行ったり来たりするカラムができます（`user_id`: 月曜のファイルではint、火曜ではstring）。数か月後、混ざった履歴の上でクエリが失敗します。修正: schema-on-write（レジストリでインジェスト時に強制）と、カラムの同一性と型昇格を所有するテーブルフォーマット（Iceberg/Delta）。
+
+**WAL/スナップショットのフォーマットアップグレード。** ストレージエンジンとステートフルサービスはアップグレード後に*自分自身の*古いフォーマットを読まなければなりません — リカバリは前のバイナリが書いたレコードをリプレイします（[WAL](./04-write-ahead-logging.md)）。すべての永続レコードヘッダにバージョンを付け、新規状態だけでなくN−1・N−2が書いたデータでアップグレードパスをテストしてください。
+
+**圧縮との混同。** エンコーディングと圧縮は別のレイヤです: Protobufはコンパクトですが、zstdでさらに約2倍圧縮されます。JSON+zstdは高いCPUコストでprotobufサイズに近づけます。「バイナリが必要だ」とも「gzipで十分だ」とも結論する前に、エンドツーエンド（CPU+バイト+レイテンシ）で計測を。
+
+---
+
+## 意思決定フレームワーク
+
+| 要件 | 選択 |
+|-------------|--------|
+| 公開/外部API | JSON（RESTまたはGraphQL）。64ビットIDは文字列で |
+| 内部サービスRPC | Protobuf + gRPC、CIで `buf breaking` |
+| Kafka / イベントストリーム | AvroまたはProtobuf + Schema Registry、FULL_TRANSITIVE |
+| 分析ストレージ | Iceberg/Delta配下のParquet/ORC — 一度エンコードし、カラムナで |
+| 長寿命の保存ブロブ | スキーマバージョンヘッダを埋め込んだものなら何でも |
+| ホットなIPC / mmap、少数フィールドのみ参照 | FlatBuffers / Cap'n Proto |
+| スキーマレスでJSONより小さく | CBORまたはMessagePack（JSONの契約ギャップを受け入れる） |
+| 人間が編集 | YAML/JSON + CIでのスキーマ検証。マシン間には決して使わない |
+| ペイロードの署名/ハッシュ | まず正規形（JSONならJCS）にするか、生バイトに署名 |
+
+---
+
+## 重要なポイント
+
+1. **エンコーディングは第一に互換性の問題、第二にパフォーマンスの問題** — データはコードより長生きし、ローリングデプロイは「古が新を読む」「新が古を読む」を移行イベントではなく恒常的な運用条件にする。
+2. **ワイヤ上の同一性はフォーマットごとに異なる**: Protobuf = タグ番号（再利用禁止。名前は自由）、Avro = スキーマ解決による名前（デフォルト必須）、JSON = 最も脆いコンシューマがやること次第。
+3. **全部optional、どこでもデフォルト** — ワイヤレベルの `required` は、成熟したスキーマ文化がすべて閉じた一方通行のドア。バリデーションはアプリケーションコードで。
+4. **進化を機械的に強制する** — TRANSITIVE互換性付きスキーマレジストリ、またはCIでの `buf breaking`。破壊的変更はコンシューマチームを呼び出すのではなくビルドを失敗させるべき。
+5. **JSONの数値はdouble** — 64ビットIDは文字列で運ぶ。さもなければ無音で壊れる。
+6. **スキーマ付きバイナリはJSONの5〜10倍速く3倍小さい**。それが効くのはパイプラインとストレージのスケールであり、50 req/sのサービスではない。
+7. **ゼロコピーフォーマットはサイズと使い勝手をパース時間ゼロと交換する** — 少数フィールドの読み取り重視アクセスには正しく、APIのデフォルトには誤り。
+8. **ストレージフォーマットにもバージョンを** — WAL、スナップショット、DBカラムのブロブは将来のバイナリに読まれる。すべてのレコードにスキーマ/バージョンヘッダを。
+
+---
+
+## 参考文献
+
+- Kleppmann, M. (2017). *Designing Data-Intensive Applications*, Ch. 4 "Encoding and Evolution" — 決定版の扱い。
+- Protocol Buffers documentation: *Encoding* (varint/wire format) and *Proto Best Practices* (reserved, field numbering).
+- Apache Avro specification: *Schema Resolution*.
+- Confluent Schema Registry documentation: *Compatibility Types* (incl. transitive modes).
+- `buf` documentation: *Breaking Change Detection*.
+- RFC 8785: *JSON Canonicalization Scheme (JCS)*; RFC 8949: *CBOR*.
+- FlatBuffers and Cap'n Proto design documents (zero-copy layouts).

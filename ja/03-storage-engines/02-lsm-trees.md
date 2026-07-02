@@ -1,528 +1,164 @@
 # LSM木
 
-> この記事は英語版から翻訳されました。最新版は[英語版](/03-storage-engines/02-lsm-trees.md)をご覧ください。
+> この記事は英語版から翻訳されました。最新版は[英語版](/03-storage-engines/02-lsm-trees.md)をご覧ください。コードブロック・数式・図は原文のまま維持しています。
 
 ## TL;DR
 
-LSM木（Log-Structured Merge Tree）は、読み取りパフォーマンスと引き換えに書き込みパフォーマンスを向上させます。書き込みはまずインメモリバッファに蓄積され、その後ディスク上のイミュータブルなソート済みファイルにフラッシュされます。バックグラウンドのコンパクションがファイルをマージして読み取りパフォーマンスを維持します。LSM木は書き込み負荷の高いワークロードに優れており、LevelDB、RocksDB、Cassandra、HBaseで使用されています。
+Log-Structured Merge木はひとつの問いへの答えです: ストレージエンジンがランダム書き込みを一切行わなかったらどうなるか？ すべての書き込みはソート済みのインメモリバッファに着地し、イミュータブルなソート済みファイル（SSTable）のシーケンシャルなフラッシュとしてのみディスクに到達します。バックグラウンドの*コンパクション*がそれらのファイルをマージし、読み取りと空間を制御下に保ちます。代償は、キーがもはや1か所に住んでいないことです — 読み取りは多数のラン（run）を参照しなければならず（読み取り増幅）、コンパクションはデータを何度も書き直し（書き込み増幅）、古いバージョンはマージされるまで居座ります（空間増幅）。3つの増幅はトライアングルを形成します: どのコンパクション戦略も3つ全部では勝てません。leveled/tiered/FIFOが存在する理由であり、LSMのチューニングが設定作業ではなくワークロードエンジニアリングである理由です。LSMはRocksDB（そしてそれを通じてCockroachDB、TiKV、YugabyteDB）、Cassandra/ScyllaDB、HBase — 実質すべての書き込み重視の分散ストア — を支えています。本章では構造を組み立て、トライアングルを定量化し、本番の実務領域 — RocksDBチューニング、トゥームストーンの病理、書き込みストール、監視 — を扱います。
 
 ---
 
-## 書き込みの問題
+## 書き込み問題
 
-### B木の書き込みコスト
-
-```
-B-tree random write:
-  1. Find page (random read)
-  2. Modify page
-  3. Write page back (random write)
-  4. Write to WAL (sequential)
-
-Random I/O is slow, especially on HDDs
-```
-
-### LSMの解決策
+[B木](./01-b-trees.md)はデータをin-placeで更新します。ランダムなキーへの小さな書き込みが続くワークロードでは、更新ごとにページサイズのread-modify-writeがインデックス全体に散らばることを意味します:
 
 ```
-Convert random writes to sequential:
-  1. Buffer writes in memory (MemTable)
-  2. When full, flush to disk as sorted file
-  3. All disk writes are sequential
+B-tree, 100-byte insert with a random key, 8 KB pages:
+  1. read the target leaf page      (random read — a miss once the
+                                     tree exceeds the buffer pool)
+  2. modify 100 bytes in memory
+  3. WAL the change                 (sequential — cheap)
+  4. eventually write the page back (random 8 KB write)
 
-SSDs: Still faster (no erase-before-write)
-HDDs: Much faster (10-100x improvement)
+Per-insert device cost at steady state: ~1 random read + ~1 random write
+  HDD  (~100-200 IOPS):    → low hundreds of inserts/sec. Catastrophic.
+  NVMe (~10⁵-10⁶ IOPS):    → fine, until it isn't (below)
 ```
+
+LSMはランダムI/Oを完全に取り除きます:
+
+```
+LSM, same insert:
+  1. append to WAL                  (sequential)
+  2. insert into in-memory memtable (no disk)
+  ...later, amortized:
+  3. flush a FULL memtable (64-256 MB) as one sequential file write
+  4. compaction rewrites data in large sequential merges
+
+Every byte the device sees is part of a large sequential write.
+A single NVMe drive sustains 1-3 GB/s sequential — the ingest ceiling
+becomes compaction bandwidth, not IOPS.
+```
+
+HDDからSSDへの移行後も生き残る注意点が2つ。第一に、SSDは依然として大きなシーケンシャル書き込みを強く好みます: FTLがそれらを消去ブロック単位にまとめ、デバイス内部のガベージコレクションとその書き込みの崖（write cliff）を最小化します（デバイスレベルの書き込み増幅はエンジンの書き込み増幅と複利で効きます）。第二に、イミュータブルなファイル出力こそが残りのアーキテクチャを無料で成立させるものです — チェックサム付きで、圧縮可能で、キャッシュに優しく、丸ごと複製やアップロードができるファイル（[SSTableとコンパクション](./03-sstables-compaction.md)、[オブジェクトストレージ](./08-object-storage.md)）。
 
 ---
 
-## LSM木の構造
-
-### 概要
+## 構造と書き込みパス
 
 ```mermaid
 graph TD
     W["Writes"] -->|"insert"| MT["MemTable<br/>(in-memory, sorted, mutable)"]
     MT -->|"flush when full"| IMT["Immutable MemTable<br/>(being flushed)"]
-    IMT -->|"write to disk"| L0[("Level 0<br/>SST · SST · SST<br/>(recent, unsorted between files)")]
+    IMT -->|"write to disk"| L0[("Level 0<br/>SST · SST · SST<br/>(recent, files may overlap)")]
     L0 -->|"compact"| L1[("Level 1<br/>SST · SST · SST · SST<br/>(sorted, non-overlapping)")]
-    L1 -->|"compact"| L2[("Level 2<br/>SST · SST · SST · SST<br/>(larger, non-overlapping)")]
+    L1 -->|"compact"| L2[("Level 2<br/>10× larger, non-overlapping")]
     L2 -->|"compact"| MORE["..."]
 ```
 
-### MemTable
+**memtable**はソート済みのインメモリ構造で、ほぼ常に**スキップリスト**です（RocksDB、Cassandra、Pebble）。平衡木でない理由は並行性の形をしています: スキップリストはロックフリーの並行挿入をシンプルなエポックベースのメモリ回収と共にサポートし、フラットなノード構造のおかげでフラッシュ時のソート済みイテレーションが安価です。書き込みはO(log n)のメモリ操作で、その前のWAL追記が書き込みパス上の唯一のディスク接触です。
+
+**フラッシュサイクル:** memtableがサイズ上限（`write_buffer_size`、通常64〜256MB）に達すると、アトミックに新しいものと交換されて*イミュータブルmemtable*になります。バックグラウンドスレッドがそれをLevel-0 SSTableとしてディスクにストリームし、対応するWALセグメントを切り詰めます。移行中の読み取りは両方のmemtableを参照します — 停止はありません。ノブ `max_write_buffer_number` はイミュータブルmemtableが何個まで積み上がれるかを制限します。フラッシュが追いつけなければ、エンジンはまずスロットルし、次に**書き込みをストール**させます — LSMの代名詞的な障害モードで、監視の節で扱います。
 
 ```
-In-memory sorted structure:
-  - Red-black tree
-  - Skip list (common choice)
-  - B-tree
+Write path, end to end:
+  1. append to WAL                          → durability
+  2. insert into memtable                   → visibility
+  3. ack the client                         (total: 1 sequential append
+                                             + 1 in-memory insert)
+  4. [async] memtable full → immutable → flushed as L0 SSTable
+  5. [async] compaction merges L0 → L1 → ... in the background
 
-Properties:
-  - Fast writes: O(log n)
-  - Ordered for efficient flush
-  - Size limited (typically 64 MB)
+The client-visible latency contains no random I/O and no compaction —
+those are background costs, paid later. This deferral is both the
+LSM's superpower and its operational trap: ingest can outrun
+compaction for hours, and the debt comes due as read degradation
+and, eventually, write stalls.
 ```
 
-### SSTable（Sorted String Table）
-
-```
-Immutable file on disk:
-
-┌────────────────────────────────────────────┐
-│ Data Block 1 │ Data Block 2 │ ... │ Index │
-└────────────────────────────────────────────┘
-
-Data Block:
-  [key1, value1][key2, value2]...
-  Sorted by key
-  Compressed (LZ4, Snappy, Zstd)
-
-Index Block:
-  Sparse index: [key → block offset]
-  Find block, then binary search within
-```
-
----
-
-## 書き込みパス
-
-### ステップバイステップ
-
-```
-1. Write to WAL (sequential, for durability)
-2. Write to MemTable (in-memory)
-3. Ack to client
-
-4. When MemTable full:
-   - Make current MemTable immutable
-   - Create new MemTable for writes
-   - Background: Flush immutable MemTable to SSTable
-
-5. Background compaction merges SSTables
-```
-
-### コード例
-
-```python
-class LSMTree:
-    def __init__(self):
-        self.wal = WriteAheadLog()
-        self.memtable = SkipList()
-        self.immutable_memtables = []
-        self.levels = [[] for _ in range(MAX_LEVELS)]
-
-    def write(self, key, value):
-        # Durability: Write to log first
-        self.wal.append(key, value)
-
-        # Then to memory
-        self.memtable.put(key, value)
-
-        if self.memtable.size() > MEMTABLE_SIZE:
-            self.flush_memtable()
-
-    def flush_memtable(self):
-        # Make immutable
-        self.immutable_memtables.append(self.memtable)
-        self.memtable = SkipList()
-
-        # Schedule background flush
-        schedule(self.flush_to_l0)
-
-    def flush_to_l0(self):
-        immutable = self.immutable_memtables.pop(0)
-        sstable = SSTable.create_from(immutable)
-        self.levels[0].append(sstable)
-        self.wal.truncate_flushed()
-```
+**Level 0は特別です。** 各L0ファイルは完全なmemtableスナップショットなので、L0ファイル同士はキーレンジが重なります — 読み取りは全部を確認しなければなりません。より深いレベルはどれも、重ならないファイル群に分割された1本のソート済みランなので、読み取りはレベルあたり最大1ファイルで済みます。したがってL0を小さく保つことがコンパクションの最優先の仕事です。
 
 ---
 
 ## 読み取りパス
 
-### 検索順序
-
 ```
-1. Check MemTable
-2. Check Immutable MemTables (if any)
-3. Check Level 0 SSTables (all of them, might overlap)
-4. Check Level 1+ (binary search, non-overlapping)
-5. Return value or "not found"
-```
+Get(key) — newest to oldest, first hit wins:
+  1. memtable
+  2. immutable memtable(s)
+  3. every L0 file, newest first        ← all may contain the key
+  4. one candidate file per level L1+   (binary search on file ranges)
 
-### 最適化：ブルームフィルタ
-
-```
-Before reading SSTable from disk:
-  Check Bloom filter
-
-if bloom_filter.might_contain(key):
-    read_sstable()  # Might be there
-else:
-    skip()  # Definitely not there (false positive rate ~1%)
-
-Reduces disk reads for non-existent keys
+Runs to consult ≈ #L0 files + #levels ≈ 10 in a healthy tree.
+Without filters, a MISS costs ~10 file probes (index + data block each).
+With a bloom filter per SSTable at 1% FPR, expected wasted reads ≈ 0.1.
 ```
 
-フィルタの数学、キャッシュラインを意識したレイアウト、レベルごとの偽陽性率配分（Monkey）、静的な代替（ribbon、binary fuse）は[ブルームフィルタ](./05-bloom-filters.md)で詳しく扱っています。
+ブルームフィルタこそがLSMのポイント読み取りを競争力あるものにしています — フィルタの数学、キャッシュラインを意識したレイアウト、レベルごとの偽陽性率配分（Monkey）、静的な代替（ribbon、binary fuse）は[ブルームフィルタ](./05-bloom-filters.md)で詳しく扱っています。
 
-### 読み取り増幅
-
-```
-Worst case (key doesn't exist):
-  MemTable: 1 check
-  L0: N SSTables (all overlap)
-  L1: 1 SSTable
-  L2: 1 SSTable
-  ...
-
-Total: 1 + N + (L-1) checks
-
-Bloom filters reduce actual disk reads
-```
+フィルタが直せないもの: **レンジスキャン**（レンジの質問に答えられるフィルタはないため、全ランをマージイテレートする必要がある）、そして**ホットキーのバージョン山積み** — コンパクションの合間に数千回更新されたキーは多数のランに存在し、読み取りは依然として最新版を見つけなければなりません。つまり読み取り増幅は、B木の読み取りにはない形でワークロード依存です: よくコンパクションされたLSMはB木のように読め、コンパクション飢餓のLSMはラン上の線形スキャンのように読めます。
 
 ---
 
-## コンパクション
+## コンパクション: 繰り延べた請求書の支払い
 
-### なぜコンパクションが必要か？
+コンパクションはソート済みランをマージし、各キーの最新バージョンだけを残し、（最終的には）トゥームストーンを落とします。これが存在するのは、なければすべての繰り延べコストが複利で効いてくるからです: L0が無制限に成長し（読み取り増幅↑）、古いバージョンが蓄積し（空間増幅↑）、何も回収されません。
 
-```
-Without compaction:
-  - Many overlapping files in L0
-  - Same key in multiple SSTables
-  - Read performance degrades
-  - Disk space wasted (obsolete values)
-
-Compaction:
-  - Merges SSTables
-  - Removes duplicates (keep latest)
-  - Removes tombstones
-  - Improves read performance
-```
-
-### コンパクション戦略
-
-**サイズ階層型（STCS）：**
-```
-Merge SSTables of similar size
-
-When N SSTables of size S exist:
-  Merge into 1 SSTable of size ~N*S
-
-Pros: Simple, good write amplification
-Cons: Space amplification (need 2x during compaction)
-```
-
-**レベル型（LCS）：**
-```
-Each level has size limit: L(i) = L0 * ratio^i
-Files in level are non-overlapping
-
-When level exceeds limit:
-  Pick file, merge with overlapping files in next level
-
-Pros: Controlled space, better read performance
-Cons: Higher write amplification
-```
-
-**FIFO：**
-```
-Delete oldest SSTables when size limit reached
-No merge, just deletion
-
-Use case: Time-series data with TTL
-```
-
----
-
-## 書き込み増幅
-
-### 定義
+戦略空間は2つの極の間のスペクトラムです:
 
 ```
-Write amplification = (Total bytes written to disk) / (Bytes written by user)
+Size-tiered (STCS): collect ~4 runs of similar size, merge into one
+  run in the next tier. Each key is rewritten ~once per tier.
+  → LOW write amp, HIGH read amp (many runs), HIGH space amp
+    (duplicates of a key may exist once per tier; worst case ~2×+)
 
-Sources:
-  1. WAL write
-  2. MemTable flush
-  3. Compaction (data rewritten multiple times)
+Leveled (LCS): maintain one sorted run per level, levels sized
+  L(i+1) = 10 × L(i). Compacting a file merges it with the ~10
+  overlapping files below — each key is rewritten ~10× per level.
+  → HIGH write amp (~10 per level), LOW read amp (1 file/level),
+    LOW space amp (~1.1×)
+
+FIFO: no merging at all; delete oldest files past a size/TTL bound.
+  → for data whose value expires (metrics, logs)
 ```
 
-### レベル型コンパクションの計算
-
-```
-Level ratio = 10
-Data moves through ~L levels
-
-At each level:
-  Key might be rewritten ~10 times (merge with 10 files)
-
-Total: ~10 * L writes per key
-For 1 TB data, 4 levels: ~40x write amplification
-```
-
-### トレードオフ
-
-| 戦略 | 書き込み増幅 | 空間増幅 | 読み取り増幅 |
-|------|-------------|---------|-------------|
-| サイズ階層型 | 低 | 高 | 高 |
-| レベル型 | 高 | 低 | 低 |
-| FIFO | なし | なし | N/A |
-
----
-
-## 空間増幅
-
-### 原因
-
-```
-1. Obsolete values
-   Key updated multiple times, old values not yet compacted
-
-2. Tombstones
-   Deleted keys, tombstones not yet garbage collected
-
-3. Compaction temp space
-   During compaction, both old and new SSTables exist
-```
-
-### サイズ階層型の空間
-
-```
-Worst case: All SSTables being compacted simultaneously
-Space needed: 2x actual data size
-
-Typical: 1.5-2x data size
-```
-
-### レベル型の空間
-
-```
-Bounded by level ratio
-Typical: 1.1x data size
-
-Lower because:
-  - Non-overlapping files per level
-  - Incremental compaction
-```
+メカニクス — ファイルフォーマット、マージイテレータ、トゥームストーンGCルール、スケジューリング、trivial move、サブコンパクション — は[SSTableとコンパクション](./03-sstables-compaction.md)にあります。戦略の比較と選択の指針は、それを動機づける増幅の数学の後、本章の後半に登場します。
 
 ---
 
 ## 削除とトゥームストーン
 
-### 問題
+イミュータブルファイルの設計では、古いファイルに触れてキーを消すことはできません。削除とは、古いバージョンを覆い隠すトゥームストーンマーカーの*書き込み*です:
 
 ```
-Naive delete:
-  Remove key from MemTable
+delete(k)  →  write (k, TOMBSTONE, seq)
 
-But key might exist in SSTables!
-Next read might find old value
+Read:  sees tombstone first (it's newest) → "not found"
+Compaction: tombstone erases older versions of k it meets...
+  ...but the tombstone itself can only be dropped when it reaches
+  the bottom level (or provably overlaps no older data) — otherwise
+  a yet-unmerged older version would "resurrect".
+  Plus (Cassandra): not before gc_grace_seconds, so the tombstone
+  has time to replicate to nodes that missed the delete — dropping
+  it early resurrects data cluster-wide via repair.
 ```
 
-### トゥームストーンによる解決
+設計時に織り込むべき帰結:
 
-```
-Write special "tombstone" marker:
-  write(key, TOMBSTONE)
-
-Read returns "not found" when tombstone seen
-Tombstone propagates through compaction
-Eventually garbage collected at bottom level
-```
-
-### トゥームストーンのコンパクション
-
-```
-Tombstone can only be removed when:
-  - It has reached the bottom level
-  - All older versions are removed
-
-Long-lived tombstones = space overhead
-```
+- **削除は空間を解放する前に消費します。** 大量削除は、コンパクションがトゥームストーンを最下層まで運ぶまでデータセットを*大きく*します。キャパシティレビューの前夜にテーブル1本分の行を削除するのは古典的な自爆です。
+- **キューのアンチパターン。** LSMテーブルをFIFOキューとして使う（挿入、読み取り、削除）と、先頭にトゥームストーンが蓄積します。「次を読む」たびに、生きている行を見つける前に数百万のトゥームストーン化エントリをスキャンすることになります。Cassandraはまさにこれに対して `TombstoneOverwhelmingException` を発します。キューは[メッセージキュー](../05-messaging/01-message-queues.md)に置くべきで、最低でも丸ごと落とせる時間バケット化テーブル（FIFO/TWCSパターン）にすべきです。
+- **レンジトゥームストーン**（プレフィックス/パーティション全体を1マーカーで削除）はキーごとのトゥームストーンよりはるかに安く書けますが、コンパクションが解決するまで読み取りがレンジマーカーを運ぶことになります — 節度を持って使うこと。
+- **TTLデータ**: ファイル丸ごとが期限切れになる自然満期の戦略（FIFO/TWCS）を選びましょう — ファイル削除による削除は、コンパクション作業ゼロ・トゥームストーンゼロです。
 
 ---
 
-## LSM木のチューニング
-
-### 主要パラメータ
+## 増幅のトライアングル
 
 ```
-memtable_size:
-  Larger: Better write throughput, longer recovery
-  Typical: 64 MB - 256 MB
-
-level0_file_num_compaction_trigger:
-  Files in L0 before compaction triggers
-  Larger: Better write, worse read
-  Typical: 4
-
-level_ratio (max_bytes_for_level_multiplier):
-  Size ratio between levels
-  Larger: Fewer levels, more write amp
-  Typical: 10
-
-write_buffer_count:
-  Number of MemTables before stalling
-  Typical: 2-4
+Write Amplification (WA) = bytes written to device / bytes written by app
+Read Amplification (RA)  = device reads per logical read
+Space Amplification (SA) = bytes on device / logical data size
 ```
-
-### ブルームフィルタのサイジング
-
-```
-Bits per key: 10 = ~1% false positive
-Bits per key: 15 = ~0.1% false positive
-
-More bits = Less reads, more memory
-Typical: 10 bits per key
-```
-
-### 圧縮
-
-```
-Level 0-1: LZ4/Snappy (fast, moderate compression)
-Level 2+:  Zstd (better compression, slower)
-
-Trade-off: CPU for I/O
-SSDs favor faster compression
-```
-
----
-
-## LSM木を使用するシステム
-
-### LevelDB / RocksDB
-
-```
-Google's LevelDB: Original, simple
-Facebook's RocksDB: Production-hardened, many features
-
-RocksDB additions:
-  - Column families
-  - Transactions
-  - Multiple compaction styles
-  - Statistics and monitoring
-```
-
-### Cassandra
-
-```
-Each table has its own LSM tree
-Compaction strategies configurable per table
-
-Size-tiered: Default (good for write-heavy)
-Leveled: Better for read-heavy
-Time-window: Time-series data
-```
-
-### HBase
-
-```
-LSM-based on HDFS
-MemStore (MemTable) → HFiles (SSTables)
-
-Major compaction: Merge all files
-Minor compaction: Merge some files
-```
-
----
-
-## B木 vs LSM木
-
-| 側面 | B木 | LSM木 |
-|------|-----|-------|
-| 書き込み | ランダムI/O | シーケンシャルI/O |
-| 読み取り | 1回のルックアップ | 複数回のルックアップ |
-| 書き込み増幅 | 約10倍 | 約10-30倍 |
-| 空間増幅 | 約1.5倍 | 約1.1-2倍 |
-| コンパクション | なし | バックグラウンド |
-| 範囲スキャン | 優秀 | 良好 |
-| ポイントルックアップ | 優秀 | 良好 |
-
-### LSMを使うべき場合
-
-```
-✓ Write-heavy workloads
-✓ Sequential write patterns (time-series)
-✓ SSD-based storage (tolerates read amp)
-✓ Key-value stores
-✓ Need high write throughput
-
-✗ Read-heavy workloads
-✗ Complex queries
-✗ Latency-sensitive reads
-✗ Predictable performance needed
-```
-
----
-
-## 書き込み増幅の詳細
-
-### 正式な定義
-
-```
-Write Amplification (WA) = Total bytes written to storage device
-                           ─────────────────────────────────────
-                           Total bytes written by application
-
-A WA of 20× means for every 1 GB the application writes,
-the storage engine writes 20 GB to disk.
-```
-
-### レベル型コンパクションの書き込み増幅
-
-```
-WA = O(L × size_ratio)
-
-Where:
-  L          = number of levels
-  size_ratio = level size multiplier (typically 10)
-
-Example (RocksDB defaults):
-  6 levels, size_ratio = 10
-  Each key may be rewritten up to size_ratio times per level
-  WA ≈ 10–30× in practice
-
-  For a 1 TB dataset:
-    L0: 256 MB  →  L1: 2.56 GB  →  L2: 25.6 GB  →  L3: 256 GB  →  L4: 1 TB
-    A single key written to L0 may be compacted through every level,
-    each time merged with ~10 neighboring SSTables.
-```
-
-### 階層型コンパクションの書き込み増幅
-
-```
-WA = O(T × levels)
-
-Where:
-  T = number of runs accumulated per tier before merge (typically 4)
-
-Example (Cassandra STCS defaults):
-  4 tiers before merge, ~4 levels deep
-  WA ≈ 4–10× in practice
-
-Lower WA because each merge combines same-tier files
-rather than rewriting into a fully sorted level.
-```
-
-### RocksDBでの書き込み増幅の測定
-
-```
-RocksDB exposes counters in its statistics:
-  rocksdb.compact.write.bytes   — bytes written by compaction
-  rocksdb.flush.write.bytes     — bytes written by flush
-  rocksdb.bytes.written         — bytes written by application (Put/Merge/Delete)
-
-  WA = (compact.write.bytes + flush.write.bytes) / bytes.written
-
-Monitor via:
-  db->GetProperty("rocksdb.stats", &stats);
-  or the LOG file section "Cumulative compaction"
-```
-
-### 増幅トレードオフの三角形
 
 ```mermaid
 graph TD
@@ -535,18 +171,59 @@ graph TD
     PICK -.- NOTE3["Hybrid: middle ground on all three"]
 ```
 
-```
-Concrete numbers (RocksDB leveled, size_ratio=10, 6 levels):
-  WA ≈ 20×  |  SA ≈ 1.1×  |  RA ≈ 1 disk read per point lookup (with bloom)
+### Leveled WAの導出
 
-This triangle drives every LSM tuning decision.
 ```
+WA(leveled) ≈ 1 (WAL) + 1 (flush) + size_ratio × (#levels - 1)
+                                     ↑ each level rewrite merges the
+                                       moving file with ~size_ratio
+                                       overlapping files below
+
+Example (RocksDB defaults, size_ratio = 10):
+  1 TB dataset → levels: 256 MB → 2.5 GB → 25 GB → 250 GB → 1 TB (5 levels)
+  WA ≈ 2 + 10 × 4 ≈ 40× worst case; 10-30× measured in practice
+  (measured is lower: trivial moves, keys that die young in upper
+   levels, and skew all reduce rewrites)
+
+Consequence: sustained ingest of 100 MB/s at WA 20 = 2 GB/s of
+compaction writes. THIS is the number to check against device
+bandwidth — not the application write rate.
+```
+
+### Tiered WAの導出
+
+```
+WA(tiered) ≈ 1 + 1 + (#tiers)      — each key rewritten ~once per tier
+Example (Cassandra STCS, ~4 tiers): WA ≈ 4-10×
+
+The saving comes from merging same-size runs instead of pushing into
+a fully-sorted level; the cost is carrying T overlapping runs per tier
+(read amp) and up to a full duplicate of the dataset mid-merge (space).
+Worst-case STCS space: a single giant compaction needs input + output
+live simultaneously — budget 50%+ disk headroom.
+```
+
+### RocksDBでのWA計測
+
+```
+  rocksdb.compact.write.bytes   — bytes written by compaction
+  rocksdb.flush.write.bytes     — bytes written by flush
+  rocksdb.bytes.written         — bytes written by application
+
+  WA = (compact.write.bytes + flush.write.bytes) / bytes.written
+
+Or read the LOG file's "Cumulative compaction" section.
+Concrete healthy reference (leveled, ratio 10, 6 levels):
+  WA ≈ 20×  |  SA ≈ 1.1×  |  RA ≈ 1 disk read per point lookup (with bloom)
+```
+
+研究の最前線はこのトライアングルを形式化しています: **Monkey**（SIGMOD '17）はレベル横断のフィルタメモリ配分を最適化し、**Dostoevsky**（SIGMOD '18）はleveledとtieredが連続体の両端点であることを示し（「lazy leveling」）、レベルごとにマージポリシーを選びます。RocksDBのuniversal compactionとScyllaDBのICSは、同じ連続体上の実運用における歩みです。
 
 ---
 
-## RocksDBの本番環境設定
+## 本番向けRocksDB設定
 
-### MemTableとライトバッファ
+### MemTableと書き込みバッファ
 
 ```
 write_buffer_size = 128MB
@@ -583,7 +260,7 @@ level0_stop_writes_trigger = 36
   Increase max_background_compactions or reduce write rate.
 ```
 
-### コンパクションの並列性
+### コンパクションの並列度
 
 ```
 max_background_compactions = 4
@@ -644,16 +321,16 @@ compression_per_level          = [none, none, lz4, lz4, lz4, zstd, zstd]
 
 ## コンパクション戦略の比較
 
-### 戦略マトリックス
+### 戦略マトリクス
 
-| 戦略 | 書き込み増幅 | 読み取り増幅 | 空間増幅 | 最適な用途 |
-|------|-------------|-------------|---------|-----------|
-| レベル型（RocksDBデフォルト） | 高（10-30倍） | 低（1読み取り + bloom） | 低（1.1倍） | ポイントルックアップ、読み取り中心のOLTP |
-| サイズ階層型（Cassandraデフォルト） | 低（4-10倍） | 高（全階層スキャン） | 高（最大2倍） | 書き込み中心、時系列データ取り込み |
-| FIFO | なし | N/A（フルスキャン） | なし（制限あり） | TTLベースのメトリクス、一時的なデータ |
-| Universal（RocksDB） | 中（8-20倍） | 中 | 中（1.2-1.5倍） | 混合ワークロード、適応型 |
+| 戦略 | 書き込み増幅 | 読み取り増幅 | 空間増幅 | 適するケース |
+|----------|-----------|----------|-----------|----------|
+| Leveled（RocksDBデフォルト） | 高（10–30×） | 低（1読み取り+bloom） | 低（1.1×） | ポイントルックアップ、読み取り重視OLTP |
+| Size-Tiered（Cassandraデフォルト） | 低（4–10×） | 高（全ティアをスキャン） | 高（最大2×） | 書き込み重視、時系列インジェスト |
+| FIFO | なし | N/A（フルスキャン） | なし（有界） | TTLベースのメトリクス、短命データ |
+| Universal（RocksDB） | 中（8–20×） | 中 | 中（1.2–1.5×） | 混合ワークロード、適応的 |
 
-### 判断フレームワーク
+### 意思決定フレームワーク
 
 ```
 Start with leveled compaction (the safe default).
@@ -697,7 +374,7 @@ ScyllaDB Incremental Compaction Strategy (ICS):
 
 ---
 
-## 本番システムでのLSM木
+## 本番システムにおけるLSM木
 
 ### 組み込みエンジンとしてのRocksDB
 
@@ -705,9 +382,9 @@ ScyllaDB Incremental Compaction Strategy (ICS):
 RocksDB is the storage engine beneath most modern distributed databases:
 
 CockroachDB:
-  Uses RocksDB (migrating to Pebble, a Go rewrite) for MVCC key-value storage.
-  Each range (partition) is a RocksDB column family.
-  Leveled compaction. Heavy use of prefix bloom filters.
+  Migrated from RocksDB to Pebble (a Go reimplementation of the same
+  design) for MVCC key-value storage. Leveled compaction; heavy use
+  of prefix bloom filters.
 
 TiDB (TiKV):
   Rust-based storage node embedding RocksDB.
@@ -723,7 +400,8 @@ YugabyteDB (DocDB):
 
 ```
 LevelDB (Google, 2011):
-  Original reference implementation by Jeff Dean and Sanjay Ghemawat.
+  Original reference implementation by Jeff Dean and Sanjay Ghemawat,
+  distilling the Bigtable tablet design.
   Used by Bitcoin Core for UTXO set, Chrome for IndexedDB.
   Single-threaded compaction, no column families.
   Still useful for embedded, single-writer use cases.
@@ -765,7 +443,7 @@ The oplog benefits from LSM characteristics: append-heavy,
 sequential writes, range-scan reads for replication.
 ```
 
-### 重要な知見
+### 鍵となる観察
 
 ```
 LSM trees dominate distributed database storage engines because:
@@ -777,9 +455,9 @@ LSM trees dominate distributed database storage engines because:
 
 ---
 
-## LSMの健全性モニタリング
+## LSMの健全性の監視
 
-### 重要なメトリクス
+### 重要メトリクス
 
 ```
 1. Compaction Pending Bytes
@@ -802,7 +480,7 @@ LSM trees dominate distributed database storage engines because:
           or add compaction threads.
 ```
 
-### レイテンシとI/Oインジケータ
+### レイテンシとI/Oの指標
 
 ```
 4. Read Latency P99
@@ -849,13 +527,55 @@ Parse these with a log shipper and alert on occurrence count.
 
 ---
 
+## B木 vs LSM: 本当の判断基準
+
+| 観点 | B木 | LSM木 |
+|--------|--------|----------|
+| 書き込みパス | ランダムなページRMW、即時 | シーケンシャル追記、遅延マージ |
+| 書き込み増幅 | 償却2–10×、ページサイズのスパイク | 10–30×（leveled）、バックグラウンドで支払い |
+| ポイント読み取り | 高さ分のページアクセス、ほぼキャッシュ済み | memtable + 約1ディスク読み取り（bloomあり） |
+| レンジスキャン | 優秀（兄弟連結リーフ） | 良好（ラン横断のk-wayマージ） |
+| 空間増幅 | 1.3–2×（fill factor、ブロート） | 1.1×（leveled）〜2×（tiered） |
+| レイテンシプロファイル | 安定 | コンパクション負債が溜まるまで安定 → ストール |
+| ホット行の更新 | ほぼ無料（同じページ） | 全バージョンが全レベルを通して書き直される |
+| 並行性のコスト | ラッチングの複雑さ | イミュータブルファイル: スナップショット読み取りが自明 |
+
+```
+Choose LSM when:
+  ✓ Ingest rate is the defining requirement (events, time-series, logs)
+  ✓ Keys are write-once or write-rarely (unique IDs, append streams)
+  ✓ Sequential-write economics matter (SSD endurance, cloud disks)
+  ✓ You want immutable files for replication/backup/tiering
+
+Choose B-tree when:
+  ✓ Read latency predictability is the defining requirement
+  ✓ Hot rows are updated repeatedly (update locality)
+  ✓ Rich transactional workloads (the RDBMS ecosystem is B-tree-shaped)
+  ✗ Don't choose LSM to "make writes fast" if your write rate is
+    modest — you'll pay the read and operational tax for nothing.
+```
+
+---
+
 ## 重要なポイント
 
-1. **まずメモリに書き込む** - フラッシュによるシーケンシャルなディスク書き込み
-2. **SSTableはイミュータブル** - 追記専用の設計
-3. **コンパクションは不可欠** - 読み取りパフォーマンスを維持します
-4. **トレードオフの三角形** - 書き込み増幅、読み取り増幅、空間増幅
-5. **ブルームフィルタは重要** - ディスク読み取りを削減します
-6. **レベル型は読み取り向き** - サイズ階層型は書き込み向き
-7. **トゥームストーンにはコストがある** - 遅延されるガベージコレクション
-8. **チューニングはワークロード固有** - 万能な設定はありません
+1. **LSM = ランダムに書かない**: WAL + memtable + シーケンシャルフラッシュ。ランダムI/Oのコストはすべてバックグラウンドのシーケンシャルマージ作業に変換される。
+2. **トライアングルが理論のすべて** — 書き込み増幅、読み取り増幅、空間増幅。leveledとtieredはその両極であり、あらゆる「新しい」戦略はその間の一点である。
+3. **本当のインジェスト上限はコンパクション帯域**: アプリの持続書き込み × WA が、読み取り分の余裕を残してデバイスのシーケンシャル帯域に収まらなければならない。
+4. **L0は圧力計** — そこのファイル数が読み取り増幅を駆動し、スローダウン → ストールの梯子を発動する。アラートを張ること。
+5. **削除は書き込みであり**、トゥームストーンにはライフサイクルがある。大量削除はまずデータセットを太らせる。FIFO/時間ウィンドウ戦略は、コンパクションが高価に削除するものを無料で削除する。
+6. **ブルームフィルタは荷重を支える部材**であり最適化ではない — なければすべてのポイント読み取りがラン数分を支払う（[ブルームフィルタ](./05-bloom-filters.md)）。
+7. **イミュータブルSSTableは静かな勝利**: 自明なスナップショット、チェックサム付きレプリケーション単位、レベルごとの圧縮、クラウド階層化。
+8. **計測に対してチューニングする** — コンパクションカウンタからのWA、stall micros、L0数、pending compaction bytes。デフォルト値は他人のワークロードをエンコードしたものである。
+
+---
+
+## 参考文献
+
+- O'Neil, P., Cheng, E., Gawlick, D., & O'Neil, E. (1996). *The Log-Structured Merge-Tree*. Acta Informatica.
+- Chang, F., et al. (2006). *Bigtable: A Distributed Storage System for Structured Data*. OSDI.（LevelDBが蒸留した設計。[Bigtableホワイトペーパーの章](../09-whitepapers/03-bigtable.md)参照。）
+- Dong, S., et al. (2017). *Optimizing Space Amplification in RocksDB*. CIDR.
+- Dayan, N., Athanassoulis, M., & Idreos, S. (2017). *Monkey: Optimal Navigable Key-Value Store*. SIGMOD.
+- Dayan, N., & Idreos, S. (2018). *Dostoevsky: Better Space-Time Trade-Offs for LSM-Tree Based Key-Value Stores*. SIGMOD.
+- Luo, C., & Carey, M. (2020). *LSM-based Storage Techniques: A Survey*. VLDB Journal.
+- RocksDB Wiki: *Compaction*, *Write Stalls*, *Tuning Guide*; ScyllaDB docs: *Incremental Compaction Strategy*.
