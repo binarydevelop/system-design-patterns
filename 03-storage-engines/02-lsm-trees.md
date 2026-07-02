@@ -163,6 +163,8 @@ else:
 Reduces disk reads for non-existent keys
 ```
 
+The filter math, cache-line-aware layouts, per-level FPR allocation (Monkey), and the static alternatives (ribbon, binary fuse) are covered in depth in [Bloom Filters](./05-bloom-filters.md).
+
 ### Read Amplification
 
 ```
