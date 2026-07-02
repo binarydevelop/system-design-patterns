@@ -262,7 +262,7 @@ class BatchProcessor:
 
 ### Inside a Modern Inference Engine
 
-LLM inference has two phases with opposite hardware profiles, and nearly every serving optimization exploits that asymmetry:
+LLM inference has two phases with opposite hardware profiles, and nearly every serving optimization exploits that asymmetry (the hardware-level why — roofline math, bandwidth ceilings, kernels — is derived in [GPU Inference Internals](./11-gpu-inference-internals.md)):
 
 ```mermaid
 graph LR

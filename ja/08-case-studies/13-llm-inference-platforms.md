@@ -86,3 +86,4 @@ graph TD
 - [DeepSeek-V3 Technical Report](https://arxiv.org/abs/2412.19437) とDeepSeekのオープンソース推論リリース — 公開の場でのワイドEP MoEサービング
 - [vLLM](https://github.com/vllm-project/vllm) / [SGLang](https://github.com/sgl-project/sglang) — エンジン群。その本番ケーススタディがフリートのパターンを文書化
 - [LLMインフラ](../17-llm-systems/05-llm-infrastructure.md) / [ハーネスエンジニアリング](../17-llm-systems/09-harness-engineering.md) — このケーススタディが実体化するパターン記事
+- [GPU推論の内部構造](../17-llm-systems/11-gpu-inference-internals.md) — これらのプラットフォームの土台にあるルーフラインの数学、KVキャッシュの帯域台帳、並列化のトレードオフ

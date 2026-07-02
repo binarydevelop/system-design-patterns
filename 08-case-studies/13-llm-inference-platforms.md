@@ -84,3 +84,4 @@ Per-request traces carry tokens in/out/cached, queue time, prefill time, ITL dis
 - [DeepSeek-V3 Technical Report](https://arxiv.org/abs/2412.19437) and DeepSeek's open-source inference releases — wide-EP MoE serving in public
 - [vLLM](https://github.com/vllm-project/vllm) / [SGLang](https://github.com/sgl-project/sglang) — the engines; their production case studies document the fleet patterns
 - [LLM Infrastructure](../17-llm-systems/05-llm-infrastructure.md) and [Harness Engineering](../17-llm-systems/09-harness-engineering.md) — the pattern articles this case study instantiates
+- [GPU Inference Internals](../17-llm-systems/11-gpu-inference-internals.md) — the roofline math, KV-cache bandwidth ledger, and parallelism trade-offs underneath these platforms

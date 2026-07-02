@@ -247,6 +247,7 @@ const sidebarEN = [
       { text: 'Context Management', link: '/17-llm-systems/08-context-management' },
       { text: 'Harness Engineering', link: '/17-llm-systems/09-harness-engineering' },
       { text: 'LLM Evaluation', link: '/17-llm-systems/10-llm-evaluation' },
+      { text: 'GPU Inference Internals', link: '/17-llm-systems/11-gpu-inference-internals' },
     ]
   },
   {
@@ -608,6 +609,7 @@ export default withMermaid({
                 { text: 'コンテキスト管理', link: '/ja/17-llm-systems/08-context-management' },
                 { text: 'ハーネスエンジニアリング', link: '/ja/17-llm-systems/09-harness-engineering' },
                 { text: 'LLM評価', link: '/ja/17-llm-systems/10-llm-evaluation' },
+                { text: 'GPU推論の内部構造', link: '/ja/17-llm-systems/11-gpu-inference-internals' },
               ]
             },
             {

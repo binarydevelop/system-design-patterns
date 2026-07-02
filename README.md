@@ -197,6 +197,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Context Management](17-llm-systems/08-context-management.md)
 - [Harness Engineering](17-llm-systems/09-harness-engineering.md)
 - [LLM Evaluation and Observability](17-llm-systems/10-llm-evaluation.md)
+- [GPU Inference Internals](17-llm-systems/11-gpu-inference-internals.md)
 
 ### Part 18: Workflow & Job Systems
 - [Workflow System Fundamentals](18-workflow-job-systems/01-workflow-system-fundamentals.md)
