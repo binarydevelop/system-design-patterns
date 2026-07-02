@@ -165,6 +165,8 @@ else:
 Reduces disk reads for non-existent keys
 ```
 
+フィルタの数学、キャッシュラインを意識したレイアウト、レベルごとの偽陽性率配分（Monkey）、静的な代替（ribbon、binary fuse）は[ブルームフィルタ](./05-bloom-filters.md)で詳しく扱っています。
+
 ### 読み取り増幅
 
 ```

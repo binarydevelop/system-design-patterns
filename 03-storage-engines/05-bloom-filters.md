@@ -2,839 +2,393 @@
 
 ## TL;DR
 
-A Bloom filter is a probabilistic data structure for set membership testing. It can tell you "definitely not in set" or "probably in set" using far less memory than storing actual elements. False positives are possible; false negatives are not. Critical for avoiding unnecessary disk reads in databases and caches.
+A Bloom filter answers set-membership queries with one-sided error: "definitely not present" or "probably present," never a false negative. It does this in roughly 10 bits per element at a 1% false-positive rate — against an information-theoretic minimum of ~6.6 bits — which is why it sits in front of nearly every disk read in an LSM-tree storage engine. But the textbook picture ("bit array plus k hashes") hides the parts that matter in production: the false-positive rate is a *budget* that degrades quadratically-ish as the filter overfills (a filter sized for 1M keys holding 5M is ~83% false positives, not 5%); the k probes are k random DRAM cache misses unless you use a blocked layout; uniform bits-per-key across LSM levels is provably the wrong allocation (Monkey); and for immutable data, Bloom is no longer the best filter — Ribbon and binary fuse filters get 20–30% closer to the entropy bound. This chapter derives the math honestly, walks the LSM read path where filters earn their keep, and covers the modern filter zoo and the ways filters fail silently.
 
 ---
 
-## The Problem
+## Why the Filter Exists: Negative Lookups Are the Expensive Ones
 
-### Expensive Lookups
+A B-tree answers "key not present" cheaply: one root-to-leaf descent, mostly cached, and the leaf proves absence. An LSM tree ([LSM Trees](./02-lsm-trees.md)) cannot — the key could be in *any* run, so absence can only be proven by checking every candidate SSTable.
+
+Count the candidates in a typical leveled LSM:
 
 ```
-Query: Does key "xyz" exist?
+Leveled compaction, fanout 10, 7 levels:
+  L0: up to 4 overlapping files   → 4 candidate runs
+  L1–L6: one sorted run each      → 6 candidate runs
+  Total: ~10 runs may contain any given key
 
-Without Bloom filter:
-  Check each SSTable on disk
-  Multiple disk reads per lookup
-  Slow for non-existent keys
+Point lookup for a MISSING key, no filters:
+  10 runs × (index block + data block read) ≈ 10–20 block reads
+  At ~100μs per cached-miss NVMe read: 1–2ms to learn "not found"
 
-With Bloom filter:
-  Check in-memory filter first
-  "Definitely not there" → skip disk read
-  "Maybe there" → check disk
-
-90%+ of disk reads avoided for negative lookups
+Same lookup with a 1% FPR filter per run:
+  Expected disk reads = 10 runs × 0.01 = 0.1 reads
+  → 100–200× reduction in read amplification for negative lookups
 ```
+
+And negative lookups dominate more workloads than intuition suggests: deduplication ("have I seen this event ID?"), insert-if-absent and uniqueness checks, cache-fill probes, write paths that must verify a key does *not* exist before creating it. In these workloads the common case is the miss, and the filter converts the common case from "read every level" to "read nothing."
+
+This is the framing to keep: **a Bloom filter is a prepaid answer for the question "is it worth going to disk?"** Everything else — sizing, hashing, layout — is about how much that prepaid answer costs and how often it lies.
 
 ---
 
-## How It Works
+## The Structure and Its One-Sided Error
 
-### Structure
-
-```
-Bit array of m bits, initially all 0
-
-┌─────────────────────────────────────────┐
-│ 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 │
-└─────────────────────────────────────────┘
-  0 1 2 3 4 5 6 7 8 9 ...
-
-k hash functions: h₁, h₂, h₃, ...
-Each maps element to a bit position
-```
-
-### Adding an Element
+A Bloom filter is a bit array of `m` bits and `k` hash functions. Insert sets `k` bits; query checks `k` bits.
 
 ```
-Insert "hello":
-  h₁("hello") = 3
-  h₂("hello") = 7
-  h₃("hello") = 12
-  
-Set bits 3, 7, 12 to 1
-
-┌─────────────────────────────────────────┐
-│ 0 0 0 1 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 │
-└─────────────────────────────────────────┘
+Insert "hello":                    Query "world":
+  h₁("hello") = 3                    h₁("world") = 5 → bit 5 is 0 ✗
+  h₂("hello") = 7                    → "definitely not present"
+  h₃("hello") = 12                   (stop at first zero bit)
+  set bits 3, 7, 12
+                                   Query "hello":
+┌─────────────────────────────┐      all of bits 3, 7, 12 are 1
+│ 0 0 0 1 0 0 0 1 0 0 0 0 1 0 │      → "probably present"
+└─────────────────────────────┘
         ↑       ↑         ↑
         3       7         12
 ```
 
-### Testing Membership
+The asymmetry of the error is structural, not incidental:
 
-```
-Query "hello":
-  h₁("hello") = 3  → bit 3 is 1 ✓
-  h₂("hello") = 7  → bit 7 is 1 ✓
-  h₃("hello") = 12 → bit 12 is 1 ✓
-  All bits set → "probably yes"
-
-Query "world":
-  h₁("world") = 5  → bit 5 is 0 ✗
-  At least one bit is 0 → "definitely no"
-```
-
-### False Positives
-
-```
-After many insertions:
-┌─────────────────────────────────────────┐
-│ 1 0 1 1 0 1 1 1 0 1 0 1 1 0 1 1 0 1 0 1 │
-└─────────────────────────────────────────┘
-
-Query "never_inserted":
-  h₁("never_inserted") = 3  → bit 3 is 1 ✓
-  h₂("never_inserted") = 6  → bit 6 is 1 ✓
-  h₃("never_inserted") = 11 → bit 11 is 1 ✓
-  All bits set by OTHER elements!
-  → False positive: "probably yes" but actually no
-```
+- **No false negatives**: bits are only ever set, never cleared. If an element was inserted, its bits are 1 forever, so a query for it can never see a 0. (This is also why standard Bloom filters cannot support deletion — clearing a bit might clear evidence of *another* element that hashed to the same position, manufacturing a false negative.)
+- **False positives**: a never-inserted element can find all its `k` bits already set by the union of other elements' insertions. The filter says "probably present," the disk read happens, and finds nothing. This is wasted work, not wrong answers — provided the surrounding system treats "probably" as a hint, not an authority (see [Failure Modes](#failure-modes)).
 
 ---
 
-## Mathematics
+## The Math, Derived Honestly
 
-### False Positive Probability
+### False-positive probability
 
-```
-m = number of bits
-n = number of elements
-k = number of hash functions
-
-After inserting n elements:
-  Probability a bit is 0: (1 - 1/m)^(kn) ≈ e^(-kn/m)
-
-False positive probability:
-  p = (1 - e^(-kn/m))^k
-```
-
-### Optimal Parameters
+After inserting `n` elements with `k` hashes into `m` bits, the probability a particular bit is still 0:
 
 ```
-Given n elements and desired false positive rate p:
-
-Optimal bits: m = -n × ln(p) / (ln(2))²
-Optimal hash functions: k = (m/n) × ln(2)
-
-Example: n=1 million, p=1%
-  m = -1,000,000 × ln(0.01) / (ln(2))² ≈ 9.6 million bits
-  k = (9.6M/1M) × ln(2) ≈ 7 hash functions
-  
-  ~1.2 MB for 1 million elements with 1% false positive rate
+P(bit = 0) = (1 - 1/m)^(kn) ≈ e^(-kn/m)
 ```
 
-### Bits Per Element
+A false positive requires all `k` probed bits to be 1:
 
 ```
-For p = 1%:   ~10 bits per element
-For p = 0.1%: ~15 bits per element
-For p = 0.01%: ~20 bits per element
-
-Each ~0.7 additional bits per element → halve false positive rate
+p ≈ (1 - e^(-kn/m))^k
 ```
 
----
+Two honest caveats the textbooks skip. First, this treats bit occupancies as independent, which they aren't; the exact rate (Bose et al., 2008) is slightly *higher* than the formula, though the gap is negligible for filters of realistic size (m in the millions). Second, the formula assumes the k hash functions are truly uniform and independent — real filters approximate this (see [Hashing](#hashing-where-implementations-actually-go-wrong)), and a bad approximation shows up as a real FPR above the theoretical one.
 
-## Implementation
+### Optimal k, and what "optimal" looks like
 
-### Basic Implementation
+Minimizing `p` over `k` for fixed `m/n`:
 
-```python
-import mmh3  # MurmurHash3
+```
+k* = (m/n) × ln 2  ≈ 0.693 × bits-per-key
 
-class BloomFilter:
-    def __init__(self, expected_elements, fp_rate):
-        self.size = self._optimal_size(expected_elements, fp_rate)
-        self.hash_count = self._optimal_hash_count(self.size, expected_elements)
-        self.bit_array = bytearray((self.size + 7) // 8)
-    
-    def _optimal_size(self, n, p):
-        return int(-n * math.log(p) / (math.log(2) ** 2))
-    
-    def _optimal_hash_count(self, m, n):
-        return int((m / n) * math.log(2))
-    
-    def _hash(self, item, seed):
-        return mmh3.hash(str(item), seed) % self.size
-    
-    def add(self, item):
-        for i in range(self.hash_count):
-            idx = self._hash(item, i)
-            self.bit_array[idx // 8] |= (1 << (idx % 8))
-    
-    def might_contain(self, item):
-        for i in range(self.hash_count):
-            idx = self._hash(item, i)
-            if not (self.bit_array[idx // 8] & (1 << (idx % 8))):
-                return False  # Definitely not present
-        return True  # Probably present
+At the optimum:
+  - exactly half the bits are set (load factor 1/2 — maximum entropy per bit)
+  - p = 2^(-k*) = 0.6185^(m/n)
 ```
 
-### Using Two Hash Functions
+Inverting: to hit a target FPR `p`, you need
 
-```python
-# Optimization: Use only 2 hash functions
-# Combine them to create k hash functions
-
-def hash_i(item, i, h1, h2, m):
-    return (h1 + i * h2) % m
-
-h1 = hash(item)
-h2 = hash2(item)
-
-for i in range(k):
-    idx = hash_i(item, i, h1, h2, m)
-    # use idx
 ```
+m/n = log₂(1/p) / ln 2 = 1.44 × log₂(1/p) bits per key
+
+p = 1%    → 1.44 × 6.64 ≈  9.6 bits/key, k = 7
+p = 0.1%  → 1.44 × 9.97 ≈ 14.4 bits/key, k = 10
+p = 0.01% → 1.44 × 13.3 ≈ 19.2 bits/key, k = 13
+```
+
+Each extra ~4.8 bits/key buys one decimal order of magnitude of FPR. Note what this formula does *not* contain: the size of the elements. A Bloom filter for 64-byte keys and one for 4KB documents cost the same 9.6 bits per element at 1% — the filter stores evidence of hashes, not data.
+
+### The 44% tax, and why post-Bloom filters exist
+
+Information theory sets a floor: any structure answering membership with false-positive rate `p` needs at least `log₂(1/p)` bits per element. Bloom's `1.44 × log₂(1/p)` is therefore **44% above optimal** — the price of a structure so simple it was designed in 1970 and needs nothing but a bit array. The modern filters covered below (cuckoo, ribbon, xor/binary-fuse) exist precisely to claw back that 44%, trading away either mutability or build speed:
+
+```
+Bits per key at ~1% FPR (log₂(1/p) = 6.64 → theoretical floor 6.64 bits):
+
+  Standard Bloom       9.6 bits   (1.44× floor)   dynamic inserts
+  Blocked Bloom       ~10.5 bits  (1.6× floor)    dynamic, 1 cache miss
+  Cuckoo filter       ~10.1 bits  (1.5× floor)    dynamic + deletion
+  Ribbon filter       ~7.0 bits   (1.05–1.1×)     static, slow build
+  Binary fuse filter  ~7.5 bits   (1.13×)         static, fast build
+```
+
+### The overfill curve: FPR degrades brutally, not gracefully
+
+The most operationally important consequence of the math: FPR is set by the *actual* `n`, not the planned one. Take a filter sized for 1M keys at 1% (m = 9.59M bits, k = 7) and keep inserting:
+
+```
+actual n     kn/m     fraction of bits set     actual FPR
+─────────────────────────────────────────────────────────
+1.0M (as planned)  0.73        52%                 1.0%
+1.5M               1.09        66%                 5.8%
+2.0M               1.46        77%                16%
+3.0M               2.19        89%                44%
+5.0M               3.65        97%                83%
+```
+
+At 2× overfill the filter is 16× worse than configured; at 5× it approves 83% of garbage — you're paying the memory *and* the disk reads. The failure is silent: nothing errors, latency just drifts up as "definitely not" quietly becomes "go check disk." Two structural defenses: size for 1.5–2× expected growth, and prefer architectures where filters are per-immutable-artifact (one filter per SSTable, sized at flush time from the exact key count — which is why LSM engines never hit this in steady state) over one long-lived global filter that grows past its design point.
 
 ---
 
-## Variants
+## Hashing: Where Implementations Actually Go Wrong
 
-### Counting Bloom Filter
+### Double hashing: k hashes for the price of two
 
-Replace bits with counters.
-
-```
-Standard:   [0][1][0][1][1][0]  (bits)
-Counting:   [0][2][0][1][3][0]  (counters, e.g., 4-bit)
-
-Supports deletion:
-  add("x")    → increment positions
-  remove("x") → decrement positions
-
-Trade-off: 4x+ more space
-```
-
-### Scalable Bloom Filter
-
-Handle unknown number of elements.
+Computing 7 independent high-quality hashes per key is wasteful. The standard trick (Kirsch & Mitzenmacher, 2006) derives all `k` probes from two base hashes:
 
 ```
-Start with small filter
-When too full (high FP rate):
-  Create new, larger filter
-  New elements go to new filter
-  Query checks all filters
-
-Maintains target FP rate as data grows
+h_i(x) = h₁(x) + i × h₂(x)   (mod m),  for i = 0..k-1
 ```
 
-### Cuckoo Filter
+and provably preserves the asymptotic FPR. Two implementation traps:
 
-Alternative with better properties.
+- **h₂ = 0 collapse**: if `h₂(x) ≡ 0 (mod m)`, all k probes hit the same bit and that key's effective k is 1. Force `h₂` odd (with power-of-two m) or add a quadratic term `+ i²`.
+- **In practice, one 64-bit hash is enough**: split it into two 32-bit halves for h₁ and h₂. One xxHash/Murmur3 evaluation per key, total.
 
-```
-Supports deletion (without counting)
-Better space efficiency at <3% FP rate
-Similar lookup speed
-
-Structure: Hash table with cuckoo hashing
-Stores fingerprints (not bits)
-```
-
-### Quotient Filter
-
-Cache-friendly alternative.
+### Choosing the hash
 
 ```
-Good locality of reference
-Supports deletion and merging
-Slightly higher memory than Bloom
-
-Stores quotient and remainder of hash
-Uses linear probing
+Good:  xxHash (fastest), MurmurHash3 (ubiquitous), CityHash/FarmHash
+Bad:   MD5/SHA-256 — cryptographic strength buys nothing here, costs 10–20× cycles
+       Language-default hashCode() — weak avalanche, correlated outputs,
+         and often deliberately randomized per-process (breaks serialized filters!)
+       h(x) mod m with structured keys — clustering
 ```
+
+The last parenthetical is a real bug class: serialize a filter built with a per-process-seeded hash (Python's `hash()`, Java's default `String.hashCode` is stable but many others aren't), load it in another process, and every query probes the wrong bits — the filter returns "definitely not" for keys it contains. **A persisted filter must pin the hash function, its seed, and the bit-index derivation as part of its serialization format.**
+
+### 32-bit hashes stop working before you expect
+
+With a 32-bit hash, bit indices repeat once `m` approaches 2³². But the damage starts earlier: RocksDB's legacy block-based filter derived probes from a single 32-bit hash, and above a few million keys per filter the collision structure put a *floor* under the FPR — adding bits per key beyond ~14 barely improved the real FPR even as the formula promised 0.1%. The modern full/blocked filter implementations moved to 64-bit hashing specifically to fix this. If a filter will ever hold >1M keys, use 64-bit hashes.
+
+### Adversarial inputs
+
+A Bloom filter with a public, unkeyed hash is an oracle: an attacker who can query it (or just knows the implementation) can compute keys whose probes land on already-set bits, manufacturing unlimited false positives — every one a disk read, i.e., a cheap request-amplification attack on exactly the path the filter was supposed to protect. Where inputs are attacker-controlled (URL dedup on a crawler, per-user rate-limit filters, spam-seen filters), use a keyed hash (SipHash) with a per-deployment secret, exactly as hash tables did after the 2011 hash-flooding attacks.
 
 ---
 
-## Use Cases
+## The Memory Hierarchy: Blocked Bloom Filters
 
-### Database/LSM Trees
-
-```
-Each SSTable has a Bloom filter
-Before reading SSTable from disk:
-  if bloom_filter.might_contain(key):
-      read_sstable()  # ~1% false positive
-  else:
-      skip()  # Definitely not there
-
-Huge savings for point lookups
-```
-
-### Distributed Systems
+The textbook cost model says a Bloom query is O(k) "operations." The real cost model is cache misses. A standard filter's k probes are k independent random positions across a filter that is megabytes to gigabytes — each probe is a DRAM cache miss:
 
 ```
-Cache stampede prevention:
-  Before expensive computation:
-    if bloom_filter.might_contain(request):
-        might_be_in_cache = True
-    else:
-        definitely_not_cached = True
+Standard bloom, k = 7, filter >> L3 cache:
+  Negative query (probe until first 0): ~2 probes average → ~2 misses
+  Positive/false-positive query:         all 7 probes     → ~7 misses
+  At ~100ns per DRAM miss: 200–700ns per query
 
-Routing decisions:
-  Which server has this data?
-  Check each server's Bloom filter
+For comparison: the entire rest of a memtable lookup can be ~100–200ns.
+The "free" in-memory check can dominate the in-memory path.
 ```
 
-### Web Crawlers
+The **blocked Bloom filter** (Putze, Sanders & Singler, 2007) fixes this: the first hash selects one 64-byte cache-line-sized block; all k bits are set/probed *within that line*.
 
 ```
-Have we seen this URL before?
-  if bloom_filter.might_contain(url):
-      # Probably seen, skip or verify in DB
-  else:
-      # New URL, definitely crawl
+Query = exactly 1 cache miss, regardless of k.
+Within the line, probing 7 bits is a handful of register ops —
+and with SIMD, all probes resolve in a couple of instructions.
 
-Billions of URLs with modest memory
+The price: keys are no longer spread evenly. Some blocks get
+overloaded (Poisson variance across blocks), raising FPR.
+Cost ≈ 0.5–1 extra bits/key to hit the same FPR as standard bloom.
 ```
 
-### Spell Checkers
-
-```
-Is this a valid word?
-  if dictionary_bloom.might_contain(word):
-      # Probably valid
-  else:
-      # Definitely misspelled
-
-Fast first-pass check
-```
-
-### CDN / Caching
-
-```
-Is this content in cache?
-  if cache_bloom.might_contain(content_id):
-      check_actual_cache()
-  else:
-      fetch_from_origin()
-
-Avoid cache misses going to disk
-```
+This is not an exotic variant; it is what production engines actually deploy. RocksDB's `format_version=5` filter (available since RocksDB 6.6) is a blocked, SIMD-friendly "fast local bloom" — the flat ~duplicated-probe layout was chosen because one cache miss per query beat 30% space savings in every read-heavy benchmark. When you see "bloom filter" in a modern storage engine, assume blocked.
 
 ---
 
-## Operational Considerations
+## Inside the LSM Read Path
 
-### Sizing Guidelines
+This is where the filter earns its memory. The mechanics, using RocksDB's vocabulary (Cassandra and HBase differ in knobs, not structure):
 
-```
-Too small:
-  - High false positive rate
-  - Defeats the purpose
-
-Too large:
-  - Wasted memory
-  - Possibly slower (cache misses)
-
-Rule of thumb:
-  10 bits per element → ~1% FP
-  15 bits per element → ~0.1% FP
-```
-
-### Memory Calculation
+### Where filters live and when they're checked
 
 ```
-For 10 million keys with 1% FP:
-  Bits needed: 10M × 10 = 100M bits = 12.5 MB
-  Hash functions: ~7
+Point lookup Get(key):
+  1. memtable        — optional memtable bloom (prefix-based) skips probing
+  2. immutable memtables
+  3. L0 files, newest first — each: check filter block → maybe read data
+  4. L1..Lmax        — binary search file boundaries, one candidate file
+                       per level: check filter block → maybe read data
 
-For 1 billion keys with 0.1% FP:
-  Bits needed: 1B × 15 = 15B bits = 1.875 GB
-  Hash functions: ~10
+Filter blocks are stored per-SSTable (in the table's metadata),
+fetched through the block cache like any other block, and — if
+cache_index_and_filter_blocks=true — subject to eviction like any
+other block. For very large SSTables, partitioned filters split the
+filter into a two-level structure so only the needed partition loads.
 ```
 
-### Serialization
+Two consequences worth internalizing. First, the *aggregate* false-positive cost of a lookup is the **sum of per-run FPRs** — 10 runs at 1% each means ~10% of missing-key lookups still touch disk somewhere. Second, a filter block that has been evicted from block cache must be read from disk *before* it can save you a disk read; under memory pressure filters can invert into pure overhead (see Failure Modes).
 
-```python
-# Save to disk
-def save(self, filename):
-    with open(filename, 'wb') as f:
-        f.write(struct.pack('II', self.size, self.hash_count))
-        f.write(self.bit_array)
+### Whole-key vs. prefix filters — and why range scans get nothing
 
-# Load from disk
-@classmethod
-def load(cls, filename):
-    with open(filename, 'rb') as f:
-        size, hash_count = struct.unpack('II', f.read(8))
-        bit_array = bytearray(f.read())
-    # Reconstruct filter
-```
+A Bloom filter can only answer questions about exact hashed values. A range scan `[a, b)` asks about a continuum — no finite set of exact-match probes covers it, so **standard bloom filters are useless for range queries** (Cassandra lets you set `bloom_filter_fp_chance = 1.0` to disable them on scan-only tables for exactly this reason).
 
-### Merging Filters
+The partial exception: **prefix bloom filters**. Define a prefix extractor (say, the first 8 bytes = user ID), build the filter over prefixes, and iterator seeks *within one prefix* ("all events for user X") can consult the filter. RocksDB exposes this as `prefix_extractor` plus a memtable bloom (`memtable_prefix_bloom_size_ratio`); MyRocks leans on it heavily for index-prefix scans. The trade: iterators must promise not to cross prefix boundaries (`prefix_same_as_start`), or results are silently wrong — a filter skip is only sound if the query truly stays inside the filtered domain. For true range filtering, newer structures exist (SuRF, Rosetta, range-partitioned fence pointers) but none is yet a default.
+
+### Monkey: uniform bits-per-key is the wrong allocation
+
+Every engine's default — "10 bits/key for every SSTable" — is provably suboptimal. The insight (Dayan, Athanassoulis & Idreos, *Monkey*, SIGMOD 2017): lookup cost is the **sum of FPRs across runs**, while memory cost of achieving FPR `p` on a run of `n` keys is `∝ n·ln(1/p)`. Minimizing total expected disk reads under a fixed memory budget yields a skewed allocation:
 
 ```
-Two Bloom filters with same size and hash functions:
-  merged = filter1.bit_array | filter2.bit_array
+With fanout 10, the last level holds ~90% of all keys.
+Uniform 10 bits/key spends ~90% of filter memory on that one level.
 
-Result contains union of elements
-FP rate increases
+Monkey's optimal allocation: give SMALLER (upper) levels exponentially
+LOWER FPRs — they're cheap to filter aggressively because they hold
+few keys — and let the largest level run at a higher FPR.
+
+Result: same total memory, sum-of-FPRs (expected wasted reads for a
+missing key) shrinks; Monkey reports the same lookup latency with
+~2× less filter memory, or up to ~2× lower lookup cost at equal memory.
 ```
+
+The general principle transfers beyond LSM trees: when one filter guards many tiers of different sizes and probe frequencies, allocate false-positive budget where a bit of memory buys the most avoided work — never uniformly.
 
 ---
 
-## Limitations
+## Beyond Bloom: The Modern Filter Zoo
 
-### No Deletion (Standard)
+### Counting Bloom filter — deletion, at 4× the price
 
-```
-Why can't we delete?
-  Element A sets bits: 3, 7, 12
-  Element B sets bits: 3, 8, 15
-  
-Delete A: Clear bits 3, 7, 12
-  But bit 3 was also set by B!
-  Now B shows "not present" → false negative!
+Replace each bit with a small counter (typically 4 bits): insert increments, delete decrements, query checks all counters > 0. It works, but: 4× the memory, counters can saturate at 15 (after which a decrement would risk false negatives, so saturated counters must stay stuck — a slow FPR leak), and in practice a cuckoo filter dominates it on every axis. Counting blooms survive mostly in older network gear and papers.
 
-Use counting Bloom filter if deletion needed
-```
+### Cuckoo filter — deletion done right
 
-### No Enumeration
+The cuckoo filter (Fan, Andersen, Kaminsky & Mitzenmacher, 2014) stores small **fingerprints** (hash fragments, e.g. 8–12 bits) in a 4-way bucketed hash table using partial-key cuckoo hashing:
 
 ```
-Cannot list elements in filter
-Filter only answers: "Is X present?"
-To enumerate, need separate storage
+Each key has two candidate buckets:
+  b₁ = hash(x)
+  b₂ = b₁ XOR hash(fingerprint(x))     ← computable from b₁ + fingerprint
+                                          alone, enabling eviction without x
+
+Insert: place fingerprint in b₁ or b₂; if both full, evict a resident
+        fingerprint to ITS alternate bucket, repeat (cuckoo hashing).
+Query:  check both buckets for the fingerprint — exactly 2 cache misses.
+Delete: remove one matching fingerprint copy. Sound, with one caveat:
+        inserting the same key twice then deleting once leaves it present;
+        deleting a never-inserted key can evict a colliding victim.
+        Deletion is only safe if inserts/deletes are balanced by protocol.
+
+Space: bits/key ≈ (log₂(1/p) + 3) / α,  α ≈ 0.95 at 4-way buckets
+  p = 1%  → (6.64 + 3)/0.95 ≈ 10.1 bits/key   (≈ bloom)
+  p = 0.1% → (9.97 + 3)/0.95 ≈ 13.6 bits/key  (beats bloom's 14.4)
 ```
 
-### False Positive Rate Increases
+Rule of thumb: below ~3% target FPR, cuckoo is at least as compact as Bloom *and* gives you deletion and 2-cache-miss queries. Its weaknesses: inserts can fail outright near full load (must size with headroom and handle failure), and insert cost spikes as load approaches the maximum.
+
+### Quotient filter — merge- and resize-friendly
+
+Stores `fingerprint = quotient‖remainder`: the quotient addresses a slot, the remainder is stored in it, collisions resolve by linear probing with three metadata bits per slot to reconstruct runs. Everything sits in contiguous memory (cache-friendly), supports deletion, can be **resized without rehashing the original keys** (fingerprints carry enough information), and two filters **merge like a sorted-list merge** — attractive for LSM compaction. Costs ~10–25% more space than Bloom and the implementation is genuinely fiddly; used more in research systems (e.g., counting quotient filters in genomics) than mainstream engines.
+
+### Ribbon filter — RocksDB's static space-saver
+
+For an SSTable, the key set is frozen at build time — a *static* filter can exploit that. The Ribbon filter (RocksDB ≥ 6.15, `NewRibbonFilterPolicy`) treats "key i's probes XOR to its expected value" as a system of linear equations over GF(2) and solves it at construction:
 
 ```
-As filter fills up:
-  More bits set
-  Higher FP rate
-  
-If n grows beyond expected:
-  FP rate degrades
-  Need to resize (rebuild with larger filter)
+  ~30% less space than blocked bloom at equal FPR (~1.05–1.1× the
+   entropy floor), same query speed, but 3–4× slower to BUILD.
+
+RocksDB's guidance: use ribbon for lower levels (built rarely, by
+background compaction, hold most keys → memory savings dominate) and
+bloom for L0/high levels (built on every flush → build speed dominates).
+That per-level policy split is Monkey-style thinking applied to filter
+*type*, not just filter *budget*.
 ```
+
+### Xor and binary fuse filters — the static state of the art
+
+Same static regime as ribbon, different construction (hypergraph peeling): each key maps to 3 positions whose stored values XOR to the key's fingerprint. Xor filters (Graf & Lemire, 2020) achieve `1.23 × log₂(1/p)` bits/key; **binary fuse filters** (2022) tighten this to ~1.13× with near-linear build time — for 8-bit fingerprints, ~9 bits/key at p ≈ 0.4%, where Bloom would need ~11.5 bits — about 20% smaller. No inserts, no deletes: build once from the complete key list. Ideal for shipped artifacts — compiled block lists, CDN "does this object exist at origin" maps, malware signature sets — anywhere the set is versioned and replaced wholesale rather than mutated.
+
+### Choosing
+
+| Filter | Mutability | Space @ ~1% | Query cost | Use when |
+|---|---|---|---|---|
+| Blocked Bloom | insert-only | ~10.5 bits/key | 1 cache miss | Default for dynamic sets; L0/flush-path SSTable filters |
+| Standard Bloom | insert-only | 9.6 bits/key | up to k misses | Only when simplicity beats latency (small filters that fit in cache) |
+| Cuckoo | insert + delete | ~10.1 bits/key | 2 cache misses | Need deletion (caches, membership with churn); FPR ≤ 3% |
+| Quotient | insert + delete + merge + resize | ~11–12 bits/key | 1 locality-friendly probe run | Need merging (compaction pipelines) or in-place growth |
+| Ribbon | static | ~7 bits/key | ~1 cache miss | Immutable, build-time tolerant: deep LSM levels |
+| Binary fuse / xor | static | ~7.5 bits/key | 3 misses (fuse: ~1–2) | Immutable, build-speed sensitive: shipped/versioned sets |
 
 ---
 
-## Bloom Filters in Practice
+## Bloom Filters Beyond Storage Engines
 
-### RocksDB Configuration
+The same "prepaid negative answer" pattern recurs anywhere a cheap check can veto an expensive operation:
 
-```cpp
-Options options;
-options.filter_policy.reset(NewBloomFilterPolicy(
-    10,    // bits per key
-    false  // use full filter (not block-based)
-));
-```
+**Distributed joins and query engines.** In a hash join where the build side is small and the probe side is a huge scan, engines build a Bloom filter over the build-side join keys and push it *down into the probe-side scan* (Spark's runtime filters, Snowflake/BigQuery semi-join reduction, Parquet row-group skipping). Probe rows that fail the filter never leave the scan operator — often eliminating >90% of the shuffled/scanned data. Same idea across the network: ship the filter, not the table, as a compact semi-join.
 
-### Cassandra Configuration
+**CDN caching: the one-hit-wonder problem.** Akamai measured that ~74% of requested URLs are requested exactly once in a multi-day window (Maggs & Sitaraman, 2015). Caching an object on first request means most disk writes are for objects never read again. Fix: a Bloom filter of recently-seen URLs; cache only on the *second* request (filter hit). This "bloom filter as admission policy" roughly halved disk writes and improved hit rates — the filter isn't guarding reads at all, it's guarding *writes*.
 
-```yaml
-# In table schema
-bloom_filter_fp_chance: 0.01  # 1% false positive rate
+**Bitcoin SPV — a cautionary tale (BIP-37 → BIP-158).** Light clients once sent a Bloom filter of their addresses to full nodes, which returned matching transactions; false positives were *supposed* to provide plausible-deniability privacy. It failed: across multiple filters and sessions, the intersection of "maybe" sets de-anonymizes the wallet almost completely, and serving the filtered scans enabled cheap DoS. The replacement (BIP-158) inverts the direction — the *server* publishes a compact per-block filter (a Golomb-coded set, ~same job as a Bloom filter but optimally compressed for one-shot transfer) and the client downloads whole blocks that match locally, revealing nothing. Lesson: a probabilistic filter leaks its contents under repeated observation; it is a performance structure, not a privacy mechanism.
 
-# Trade-off:
-# Lower FP → more memory, fewer disk reads
-# Higher FP → less memory, more disk reads
-```
+**Stream dedup with rotating filters.** "Exactly-once-ish" event pipelines ([Delivery Guarantees](../05-messaging/04-delivery-guarantees.md)) often need "have I seen this event ID in the last hour?" A single filter would overfill (see the overfill curve above); the standard pattern is N time-bucketed filters (e.g., 6 × 10-minute filters), querying all, inserting into the newest, and dropping the oldest wholesale — deletion by retirement, never by mutation.
 
-### Redis
-
-```
-# Using RedisBloom module
-BF.ADD myfilter item1
-BF.EXISTS myfilter item1  # Returns 1
-BF.EXISTS myfilter item2  # Returns 0 (definitely not)
-```
+**Others in the same shape:** web-crawl frontier dedup (billions of URLs, false positive = a page unnecessarily skipped — tolerable); Squid's cache digests (peers exchange Bloom filters of their cache contents to route requests); [secondary-index scatter-gather pruning](../02-distributed-databases/06-secondary-indexes.md) (query only partitions whose filter says "maybe").
 
 ---
 
-## Comparison
+## Failure Modes
 
-| Structure | Space | Lookup | Insert | Delete | FP Rate |
-|-----------|-------|--------|--------|--------|---------|
-| HashSet | O(n) | O(1) | O(1) | O(1) | 0% |
-| Bloom | O(n) bits | O(k) | O(k) | No | ~1% |
-| Counting Bloom | O(n) × 4 | O(k) | O(k) | O(k) | ~1% |
-| Cuckoo | O(n) bits | O(1) | O(1)* | O(1) | ~1% |
+**Silent overfill.** Covered above, but it's the #1 real-world failure: no error, no log line, just FPR drifting from 1% toward 80% as `n` outgrows the design point. Detection requires *measuring* the effective FPR: `false positives / (false positives + true negatives)`, where a false positive = filter said maybe, disk said no. RocksDB exposes exactly this as `rocksdb.bloom.filter.full.positive` vs `.full.true.positive`; Cassandra as `BloomFilterFalseRatio`. Alert when measured FPR exceeds ~2× configured.
 
-*Cuckoo insert may require rehashing
+**Filter blocks evicted under memory pressure.** In RocksDB with `cache_index_and_filter_blocks=true`, filter blocks compete with data blocks for cache. Under pressure, the cache evicts the filter, and the next lookup must read the filter *from disk* before it can (maybe) save a data-block read — negative lookups get slower than having no filter, intermittently, in exactly the overloaded moments that matter. Mitigations: `pin_l0_filter_and_index_blocks_in_cache`, `cache_index_and_filter_blocks_with_high_priority`, or budget filters outside the block cache and watch the `filter block read` tickers.
 
----
+**Merging or serialization mismatch → false negatives.** Two filters can be merged by OR-ing bit arrays *only* if `m`, `k`, hash function, and seed are all identical; a mismatch produces a structure that confidently returns wrong "definitely not" answers — the one error class Bloom filters are never supposed to make. The same failure arrives via serialization: loading a filter into a runtime whose hash seed differs (per-process randomized hashes, endianness, a library upgrade that changed bit-index derivation). Version the filter format, embed the hash ID and seed, and refuse to load on mismatch.
 
-## Sizing a Bloom Filter
+**Treating "maybe" as "yes."** A username-availability check backed only by a filter will reject ~p% of *available* names (false positive → "taken") — an availability bug that ships silently because tests rarely hit a colliding name. The filter must always be a fast path in front of an authoritative check, never the authority. The dual failure: using a counting/cuckoo filter's deletion against unbalanced protocol traffic (delete-without-insert), which manufactures false negatives and *does* corrupt correctness.
 
-### The Core Formulas
+**Hot false positive.** One popular missing key that happens to be a false positive turns into a 100%-of-the-time disk-read hotspot (the filter re-lies on every single query — probes are deterministic). If a "missing key" is hot enough to matter, layer a small negative cache (exact, e.g. a tiny LRU of confirmed-absent keys) behind the filter.
 
-```
-Given:
-  n = expected number of elements
-  p = desired false positive rate (e.g., 0.01 for 1%)
-
-Optimal bit array size:
-  m = -(n × ln(p)) / (ln(2))²
-
-Optimal number of hash functions:
-  k = (m / n) × ln(2)
-```
-
-### Worked Example
-
-```
-Goal: Store 10 million elements with 1% false positive rate
-
-Step 1 — Compute m (bits):
-  m = -(10,000,000 × ln(0.01)) / (ln(2))²
-  m = -(10,000,000 × (-4.605)) / (0.4805)
-  m = 95,850,584 bits ≈ 95.9M bits ≈ 12 MB
-
-Step 2 — Compute k (hash functions):
-  k = (95,850,584 / 10,000,000) × ln(2)
-  k = 9.585 × 0.693
-  k ≈ 6.64 → round to 7 hash functions
-
-Result: 12 MB of memory, 7 hash functions, 1% FPR
-  Compare: storing 10M 64-byte keys directly = 640 MB
-  Bloom filter uses ~53× less memory
-```
-
-### Memory Per Element at Different FPR Targets
-
-```
-┌──────────────────┬──────────────────┬────────────────────────┬───────────┐
-│ Target FPR       │ Bits per Element │ Memory for 10M entries │ k (hashes)│
-├──────────────────┼──────────────────┼────────────────────────┼───────────┤
-│ 10%   (0.1)      │  4.8 bits        │  6.0 MB                │  3        │
-│ 1%    (0.01)     │  9.6 bits        │ 12.0 MB                │  7        │
-│ 0.1%  (0.001)    │ 14.4 bits        │ 18.0 MB                │ 10        │
-│ 0.01% (0.0001)   │ 19.2 bits        │ 24.0 MB                │ 13        │
-│ 0.001%(0.00001)  │ 24.0 bits        │ 30.0 MB                │ 17        │
-└──────────────────┴──────────────────┴────────────────────────┴───────────┘
-
-Key insight: each additional 4.8 bits/element buys you one order of magnitude
-improvement in false positive rate. Diminishing returns beyond 0.01%.
-```
-
-### Practical Sizing Checklist
-
-```
-1. Estimate n conservatively — overcount by 20-30% for growth headroom
-2. Pick p based on workload:
-   - Read-heavy, point lookups → 0.01 (1%) is usually fine
-   - Expensive downstream operations → 0.001 (0.1%) worth the extra memory
-   - Cheap downstream operations → 0.1 (10%) saves memory
-3. Verify m fits in memory budget
-4. Round k to nearest integer — off-by-one has negligible impact
-```
+**Weak or misused hashing.** Correlated probe bits (bad hash, `h₂=0` degeneracy, 32-bit hash on a large filter) put an invisible floor under FPR regardless of bits/key; adversarial inputs against an unkeyed hash turn the filter into an amplification vector. Both covered in the hashing section — both show up in production as "we doubled bits per key and the FPR didn't move."
 
 ---
 
-## Bloom Filters in Real Systems
-
-### RocksDB
-
-```
-Per-SST bloom filter. Each SSTable file gets its own bloom filter stored
-in the file's metadata block.
-
-Configuration: bits_per_key (default 10 → ~1% FPR)
-  options.filter_policy.reset(NewBloomFilterPolicy(10));
-
-Impact:
-  - Point lookup on non-existent key: 1 bloom check vs reading index + data block
-  - Reduces read amplification by ~100× for negative lookups
-  - Full filter (not block-based) avoids index lookup to find filter block
-  - Bloom filter is loaded into block cache on first access
-
-Tuning:
-  - bits_per_key = 10 → good default for most workloads
-  - bits_per_key = 15-20 → for workloads with many point lookups on missing keys
-  - Bloom filters do NOT help range scans — only point lookups (Get/MultiGet)
-```
-
-### Cassandra
-
-```
-Partition-level bloom filter. One filter per SSTable, keyed on partition key.
-
-Configuration: bloom_filter_fp_chance per table (default 0.01)
-  ALTER TABLE users WITH bloom_filter_fp_chance = 0.001;
-
-Guidelines:
-  - Read-heavy table (95%+ reads): set to 0.001 — memory cost is marginal
-  - Write-heavy table (high compaction): set to 0.1 — saves memory, writes
-    will naturally consolidate SSTables
-  - Counter tables: default 0.01 is fine
-  - Tables accessed primarily by range scan: set to 1.0 to disable entirely
-
-Memory impact:
-  bloom_filter_fp_chance = 0.01 → ~10 bits/partition key
-  bloom_filter_fp_chance = 0.001 → ~15 bits/partition key
-  Monitor via nodetool tablestats → "Bloom filter space used"
-```
-
-### HBase
-
-```
-Per-StoreFile bloom filter. Configurable granularity per column family.
-
-Schema configuration:
-  create 'my_table', {NAME => 'cf', BLOOMFILTER => 'ROW'}
-
-Granularity options:
-  NONE       — no bloom filter
-  ROW        — bloom on row key (default, best for row-level gets)
-  ROWCOL     — bloom on row + column qualifier (for wide rows with column gets)
-
-ROW vs ROWCOL:
-  ROW:    good when you read entire rows, 1 entry per row
-  ROWCOL: good when you read specific columns from wide rows,
-          1 entry per (row, column) pair — more memory, fewer false positives
-```
-
-### PostgreSQL
-
-```
-No built-in bloom filter for heap tables, but the bloom extension provides
-multi-column bloom indexes.
-
-  CREATE EXTENSION bloom;
-  CREATE INDEX idx_bloom ON orders USING bloom (customer_id, product_id)
-    WITH (length=80, col1=2, col2=4);
-
-Use case: ad-hoc queries filtering on arbitrary column combinations.
-Traditional B-tree index only helps if query matches the leftmost prefix.
-Bloom index handles any subset of indexed columns.
-
-Trade-off: higher false positive rate than B-tree (requires recheck),
-but single index covers all column combinations.
-```
-
-### Redis (RedisBloom Module)
-
-```
-Server-side bloom filter via BF.* commands.
-
-  BF.RESERVE usernames 0.001 1000000    # 0.1% FPR, 1M capacity
-  BF.ADD usernames "alice"
-  BF.EXISTS usernames "alice"           # → 1
-  BF.EXISTS usernames "bob"             # → 0
-
-  BF.MADD usernames "bob" "charlie"     # bulk insert
-  BF.MEXISTS usernames "bob" "dave"     # bulk check
-
-Auto-scaling: BF.ADD without BF.RESERVE creates a default filter (capacity
-100, FPR 0.01) that scales automatically via sub-filters.
-
-Use case: rate limiting, username uniqueness pre-check, deduplication
-in streaming pipelines.
-```
-
----
-
-## Bloom Filter Variants
-
-### Counting Bloom Filter
-
-```
-Replaces single bits with n-bit counters (typically 4 bits).
-
-  Add:    increment counters at hash positions
-  Delete: decrement counters at hash positions
-  Query:  check all counters > 0
-
-Trade-offs:
-  + Supports deletion
-  - 4× more memory (4 bits per counter vs 1 bit)
-  - Counter overflow risk with 4-bit counters (max 15)
-  - Rarely used in production — cuckoo filter is usually better for deletion
-```
-
-### Cuckoo Filter
-
-```
-Uses cuckoo hashing with fingerprints stored in a hash table.
-
-  Insert: store fingerprint at one of two candidate buckets
-          if both full, evict an existing entry and relocate it
-  Delete: remove fingerprint from its bucket
-  Query:  check both candidate buckets for fingerprint
-
-Trade-offs:
-  + Supports deletion without extra memory overhead
-  + Better space efficiency than counting bloom at FPR < 3%
-  + Constant-time lookups (check exactly 2 buckets)
-  - Insertion can fail at high load factor (>95%)
-  - Duplicate insertions require tracking (same item inserted twice)
-```
-
-### Ribbon Filter (RocksDB)
-
-```
-Newer filter designed for static datasets (write-once, read-many).
-Used in RocksDB since v6.15 as an alternative to standard bloom.
-
-  How: solves a system of linear equations over GF(2) during construction
-  Result: ~30% more space-efficient than standard bloom for same FPR
-
-Trade-offs:
-  + 30% smaller than standard bloom at same FPR
-  + Same query speed as standard bloom
-  - 3-4× slower to build (acceptable for SSTable write path)
-  - Not suitable for dynamic sets (no incremental add)
-
-RocksDB usage:
-  options.filter_policy.reset(NewRibbonFilterPolicy(10));
-```
-
-### Quotient Filter
-
-```
-Cache-friendly alternative using open addressing.
-
-  Stores quotient and remainder of hash in a compact hash table.
-  Uses linear probing — sequential memory access pattern.
-
-Trade-offs:
-  + Cache-friendly (sequential access, good for CPU cache lines)
-  + Supports merging two filters (useful for LSM compaction)
-  + Supports deletion and resizing
-  - ~10-25% more space than standard bloom for same FPR
-  - More complex implementation
-```
-
-### Comparison Table
-
-```
-┌─────────────────┬──────────┬──────────────────┬────────────┬─────────────┐
-│ Filter          │ Deletion │ Space Efficiency  │ Build Time │ Query Time  │
-├─────────────────┼──────────┼──────────────────┼────────────┼─────────────┤
-│ Standard Bloom  │ No       │ Baseline         │ Fast       │ O(k)        │
-│ Counting Bloom  │ Yes      │ 3-4× worse       │ Fast       │ O(k)        │
-│ Cuckoo Filter   │ Yes      │ Better at <3% FPR│ Fast       │ O(1)        │
-│ Ribbon Filter   │ No       │ 30% better       │ 3-4× slower│ O(k)        │
-│ Quotient Filter │ Yes      │ 10-25% worse     │ Fast       │ Amortized   │
-└─────────────────┴──────────┴──────────────────┴────────────┴─────────────┘
-
-Selection guide:
-  - Default choice for storage engines → Standard Bloom or Ribbon
-  - Need deletion → Cuckoo filter
-  - Need merging (e.g., compaction) → Quotient filter
-  - Need deletion + memory constrained → Cuckoo filter (not counting bloom)
-```
-
----
-
-## Production Pitfalls
-
-### Undersized Bloom Filter
-
-```
-Symptom: FPR climbs well above configured target
-Cause:   more elements inserted than planned capacity (n)
-
-Example:
-  Filter sized for 1M elements at 1% FPR
-  Actually inserted 5M elements
-  Effective FPR: ~18% — filter is nearly useless
-
-Fix: monitor actual FPR → (false positives / total negative queries)
-  If actual FPR > 2× target, rebuild with larger capacity.
-  Proactive: size for 1.5-2× expected growth from the start.
-```
-
-### Hash Function Quality
-
-```
-Poor hash functions produce correlated bit positions.
-Effective FPR becomes much worse than theoretical.
-
-Bad choices:
-  - MD5 / SHA-256: cryptographic, slow, overkill — not designed for bloom
-  - Java .hashCode(): poor avalanche properties, correlated outputs
-  - Simple modular hashing: clustering
-
-Good choices:
-  - MurmurHash3: fast, excellent distribution, standard in most systems
-  - xxHash: fastest option, good distribution, used in newer systems
-  - CityHash/FarmHash: Google's family, excellent for strings
-
-Double hashing technique:
-  Compute h1 and h2 once, derive k hashes as h_i = h1 + i × h2
-  Proven to preserve theoretical FPR guarantees (Kirsch & Mitzenmacher, 2006)
-```
-
-### Memory Pressure at Scale
-
-```
-Bloom filters live in memory for fast access. At scale, they add up.
-
-Example budget:
-  100 GB dataset, average key size 64 bytes → ~1.6B keys
-  10 bits/key bloom filter = 16 Gbit = 2 GB of bloom filters
-  That's 2 GB of memory just for bloom filters
-
-Mitigation:
-  - Tiered bloom filters: keep L0-L1 bloom filters in memory, load
-    deeper levels on demand from block cache
-  - RocksDB: bloom filters stored in block cache, subject to eviction
-  - Cassandra: bloom filters loaded at startup, monitor heap usage
-    via nodetool tablestats
-
-Rule of thumb: budget 1-2% of dataset size for bloom filters at 1% FPR
-```
-
-### False Negatives After Resize
-
-```
-Standard bloom filters CANNOT be resized in place.
-
-If dataset grows beyond planned capacity:
-  1. FPR degrades silently (no error, just more false positives)
-  2. Must rebuild: create new larger filter, re-insert all elements
-  3. Rebuilding requires access to all original elements (or re-scan data)
-
-Alternatives for growing datasets:
-  - Scalable Bloom Filter (SBF): chain of filters with tightening FPR
-    Each new sub-filter uses stricter p to keep aggregate FPR bounded
-  - Partitioned approach: one bloom filter per partition/SSTable
-    As new SSTables are created, each gets a correctly sized filter
-    (This is exactly what LSM-tree storage engines do)
-```
-
-### Monitoring Bloom Filter Effectiveness
-
-```
-Key metrics to track:
-
-  1. Bloom filter hit rate = true negatives / total queries
-     - "How often does the filter save a disk read?"
-     - Healthy: >90% for workloads with many missing-key lookups
-     - Low hit rate → workload is mostly positive lookups, filter adds overhead
-
-  2. Actual FPR = false positives / (false positives + true negatives)
-     - Compare against configured FPR
-     - Significantly higher → filter is overfull, needs rebuild
-
-  3. Useful reads saved = bloom true negatives × avg disk read cost
-     - Quantifies the value of the bloom filter in latency or IOPS terms
-
-  4. Memory overhead ratio = bloom filter memory / total memory budget
-     - Keep under 5% of total memory as a guideline
-
-RocksDB exposes: rocksdb.bloom.filter.useful, rocksdb.bloom.filter.full.positive
-Cassandra exposes: BloomFilterFalsePositives, BloomFilterFalseRatio per table
-```
+## Decision Framework
+
+| Situation | Do this |
+|---|---|
+| LSM/SSTable point-lookup filter, default | Blocked bloom ~10 bits/key (RocksDB `format_version≥5`); ribbon for bottom levels if memory-bound |
+| Read path is mostly *positive* lookups | Shrink or skip the filter — it only pays on misses; measure `useful / queries` first |
+| Table accessed only by range scan | Disable the filter (`bloom_filter_fp_chance = 1.0`); consider prefix bloom only if scans are prefix-bounded |
+| Need deletion with churn | Cuckoo filter with ≥5% load headroom; ensure protocol never deletes non-inserted keys |
+| Immutable, versioned set shipped to many nodes | Binary fuse (fast build) or ribbon (max compactness); rebuild per version |
+| Streaming dedup over a time window | Rotating bucketed blooms; retire whole filters, never delete |
+| Set will grow unboundedly / unknown n | Per-artifact filters sized at seal time (LSM-style), or scalable bloom (chained filters with tightening p); never one global filter |
+| Attacker-influenced keys | Keyed hash (SipHash) with per-deployment secret |
+| Filter memory across many tiers | Monkey-style skew: lowest FPR where runs are small and probed often, not uniform bits/key |
+| Guarding writes, not reads (admission) | Bloom of recently-seen keys; act on second occurrence (one-hit-wonder pattern) |
 
 ---
 
 ## Key Takeaways
 
-1. **False positives, never false negatives** - "Maybe yes" or "definitely no"
-2. **10 bits per element for 1% FP** - Simple sizing rule
-3. **Critical for LSM trees** - Avoid disk reads
-4. **No deletion without counters** - Standard Bloom is insert-only
-5. **Space-efficient set approximation** - Bits vs full elements
-6. **Merge with OR** - Union of filters is trivial
-7. **Size upfront** - Can't resize without rebuilding
-8. **Cuckoo for deletions** - Modern alternative
+1. **The filter prepays the answer to "is disk worth it?"** — its value is proportional to your *negative*-lookup rate; on positive-heavy workloads it's pure overhead.
+2. **Sizing is 1.44 × log₂(1/p) bits/key** — 9.6 bits for 1%, +4.8 bits per extra decimal digit of FPR, independent of element size.
+3. **FPR degrades brutally with overfill** — 2× over design n ⇒ ~16× the configured FPR; measure effective FPR in production, don't trust the config.
+4. **Count cache misses, not hash ops** — blocked bloom (1 miss) is the production default; standard bloom's k scattered probes can dominate in-memory latency.
+5. **Bloom is 44% above the entropy floor** — for static sets (SSTables, shipped artifacts) ribbon and binary fuse filters buy that back.
+6. **Filters can't see ranges** — range scans get nothing; prefix blooms help only for prefix-bounded iteration.
+7. **Never OR-merge or deserialize across mismatched m/k/hash/seed** — that's how a filter learns to produce false negatives, the one lie it must never tell.
+8. **Allocate FPR budget unevenly** (Monkey): spend bits where runs are small and probed often; let the biggest tier run looser.
+9. **Probabilistic ≠ private** — repeated observation of a filter reconstructs its contents (BIP-37); it's a performance structure, not an information barrier.
+
+---
+
+## References
+
+- Bloom, B. H. (1970). *Space/Time Trade-offs in Hash Coding with Allowable Errors*. CACM.
+- Broder, A., & Mitzenmacher, M. (2004). *Network Applications of Bloom Filters: A Survey*. Internet Mathematics.
+- Kirsch, A., & Mitzenmacher, M. (2006). *Less Hashing, Same Performance: Building a Better Bloom Filter*. ESA.
+- Putze, F., Sanders, P., & Singler, J. (2007). *Cache-, Hash- and Space-Efficient Bloom Filters*. WEA.
+- Bose, P., et al. (2008). *On the False-Positive Rate of Bloom Filters*. Information Processing Letters.
+- Fan, B., Andersen, D., Kaminsky, M., & Mitzenmacher, M. (2014). *Cuckoo Filter: Practically Better Than Bloom*. CoNEXT.
+- Maggs, B., & Sitaraman, R. (2015). *Algorithmic Nuggets in Content Delivery*. ACM SIGCOMM CCR. (One-hit wonders / cache admission.)
+- Dayan, N., Athanassoulis, M., & Idreos, S. (2017). *Monkey: Optimal Navigable Key-Value Store*. SIGMOD.
+- Graf, T. M., & Lemire, D. (2020). *Xor Filters: Faster and Smaller Than Bloom and Cuckoo Filters*. ACM JEA; and (2022) *Binary Fuse Filters*.
+- RocksDB Wiki: *RocksDB Bloom Filter* (format_version 5 fast local bloom) and *Ribbon Filter*.
+- BIP-37 (Connection Bloom Filtering) and BIP-158 (Compact Block Filters) — Bitcoin Improvement Proposals.
