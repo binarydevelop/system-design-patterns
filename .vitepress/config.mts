@@ -237,6 +237,7 @@ const sidebarEN = [
       { text: 'Offline Evaluation & Metrics', link: '/16-ml-systems/12-offline-evaluation-metrics' },
       { text: 'Model Registry & Metadata', link: '/16-ml-systems/13-model-registry-metadata' },
       { text: 'ML Capacity & Cost Planning', link: '/16-ml-systems/14-ml-capacity-cost-planning' },
+      { text: 'Distributed Training Internals', link: '/16-ml-systems/15-distributed-training-internals' },
     ]
   },
   {
@@ -606,6 +607,7 @@ export default withMermaid({
                 { text: 'オフライン評価とメトリクス設計', link: '/ja/16-ml-systems/12-offline-evaluation-metrics' },
                 { text: 'モデルレジストリとMLメタデータ', link: '/ja/16-ml-systems/13-model-registry-metadata' },
                 { text: 'MLキャパシティとコストプランニング', link: '/ja/16-ml-systems/14-ml-capacity-cost-planning' },
+                { text: '分散学習の内部構造', link: '/ja/16-ml-systems/15-distributed-training-internals' },
               ]
             },
             {

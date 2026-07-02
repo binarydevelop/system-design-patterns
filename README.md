@@ -186,6 +186,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Offline Evaluation and Metric Design](16-ml-systems/12-offline-evaluation-metrics.md) — metric selection, thresholds, calibration, leakage, slices, uncertainty
 - [Model Registry and ML Metadata](16-ml-systems/13-model-registry-metadata.md) — artifact identity, serving contracts, lifecycle states, promotion gates, rollback metadata
 - [ML Capacity and Cost Planning](16-ml-systems/14-ml-capacity-cost-planning.md) — GPU sizing, batching, feature fanout, training cost, queueing, headroom
+- [Distributed Training Internals](16-ml-systems/15-distributed-training-internals.md) — parallelism topologies, collectives, ZeRO/FSDP, MFU, failure math, checkpointing
 
 ### Part 17: LLM Systems
 - [Agent Fundamentals](17-llm-systems/01-agent-fundamentals.md)

@@ -250,6 +250,7 @@ jobs:
             "16-ml-systems/12-offline-evaluation-metrics.md"
             "16-ml-systems/13-model-registry-metadata.md"
             "16-ml-systems/14-ml-capacity-cost-planning.md"
+            "16-ml-systems/15-distributed-training-internals.md"
             # Part 17: LLM Systems
             "17-llm-systems/01-agent-fundamentals.md"
             "17-llm-systems/02-orchestration-patterns.md"
