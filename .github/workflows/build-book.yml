@@ -256,6 +256,7 @@ jobs:
             "17-llm-systems/09-harness-engineering.md"
             "17-llm-systems/10-llm-evaluation.md"
             "17-llm-systems/11-gpu-inference-internals.md"
+            "17-llm-systems/12-agent-inference.md"
             # Part 18: Workflow & Job Systems
             "18-workflow-job-systems/01-workflow-system-fundamentals.md"
             "18-workflow-job-systems/02-background-jobs-worker-pools.md"

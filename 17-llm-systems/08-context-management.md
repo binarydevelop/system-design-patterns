@@ -75,6 +75,8 @@ The rules that follow are simple and violated constantly:
 3. **Don't swap tools or models mid-session.** Tool definitions sit at position zero; adding or removing one invalidates the whole cache. Caches are also per-model — routing a conversation between models forfeits the cache each switch, which changes the math on "use the cheap model for easy turns" routing.
 4. **Verify with usage fields, not vibes.** Every provider reports cached-read tokens in the response usage. A cache-hit rate near zero on a multi-turn workload means a silent invalidator; diff two consecutive rendered requests to find it.
 
+The serving-side mirror of this discipline — cache-aware routing, failover cost, fleet KV footprint — is in [Agent Inference](./12-agent-inference.md).
+
 ```python
 # WRONG: rebuilds the prompt each turn; three separate cache-killers.
 system = f"You are a support agent. Today is {datetime.now()}."   # (1) volatile prefix

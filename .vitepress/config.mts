@@ -248,6 +248,7 @@ const sidebarEN = [
       { text: 'Harness Engineering', link: '/17-llm-systems/09-harness-engineering' },
       { text: 'LLM Evaluation', link: '/17-llm-systems/10-llm-evaluation' },
       { text: 'GPU Inference Internals', link: '/17-llm-systems/11-gpu-inference-internals' },
+      { text: 'Agent Inference', link: '/17-llm-systems/12-agent-inference' },
     ]
   },
   {
@@ -610,6 +611,7 @@ export default withMermaid({
                 { text: 'ハーネスエンジニアリング', link: '/ja/17-llm-systems/09-harness-engineering' },
                 { text: 'LLM評価', link: '/ja/17-llm-systems/10-llm-evaluation' },
                 { text: 'GPU推論の内部構造', link: '/ja/17-llm-systems/11-gpu-inference-internals' },
+                { text: 'エージェント推論', link: '/ja/17-llm-systems/12-agent-inference' },
               ]
             },
             {
