@@ -92,7 +92,7 @@ const content = {
     consoleFoot: ['status: evidence-driven', 'bias: trade-offs over slogans'],
     statsLabel: 'Reference statistics',
     stats: [
-      ['167', 'Articles'],
+      ['168', 'Articles'],
       ['19', 'Design domains'],
       ['13', 'Case studies'],
       ['15', 'Paper notes'],
@@ -145,7 +145,7 @@ const content = {
     consoleFoot: ['status: evidence-driven', 'bias: trade-offs over slogans'],
     statsLabel: 'リファレンス統計',
     stats: [
-      ['167', '記事'],
+      ['168', '記事'],
       ['19', '設計領域'],
       ['13', '本番事例'],
       ['15', '論文ノート'],

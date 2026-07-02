@@ -92,6 +92,7 @@ const sidebarEN = [
       { text: 'Cell-Based Architecture', link: '/06-scaling/11-cell-based-architecture' },
       { text: 'Multi-Tenancy', link: '/06-scaling/12-multi-tenancy' },
       { text: 'DNS & Connections', link: '/06-scaling/13-dns-and-connection-management' },
+      { text: 'Network Transport Internals', link: '/06-scaling/14-network-transport-internals' },
     ]
   },
   {
@@ -460,6 +461,7 @@ export default withMermaid({
                 { text: 'セルベースアーキテクチャ', link: '/ja/06-scaling/11-cell-based-architecture' },
                 { text: 'マルチテナンシー', link: '/ja/06-scaling/12-multi-tenancy' },
                 { text: 'DNSとコネクション管理', link: '/ja/06-scaling/13-dns-and-connection-management' },
+                { text: 'ネットワークトランスポートの内部構造', link: '/ja/06-scaling/14-network-transport-internals' },
               ]
             },
             {

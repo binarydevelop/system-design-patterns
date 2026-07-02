@@ -59,6 +59,8 @@ sequenceDiagram
     LB->>Backend: Data
 ```
 
+L4 balancing is a *packet* job — per-unit work measured in nanoseconds — which is why production L4 data planes (Google's Maglev, Meta's Katran) are built on kernel bypass or XDP rather than the ordinary socket path; the packet-vs-request distinction and the kernel-path mechanics are in [Network Transport Internals](./14-network-transport-internals.md).
+
 ### Layer 7 (Application Layer)
 
 ```mermaid
