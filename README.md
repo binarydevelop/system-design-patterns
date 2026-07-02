@@ -81,6 +81,7 @@ A hyper-detailed, framework-agnostic repository of system design patterns, conce
 - [Cell-Based Architecture and Shuffle Sharding](06-scaling/11-cell-based-architecture.md)
 - [Multi-Tenancy Patterns](06-scaling/12-multi-tenancy.md)
 - [DNS and Connection Management](06-scaling/13-dns-and-connection-management.md)
+- [Network Transport Internals](06-scaling/14-network-transport-internals.md)
 
 ### Part 7: Real-Time Systems
 - [Polling](07-real-time/01-polling.md)

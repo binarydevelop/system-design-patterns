@@ -155,6 +155,7 @@ jobs:
             "06-scaling/11-cell-based-architecture.md"
             "06-scaling/12-multi-tenancy.md"
             "06-scaling/13-dns-and-connection-management.md"
+            "06-scaling/14-network-transport-internals.md"
             # Part 7: Real-Time
             "07-real-time/01-polling.md"
             "07-real-time/02-long-polling.md"

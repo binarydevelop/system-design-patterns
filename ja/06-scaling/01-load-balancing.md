@@ -61,6 +61,8 @@ sequenceDiagram
     LB->>Backend: Data
 ```
 
+L4バランシングは*パケット*の仕事です — 単位あたりの処理はナノ秒で測られます。だからこそ本番のL4データプレーン(GoogleのMaglev、MetaのKatran)は通常のソケットパスではなくカーネルバイパスやXDPの上に構築されます。パケット対リクエストの区別とカーネルパスの機構は[ネットワークトランスポートの内部構造](./14-network-transport-internals.md)にあります。
+
 ### レイヤー7（アプリケーション層）
 
 ```mermaid
