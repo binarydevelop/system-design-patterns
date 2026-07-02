@@ -539,6 +539,100 @@ RocksDB's dynamic leveling:
 
 ---
 
+## コンパクション負債: スループットの方程式
+
+コンパクションは生産者-消費者システムであり、多くの障害が破っている容量の方程式を持っています:
+
+```
+Sustainable ingest = usable device write bandwidth / write amplification
+
+Example (leveled, WA ≈ 20, NVMe with 2 GB/s sustained writes,
+reserving half the bandwidth for reads and flushes):
+  sustainable ingest ≈ (2 GB/s × 0.5) / 20 = 50 MB/s of app writes
+
+Ingest above that rate doesn't fail — it accrues DEBT:
+  pending compaction bytes grow
+  → more overlapping runs per read (read amp climbs first)
+  → L0 count crosses slowdown trigger (writes throttled)
+  → L0 count crosses stop trigger (writes stall — outage)
+
+The insidious part: a burst 3× over sustainable rate for one hour
+creates hours of catch-up work. Debt is repaid at
+(compaction bandwidth − ongoing ingest × WA), which may be nearly
+zero if steady-state ingest is close to the limit.
+```
+
+ここから導かれる運用ルール: バーストの返済余力を残すため、定常インジェストは**持続可能レートの50〜70%以下**にサイジングする。*pending compaction bytes* を第一級のSLOシグナルとして扱う（これが先行指標です — 読み取りレイテンシとストールは遅行指標）。追い付き作業中は、インジェストを明示的にレート制限するか、戦略を一時的に緩める（universal/tiered）こと — ストールトリガーにスロットリングをやらせるのは、考えうる最悪のレイテンシプロファイルをもたらします。
+
+### 時間が実際に消える場所
+
+```
+A compaction job is a pipeline: read blocks → decompress → merge-sort
+→ (re)compress → write blocks → sync + manifest update.
+
+CPU can be the bottleneck, not the disk: zstd on the bottom level
+compresses at a few hundred MB/s per core — a 4-thread compaction
+budget caps at ~1 GB/s of logical throughput regardless of NVMe
+speed. This is why per-level compression config (LZ4 up top, zstd
+at the bottom) is a throughput decision, not just a space one.
+```
+
+---
+
+## トゥームストーンGCの危険
+
+上のメカニクスではトゥームストーンは最下層で落ちると述べましたが、本番では2つの制約が加わり、トゥームストーンは再発性のインシデントクラスになります:
+
+```
+Resurrection window (Cassandra): a tombstone may only be GC'd after
+gc_grace_seconds (default 10 days). Why: a replica that was DOWN when
+the delete happened never got the tombstone. If the other replicas GC
+it before that node is repaired, repair copies the node's old value
+BACK — the deleted row resurrects cluster-wide.
+  → gc_grace_seconds must exceed your worst repair interval
+  → dropping it to reclaim space faster trades disk for resurrections
+
+The tombstone scan problem: reads over ranges with many deletes must
+iterate every tombstone to prove rows dead. A table used as a queue
+(insert → consume → delete at the head) degrades until every poll
+scans millions of tombstones — Cassandra aborts such reads with
+TombstoneOverwhelmingException. Fixes: don't build queues on LSM
+tables; use time-bucketed tables dropped whole, or FIFO/TWCS where
+expiry deletes files instead of rows.
+
+Targeted tombstone compaction: engines can compact a single SSTable
+when its tombstone ratio is high (Cassandra tombstone_threshold,
+default 0.2; RocksDB CompactOnDeletionCollector) — worth enabling on
+delete-heavy tables so tombstones don't wait for shape-driven
+compaction to find them.
+```
+
+---
+
+## 箱の外のコンパクション: 階層化とリモート
+
+SSTableはイミュータブルで自己完結しているため、ファイルもマージ作業も、サービングノード上に住む必要はありません:
+
+```
+Tiered storage: bottom-level SSTables (≈90% of bytes, coldest data)
+move to object storage; the node keeps hot levels + indexes/filters
+locally. Reads to cold data pay object-store latency (see
+Object Storage chapter); economics usually win for logs/time-series.
+
+Remote compaction: the merge itself runs on stateless workers reading
+and writing SSTables in object storage (RocksDB-Cloud, and the
+pattern behind several cloud-native engines). The serving node stops
+paying compaction CPU/IO entirely — the amplification triangle's
+write-amp corner becomes an elastic, separately-billed compute pool.
+The cost: coordination (which worker owns which file set) moves into
+a manifest/metadata service — the same "truth in a small pointer,
+bytes in immutable objects" pattern as lakehouse table formats.
+```
+
+これがクラウドLSMの進行方向です: ディスクシークを避けるために1996年に設計されたSSTableのイミュータブル性は、ストレージ・コンピュート分離を成立させるまさにその性質だったと判明しました。
+
+---
+
 ## 重要なポイント
 
 1. **SSTableはイミュータブル** - 一度書き込み、何度も読み取り

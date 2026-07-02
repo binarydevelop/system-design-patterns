@@ -548,6 +548,108 @@ Solutions:
 
 ---
 
+## Torn Page: WALの下にあるアトミシティのギャップ
+
+WALプロトコルは、データページの書き込みは「起こるか起こらないか」のどちらかだと仮定します。ハードウェアはその仮定を壊します:
+
+```
+Database page: 8 KB (PostgreSQL) / 16 KB (InnoDB)
+Device atomic write unit: 4 KB sector (often 512B logically)
+
+Crash mid-page-write → a TORN page: first 4 KB new, last 4 KB old.
+Page checksum detects it — but redo may not be able to FIX it:
+physiological log records ("insert key at slot 3") assume the page's
+prior state is intact. A torn page has no valid prior state.
+```
+
+本番での防御は2つ:
+
+```
+PostgreSQL — full-page writes (full_page_writes = on):
+  the FIRST modification to a page after each checkpoint logs the
+  ENTIRE page image into the WAL. Redo restores the image, then
+  applies records on top — no dependence on the on-disk page state.
+  Cost: WAL volume spikes right after every checkpoint (the FPI
+  burst); this is the hidden coupling between checkpoint_timeout
+  and WAL bandwidth.
+
+InnoDB — doublewrite buffer:
+  pages are first written sequentially to a doublewrite area, synced,
+  then written to their final locations. Torn final write → recover
+  the page from the doublewrite copy. Cost: ~2× page write volume
+  (mitigated by batching; can be disabled ONLY on filesystems/devices
+  with guaranteed atomic writes — e.g., ZFS, or NVMe devices exposing
+  atomic write units ≥ page size).
+```
+
+ページサイズのアトミック書き込みを本当に保証するストレージ上で動いているなら、どちらの防御も純粋なオーバーヘッドです — 「doublewrite/FPWを切れるか？」が現実のチューニング会話である理由であり、その答えが楽観ではなくストレージスタックのドキュメントから来なければならない理由です。
+
+---
+
+## fsyncは本当にsyncしているのか？
+
+この設計全体の永続性は、ひとつのシステムコールが真実を語ることの上に載っています。それはしばしば、3つの層で真実を語りません:
+
+```
+1. Volatile drive caches: consumer SSDs/HDDs ack writes into DRAM
+   cache. A power cut loses "durable" data unless the OS issues cache
+   flush / FUA commands — which filesystem barriers do, but
+   misconfigured stacks (some virtualized disks, RAID controllers
+   without BBU set to write-back) silently don't.
+
+2. fsync error semantics (fsyncgate, 2018): on Linux, if a background
+   writeback fails, fsync() returns EIO ONCE — and marks the pages
+   CLEAN. A process that retries fsync gets SUCCESS while the data
+   never reached disk. PostgreSQL had assumed retry-until-success was
+   safe for ~20 years; the fix (PG 11+) is to PANIC on fsync failure
+   and recover from WAL, never retry.
+
+3. fdatasync vs fsync vs directory sync: creating a new WAL segment
+   requires fsyncing the DIRECTORY too, or the file itself may vanish
+   after crash. Metadata (size changes) needs fsync; fdatasync
+   suffices for in-place data and is cheaper.
+
+Verification, not vibes: pull the power plug under load
+(diskchecker.pl-style tests) or use dm-flakey/dm-log-writes to
+simulate. Storage stacks that "lose" acked fsyncs are common enough
+that serious databases treat this as a qualification test.
+```
+
+---
+
+## レプリケーション基盤としてのWAL
+
+クラッシュリカバリを提供するのと同じバイトストリームが、自然なレプリケーションフィードでもあります — そしてこの二重用途がWALの運用問題の大半を生みます:
+
+```
+Physical replication (PostgreSQL streaming, InnoDB redo shipping):
+  replica applies page-level records → byte-identical standby.
+  Fast, simple; replica must run the same major version and
+  architecture.
+
+Logical replication / CDC: decode WAL back into row-level changes
+  (pgoutput, Debezium). Enables cross-version, selective, and
+  cross-system replication ([CDCパイプライン](../13-data-pipelines/04-change-data-capture.md)) —
+  at the cost of decoding CPU and ordering complexity.
+
+The operational trap — replication slots pin WAL:
+  a slot guarantees the WAL a consumer hasn't read yet is retained.
+  A dead/abandoned consumer (a decommissioned replica, a stalled
+  Debezium connector) pins WAL forever → disk fills → database down.
+  This is among the most common self-inflicted PostgreSQL outages.
+  Defense: monitor slot lag bytes; set max_slot_wal_keep_size (PG 13+)
+  to cap retention and sacrifice the slot instead of the database.
+
+Synchronous replication couples commit latency to the network:
+  synchronous_commit = on → wait for local flush
+                       remote_write / remote_apply → wait for standby
+  Group commit still applies — batches of transactions share both the
+  local fsync AND the replication round trip ([合意アルゴリズム](../02-distributed-databases/08-consensus-algorithms.md)
+  makes the same amortization under quorum acks).
+```
+
+---
+
 ## 重要なポイント
 
 1. **データの前にログ** - WALの基本ルール

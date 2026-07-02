@@ -539,6 +539,112 @@ PostgreSQL:
 
 ---
 
+## Arrow and Parquet: In Memory vs At Rest
+
+The columnar world standardized on *two* formats because the optimization targets differ:
+
+```
+Parquet (at rest): optimize for SIZE and skippability.
+  Heavy encodings (dictionary, RLE, bit-packing) + block compression.
+  Values are NOT randomly accessible — you decode a page to read it.
+
+Arrow (in memory): optimize for COMPUTE.
+  Fixed-width arrays, validity bitmaps, contiguous buffers — a value
+  is at base + i × width, SIMD-scannable directly, no decode step.
+  The same buffer layout in every language (C++, Rust, Java, Python
+  via zero-copy FFI) — "serialization" between processes sharing
+  Arrow is memcpy or shared memory, not encode/decode.
+
+The pipeline every modern engine runs:
+  Parquet page → decode once → Arrow batch → all further operators
+  (filter, join, aggregate) work on Arrow vectors.
+  Arrow Flight / ADBC move Arrow batches over the network, replacing
+  row-at-a-time protocols (JDBC/ODBC) that spend more CPU converting
+  than transferring.
+```
+
+The practical consequence: "which format?" is not a choice — Parquet *and* Arrow, with the boundary at the scan. What is a choice: pushing work below that boundary (predicate/projection pushdown into the Parquet reader) so fewer pages ever get decoded.
+
+### Vectorized execution, concretely
+
+```
+SELECT SUM(amount) WHERE region_code = 7    (1M rows)
+
+Row engine:  1M × (interpret row layout → extract field → branch → add)
+             ~5-20 ns per row of interpretation overhead
+
+Vectorized engine on Arrow batches (~1K-4K values per batch):
+  region_code: compare 32 codes per AVX-512 instruction → bitmask
+  amount:      masked SIMD add, 16 int32s per instruction
+  ≈ 1M rows / 16 per instr ≈ 62K instructions + branch-free selection
+  → 10-100× less CPU per row; memory bandwidth becomes the limit
+
+Two details that make it work:
+  - dictionary-encoded columns can evaluate predicates on the CODES
+    (compare against the dictionary once, then scan small integers)
+  - selection vectors/bitmaps defer materialization — operators pass
+    "which rows survive" instead of copying survivors
+```
+
+---
+
+## Sort Order Is the Real Index
+
+In a column store, physical sort order does the job B-tree indexes do in OLTP — it decides both compression ratio and how much data scans can skip:
+
+```
+Same 1B-row events table, two layouts:
+
+Sorted by (event_time):
+  event_time: delta encoding → ~1-2 bits/value
+  zone maps on event_time: a 1-day query scans ~1/365 of row groups
+  but: WHERE user_id = X must scan EVERY row group (user_id is
+  scattered — its per-group min/max spans the whole domain)
+
+Sorted by (user_id, event_time):
+  user_id: RLE → almost free; queries by user prune to a few groups
+  event_time: still locally sorted within a user → decent deltas
+  but: pure time-range queries now scan everything
+
+The sort key is a QUERY WORKLOAD decision, revisited as workloads
+change. Multi-dimensional compromise: Z-order / Hilbert curves
+interleave dimensions so BOTH user_id and event_time predicates
+prune reasonably (Delta OPTIMIZE ZORDER BY, Iceberg sort orders,
+ClickHouse ORDER BY tuple).
+```
+
+And because ingestion rarely arrives in sort order, clustering *decays*: streamed data lands in arrival order, zone maps widen, scans slow. Engines re-sort in the background (Snowflake auto-clustering, Delta/Iceberg compaction with sort) — the columnar analog of LSM compaction, paid in the same currency (background I/O and compute).
+
+---
+
+## Updates Without Rewrites: Deletion Vectors
+
+Classic columnar updates meant copy-on-write: rewrite the whole row group (possibly a 128 MB file) to change one row. Modern table formats added a merge-on-read middle path:
+
+```
+Deletion vector: a compressed bitmap (often roaring) per data file
+marking rows as dead. DELETE/UPDATE writes:
+  - a tiny deletion-vector file (positions of deleted rows)
+  - (for UPDATE) the new row versions into a new file
+The 128 MB data file is untouched.
+
+Read path: scan file ⊕ apply its deletion vector — a masked scan,
+nearly free in a vectorized engine (it's just another bitmap AND).
+
+The LSM parallel is exact: deletion vectors are tombstones, readers
+pay a small merge cost, and background compaction eventually rewrites
+files to fold deletes in. Same debt dynamics too — millions of
+accumulated deletes without compaction degrade scans, so table
+maintenance (OPTIMIZE / rewrite_data_files) is an operational duty,
+not an optimization.
+
+(Iceberg v2 position/equality deletes, Delta deletion vectors,
+DuckDB and Photon read them natively — see
+[Lakehouse Table Formats](../13-data-pipelines/05-lakehouse-table-formats.md).)
+```
+
+---
+
 ## Key Takeaways
 
 1. **Column storage reads only needed columns** - Huge I/O savings
