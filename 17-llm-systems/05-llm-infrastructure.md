@@ -980,7 +980,10 @@ class CostOptimizedPipeline:
     ) -> dict:
         """Complete with cost optimization."""
         
-        input_tokens = self.token_manager.count_tokens(prompt, "gpt-4")
+        # Count against the target model's own tokenizer (or the provider's
+        # count-tokens endpoint) — tokenizers differ per family, and a
+        # mismatched count skews every cost estimate below.
+        input_tokens = self.token_manager.count_tokens(prompt, self.models[0]["name"])
         
         for model in self.models:
             # Check cost constraint
