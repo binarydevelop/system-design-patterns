@@ -2,6 +2,7 @@
 :root {
   --vp-font-family-base: 'Inter', sans-serif;
   --vp-font-family-mono: 'JetBrains Mono', monospace;
+  --sdp-font-display: 'Newsreader', 'Iowan Old Style', Georgia, serif;
   --vp-c-brand-1: #2563EB;
   --vp-c-brand-2: #0F766E;
   --vp-c-brand-3: #D97706;
